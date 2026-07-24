@@ -12,7 +12,7 @@ OutFile "cloud-client-installer.exe"
 !define DESCRIPTION "Cloud Honeypot Client - System Security Monitor"
 !define VERSIONMAJOR 4
 !define VERSIONMINOR 9
-!define VERSIONBUILD 26
+!define VERSIONBUILD 27
 
 InstallDir "$PROGRAMFILES64\${COMPANYNAME}\${APPNAME}"
 
@@ -282,6 +282,24 @@ Function PrepareInstallDirForOverwrite
     Sleep 200
 FunctionEnd
 
+; Install memory_restart.ps1 without NSIS FileInUse dialog (schtask may lock it).
+; Never use NSIS File here — locked targets pop Abort/Retry/Ignore.
+Function InstallMemoryRestartScript
+    Push $0
+    InitPluginsDir
+    SetOutPath "$PLUGINSDIR"
+    File "memory_restart.ps1"
+    File "scripts\install-memory-restart.ps1"
+    CreateDirectory "$INSTDIR\scripts"
+    nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\install-memory-restart.ps1" -InstallDir "$INSTDIR" -SourcePath "$PLUGINSDIR\memory_restart.ps1"'
+    Pop $0
+    DetailPrint "[FILES] memory_restart.ps1 install exit: $0"
+    StrCmp $0 "0" MemoryRestartOk
+        DetailPrint "[FILES] WARN: memory_restart.ps1 not written — client will restage on first run"
+    MemoryRestartOk:
+    Pop $0
+FunctionEnd
+
 ; ===================================================================
 ; KILL HONEYPOT PROCESSES WITH VERIFICATION (fast: 1 full kill + short poll)
 ; ===================================================================
@@ -432,7 +450,9 @@ Section "Cloud Honeypot Client (Required)" SEC_MAIN
     !insertmacro LOG "[PHASE 2] Starting file installation..."
     !insertmacro LOG "[INSTALL] Target directory: $INSTDIR"
     SetOutPath $INSTDIR
-    SetOverwrite on
+    ; try = skip locked files silently (no Abort/Retry/Ignore). prepare-install-dir
+    ; already relocates the hot trees; try is belt-and-suspenders for AV/handle races.
+    SetOverwrite try
 
     ; Install main files (onedir: exe + _internal next to it)
     !insertmacro LOG "[FILES] Installing application files (onedir)..."
@@ -451,7 +471,10 @@ Section "Cloud Honeypot Client (Required)" SEC_MAIN
     Delete "$INSTDIR\scripts\kill-honeypot.ps1"
     Delete "$INSTDIR\scripts\prepare-install-dir.ps1"
     Delete "$INSTDIR\scripts\update-and-install.ps1"
-    File /oname=scripts\memory_restart.ps1 "memory_restart.ps1"
+    ; memory_restart.ps1 is often FileInUse (schtask PowerShell). Relocate then
+    ; write via PLUGINSDIR copy with retries — never Abort/Retry/Ignore UI.
+    !insertmacro LOG "[FILES] Staging memory_restart.ps1 (lock-safe)..."
+    Call InstallMemoryRestartScript
     !insertmacro LOG "[FILES] Application files installed (exe + _internal)."
     Call HardenInstallScriptsAcl
 

@@ -1,3 +1,6 @@
+# v4.9.27
+- **Installer FileInUse (`memory_restart.ps1`):** Relocate `scripts\` before extract; kill PowerShell locking install helpers; install `memory_restart.ps1` via lock-safe copy (`install-memory-restart.ps1`) instead of NSIS `File` (no Abort/Retry/Ignore). `SetOverwrite try` on main extract for residual handle races.
+
 # v4.9.26
 - **Winlogon on dashboard:** Health/`list_sessions` always offers a `pre_logon` "Logon / Lock screen" sibling (even when a console user is Active). `remote_stream_start` accepts `prefer`/`desktop`/`pre_logon` and attaches named Winlogon before OpenInputDesktop. Hello capabilities advertise `winlogon`/`pre_logon`.
 - **self_update download completion:** Installer download succeeds only when transfer is complete (Content-Length match + PE MZ + min size) — never "timeout expired = done". Stall timeout only detects idle sockets. Up to 5 retries with backoff; then launch installer. Richer `detail` on failure.

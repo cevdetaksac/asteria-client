@@ -41,12 +41,24 @@ function Stop-ProcessesUnderInstallDir {
     foreach ($p in $list) {
         try {
             $path = [string]($p.ExecutablePath)
-            if (-not $path) { continue }
-            if ($path.ToLowerInvariant().StartsWith($needle)) {
-                Write-PrepLog ("Stopping PID {0} ({1})" -f $p.ProcessId, $path)
-                try { & taskkill.exe /F /T /PID $p.ProcessId 2>$null | Out-Null } catch {}
-                try { Stop-Process -Id ([int]$p.ProcessId) -Force -ErrorAction SilentlyContinue } catch {}
+            $cmd = [string]($p.CommandLine)
+            $hit = $false
+            if ($path -and $path.ToLowerInvariant().StartsWith($needle)) {
+                $hit = $true
             }
+            # Scheduled memory_restart / update helpers often lock scripts\*.ps1
+            # while powershell.exe lives outside InstallDir.
+            if (-not $hit -and $cmd) {
+                $cl = $cmd.ToLowerInvariant()
+                if ($cl.Contains($needle) -or $cl.Contains("memory_restart.ps1") -or
+                    $cl.Contains("update-and-install.ps1") -or $cl.Contains("kill-honeypot.ps1")) {
+                    $hit = $true
+                }
+            }
+            if (-not $hit) { continue }
+            Write-PrepLog ("Stopping PID {0} ({1})" -f $p.ProcessId, $(if ($path) { $path } else { $p.Name }))
+            try { & taskkill.exe /F /T /PID $p.ProcessId 2>$null | Out-Null } catch {}
+            try { Stop-Process -Id ([int]$p.ProcessId) -Force -ErrorAction SilentlyContinue } catch {}
         } catch {}
     }
 }
@@ -168,6 +180,10 @@ if (-not (Test-Path $InstallDir)) {
 
 # Order matters: stop respawn, kill, exclude AV, then rename locked trees.
 Invoke-KillHelper
+foreach ($tn in @("CloudHoneypot-MemoryRestart", "\CloudHoneypot-MemoryRestart")) {
+    try { & schtasks.exe /end /tn $tn 2>$null | Out-Null } catch {}
+    try { & schtasks.exe /change /tn $tn /disable 2>$null | Out-Null } catch {}
+}
 Stop-ProcessesUnderInstallDir
 Start-Sleep -Milliseconds 200
 Stop-ProcessesUnderInstallDir
@@ -177,7 +193,17 @@ $okInternal = Move-Aside (Join-Path $InstallDir "_internal")
 $okExe = Move-Aside (Join-Path $InstallDir "honeypot-client.exe")
 
 # Also clear common lock-prone helpers next to exe
+Move-Aside (Join-Path $InstallDir "honeypot_client.exe.manifest") | Out-Null
 Move-Aside (Join-Path $InstallDir "honeypot-client.exe.manifest") | Out-Null
+
+# scripts\memory_restart.ps1 is often locked by schtask PowerShell — rename tree
+# so NSIS File never hits Abort/Retry/Ignore on upgrade.
+$okScripts = Move-Aside (Join-Path $InstallDir "scripts")
+if (-not $okScripts) {
+    Move-Aside (Join-Path $InstallDir "scripts\memory_restart.ps1") | Out-Null
+    Move-Aside (Join-Path $InstallDir "scripts\update-and-install.ps1") | Out-Null
+    Move-Aside (Join-Path $InstallDir "scripts\kill-honeypot.ps1") | Out-Null
+}
 
 Clear-StaleAsync
 

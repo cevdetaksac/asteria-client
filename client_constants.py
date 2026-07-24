@@ -36,7 +36,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.26"  # Winlogon pre_logon row always offered to dashboard; prefer=winlogon start
+VERSION = "4.9.27"  # Installer: lock-safe memory_restart.ps1 + scripts relocate (no FileInUse Abort)
 
 
 CLIENT_VERSION = VERSION  # Main version constant
