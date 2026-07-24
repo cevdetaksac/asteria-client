@@ -174,7 +174,13 @@ class HoneypotAPIClient:
             self.log(f"[API] Beklenmeyen hata: {e}")
             return None
 
-    def register_client(self, server_name: str, ip_address: str, machine_id: str = "") -> Optional[str]:
+    def register_client(
+        self,
+        server_name: str,
+        ip_address: str,
+        machine_id: str = "",
+        machine_guid: str = "",
+    ) -> Optional[str]:
         """İstemciyi API'ye kaydeder ve bir token alır (machine_id ile upsert tercih edilir).
 
         Register body ``protection.block_rules`` → ProgramData (ThreatEngine boot/sync).
@@ -185,6 +191,9 @@ class HoneypotAPIClient:
             if mid:
                 payload["machine_id"] = mid
                 payload["hwid"] = mid
+            guid = (machine_guid or "").strip()
+            if guid:
+                payload["machine_guid"] = guid
             response = self.api_request("POST", "register", data=payload)
             if response and "token" in response:
                 token = response["token"]
@@ -1348,11 +1357,13 @@ def register_client_api(
     token_save_func=None,
     log_func=None,
     machine_id: str = "",
+    machine_guid: str = "",
 ) -> Optional[str]:
     """Register client with API and get token.
 
-    Sends machine_id so the API can upsert and return the SAME durable token
-    for this machine (identity must not rotate like a session).
+    Sends machine_id (hardware fingerprint: MachineGuid+MACs+SMBIOS hash) so the
+    API can upsert and return the SAME durable token for this machine. VM clones
+    that keep MachineGuid but get new NICs enroll as distinct clients.
 
     On success, persists ``protection.block_rules`` from the register body
     (honeypot-contract agent/register-protection.md) for ThreatEngine boot apply.
@@ -1368,6 +1379,9 @@ def register_client_api(
         if mid:
             payload["machine_id"] = mid
             payload["hwid"] = mid  # alias for older/newer API field names
+        guid = (machine_guid or "").strip()
+        if guid:
+            payload["machine_guid"] = guid  # additive telemetry (contract ≥1.4.26)
         response = requests.post(
             f"{api_url}/register", json=payload, timeout=15,
             verify=resolve_tls_verify(),

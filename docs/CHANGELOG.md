@@ -1,3 +1,6 @@
+# v4.9.28
+- **Critical — clone/shared token:** `/register` `machine_id` = SHA-256(MachineGuid + NIC MACs + SMBIOS + vol serial). CHP2 `token.dat` + `device_binding.json` bind identity; fingerprint mismatch ? quarantine + re-enroll. One-time schema v2 hardware rebind so VM clones that shared one UUID each get a unique Client (re-link Account). Ops: `scripts/reset-agent-identity.ps1`. Contract **1.4.26**.
+
 # v4.9.27
 - **Installer FileInUse (`memory_restart.ps1`):** Relocate `scripts\` before extract; kill PowerShell locking install helpers; install `memory_restart.ps1` via lock-safe copy (`install-memory-restart.ps1`) instead of NSIS `File` (no Abort/Retry/Ignore). `SetOverwrite try` on main extract for residual handle races.
 

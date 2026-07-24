@@ -36,7 +36,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.27"  # Installer: lock-safe memory_restart.ps1 + scripts relocate (no FileInUse Abort)
+VERSION = "4.9.28"  # Hardware-bound token (MAC+MachineGuid fingerprint); clone split
 
 
 CLIENT_VERSION = VERSION  # Main version constant

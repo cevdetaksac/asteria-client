@@ -1,30 +1,45 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Token Management — machine-scoped immutable client identity.
+Token Management - machine-scoped immutable client identity.
 
-Token is the server's durable identity (like a MAC). It must:
+Token is the server's durable identity. It must:
   - Live in ProgramData (shared by SYSTEM daemon + user GUI)
-  - Never be overwritten by a newly minted /register token
+  - Never be overwritten by a newly minted /register token (except controlled
+    hardware rebind / clone split)
   - Never auto-re-register merely because load/decrypt failed
 
-Create (/register) only when NO token file exists after migration.
+Hardware binding (schema v2):
+  machine_id / hwid sent to /register is a SHA-256 over MachineGuid + NIC MACs
+  + SMBIOS UUID. VM clones that keep MachineGuid but get new MACs enroll as
+  distinct clients. token.dat CHP2 embeds the same fingerprint; mismatch →
+  quarantine + re-enroll (clone of a bound image).
+
+Create (/register) only when NO token file exists after migration - or when
+hardware binding requires a controlled re-enroll.
 """
 
 from __future__ import annotations
 
+import json
 import os
+import re
 import time
 import hashlib
+import subprocess
 from typing import Optional, List
 
 from client_helpers import ClientHelpers, log
 from client_utils import TokenStore, _programdata_client_dir
 from client_api import register_client_api
 
+CREATE_NO_WINDOW = 0x08000000
+IDENTITY_SCHEMA_VERSION = 2
+_FP_CACHE: Optional[str] = None
 
-def get_machine_id() -> str:
-    """Stable per-machine id (Windows MachineGuid preferred)."""
+
+def get_windows_machine_guid() -> str:
+    """Raw Windows MachineGuid (may be identical across unsysprep'd clones)."""
     try:
         import winreg
         with winreg.OpenKey(
@@ -36,24 +51,217 @@ def get_machine_id() -> str:
                 return str(guid).strip()
     except Exception:
         pass
-    # Fallback: hostname + system drive serial (still machine-local)
+    return ""
+
+
+def get_nic_macs() -> List[str]:
+    """Stable sorted MAC list (lowercase hex, no separators)."""
+    macs: set = set()
+    try:
+        import uuid as uuid_mod
+        node = int(uuid_mod.getnode())
+        # uuid.getnode is random if no NIC - skip the "locally administered random" bit pattern
+        if node and node != 0xFFFFFFFFFFFF:
+            macs.add(f"{node:012x}")
+    except Exception:
+        pass
+
+    # Prefer WMI - covers multiple adapters; ignore empties / all-zero
+    try:
+        script = (
+            "Get-CimInstance Win32_NetworkAdapterConfiguration -EA SilentlyContinue "
+            "| Where-Object { $_.MACAddress } "
+            "| Select-Object -ExpandProperty MACAddress"
+        )
+        proc = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                script,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=12,
+            creationflags=CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+        if proc.returncode == 0 and proc.stdout:
+            for line in proc.stdout.splitlines():
+                raw = re.sub(r"[^0-9A-Fa-f]", "", (line or "").strip())
+                if len(raw) == 12 and raw.lower() != ("0" * 12):
+                    macs.add(raw.lower())
+    except Exception:
+        pass
+
+    return sorted(macs)
+
+
+def get_smbios_uuid() -> str:
+    """SMBIOS / hardware UUID when available (empty on failure)."""
+    try:
+        script = (
+            "$u=(Get-CimInstance Win32_ComputerSystemProduct -EA SilentlyContinue).UUID; "
+            "if ($u) { $u.ToString().Trim() }"
+        )
+        proc = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                script,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=12,
+            creationflags=CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+        if proc.returncode == 0:
+            val = (proc.stdout or "").strip()
+            if val and val.lower() not in ("", "ffffffff-ffff-ffff-ffff-ffffffffffff"):
+                return val
+    except Exception:
+        pass
+    return ""
+
+
+def get_volume_serial_fallback() -> str:
     try:
         import ctypes
         vol_serial = ctypes.c_ulong(0)
         ctypes.windll.kernel32.GetVolumeInformationW(
             "C:\\", None, 0, ctypes.byref(vol_serial), None, None, None, 0
         )
-        raw = f"{os.environ.get('COMPUTERNAME', '')}-{vol_serial.value}"
-        return hashlib.sha256(raw.encode("utf-8", "ignore")).hexdigest()[:32]
+        return f"{vol_serial.value:08x}"
+    except Exception:
+        return ""
+
+
+def get_device_fingerprint(force_refresh: bool = False) -> str:
+    """SHA-256 hardware fingerprint used as /register machine_id (unique per host).
+
+    Material: schema|MachineGuid|mac1,mac2,...|smbios_uuid|vol_serial
+    Cloned VMs that keep MachineGuid but receive new NIC MACs get a new id.
+    """
+    global _FP_CACHE
+    if _FP_CACHE and not force_refresh:
+        return _FP_CACHE
+    guid = get_windows_machine_guid() or "no-guid"
+    macs = ",".join(get_nic_macs()) or "no-mac"
+    smbios = get_smbios_uuid() or "no-smbios"
+    vol = get_volume_serial_fallback() or "no-vol"
+    raw = f"v2|{guid}|{macs}|{smbios}|{vol}"
+    _FP_CACHE = hashlib.sha256(raw.encode("utf-8", "ignore")).hexdigest()
+    return _FP_CACHE
+
+
+def get_machine_id() -> str:
+    """Stable per-machine id for API upsert - hardware fingerprint (MAC-bound)."""
+    try:
+        return get_device_fingerprint()
+    except Exception:
+        pass
+    # Last-resort fallback
+    try:
+        raw = f"{os.environ.get('COMPUTERNAME', '')}-{get_volume_serial_fallback()}"
+        return hashlib.sha256(raw.encode("utf-8", "ignore")).hexdigest()
     except Exception:
         return hashlib.sha256(
             (os.environ.get("COMPUTERNAME") or "unknown").encode("utf-8")
-        ).hexdigest()[:32]
+        ).hexdigest()
 
 
 def get_canonical_token_path() -> str:
-    """Machine-wide token path — same for SYSTEM and interactive user."""
+    """Machine-wide token path - same for SYSTEM and interactive user."""
     return os.path.join(_programdata_client_dir(), "token.dat")
+
+
+def _binding_path() -> str:
+    return os.path.join(_programdata_client_dir(), "device_binding.json")
+
+
+def _load_binding() -> dict:
+    path = _binding_path()
+    try:
+        if not os.path.isfile(path):
+            return {}
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_binding(*, fingerprint: str, token: str, reason: str = "") -> None:
+    path = _binding_path()
+    try:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        payload = {
+            "schema": IDENTITY_SCHEMA_VERSION,
+            "fingerprint": (fingerprint or "").strip(),
+            "machine_guid": get_windows_machine_guid(),
+            "macs": get_nic_macs(),
+            "smbios_uuid": get_smbios_uuid(),
+            "token_prefix": ((token or "").strip()[:8]),
+            "bound_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "reason": reason or "bind",
+        }
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2, ensure_ascii=True)
+        os.replace(tmp, path)
+    except Exception as e:
+        log(f"[TOKEN] device_binding save failed: {e}")
+
+
+def quarantine_local_identity(reason: str = "rebind") -> None:
+    """Move token.dat aside and clear account-link cache (clone / hardware rebind)."""
+    stamp = time.strftime("%Y%m%d%H%M%S")
+
+    def _aside(path: str) -> None:
+        if not path or not os.path.isfile(path):
+            return
+        try:
+            dest = f"{path}.stale_{reason}_{stamp}"
+            os.replace(path, dest)
+            log(f"[TOKEN] Quarantined {path} -> {os.path.basename(dest)}")
+        except OSError as e:
+            log(f"[TOKEN] Quarantine failed for {path}: {e}")
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+    _aside(get_canonical_token_path())
+    # Prevent migrate_token_to_canonical from resurrecting a cloned legacy copy
+    for path in get_legacy_token_paths(""):
+        try:
+            if os.path.normcase(os.path.abspath(path)) == os.path.normcase(
+                os.path.abspath(get_canonical_token_path())
+            ):
+                continue
+        except Exception:
+            pass
+        _aside(path)
+
+    try:
+        from client_utils import set_account_linked
+        set_account_linked(False, email="", source=f"identity_{reason}")
+    except Exception:
+        pass
+    try:
+        link = os.path.join(_programdata_client_dir(), "account_link.json")
+        _aside(link)
+    except Exception:
+        pass
+    _aside(_binding_path())
 
 
 def get_legacy_token_paths(app_dir: str = "") -> List[str]:
@@ -235,23 +443,32 @@ class TokenManager:
         self._app_dir_hint = os.path.dirname(token_file_new) if token_file_new else ""
 
     def get_token(self) -> Optional[str]:
-        """Load only — never creates a new identity."""
+        """Load only - never creates a new identity."""
         tok = migrate_token_to_canonical(self._app_dir_hint)
         if tok:
             return tok
         return TokenStore.load(self.token_file_new)
 
+    def _persist_token(self, tok: str, fingerprint: str, *, overwrite: bool = False) -> None:
+        TokenStore.save(
+            tok,
+            self.token_file_new,
+            overwrite=overwrite,
+            fingerprint=fingerprint,
+        )
+        _save_binding(fingerprint=fingerprint, token=tok, reason="register")
+
     def register_client(self, root_window=None, t_func=None) -> Optional[str]:
-        """Register ONLY when no durable token exists. Uses machine_id for API upsert."""
-        # Re-check under lock — another process may have just registered
+        """Register ONLY when no durable token exists. Uses hardware fingerprint upsert."""
+        # Re-check under lock - another process may have just registered
         existing = self.get_token()
         if existing:
-            log("[TOKEN] Register skipped — durable token already present")
+            log("[TOKEN] Register skipped - durable token already present")
             return existing
 
         lock_fd = _acquire_register_lock()
         if lock_fd is None:
-            log("[TOKEN] Register lock timeout — refusing to mint a new identity")
+            log("[TOKEN] Register lock timeout - refusing to mint a new identity")
             return self.get_token()
 
         try:
@@ -262,19 +479,19 @@ class TokenManager:
             # File exists but unreadable → NEVER mint (would orphan API identity)
             if os.path.isfile(self.token_file_new):
                 log(
-                    "[TOKEN] token.dat exists but could not be read — "
+                    "[TOKEN] token.dat exists but could not be read - "
                     "refusing auto-register to protect identity"
                 )
                 return None
 
             machine_id = get_machine_id()
+            machine_guid = get_windows_machine_guid()
             for attempt in range(3):
                 try:
                     ip = ClientHelpers.get_public_ip()
 
                     def save_token(tok):
-                        # Refuse overwrite of a different existing token
-                        TokenStore.save(tok, self.token_file_new, overwrite=False)
+                        self._persist_token(tok, machine_id, overwrite=False)
 
                     token = register_client_api(
                         self.api_url,
@@ -283,9 +500,13 @@ class TokenManager:
                         save_token,
                         log,
                         machine_id=machine_id,
+                        machine_guid=machine_guid,
                     )
                     if token:
-                        log(f"[TOKEN] Registered durable identity (machine_id={machine_id[:8]}...)")
+                        log(
+                            f"[TOKEN] Registered durable identity "
+                            f"(fingerprint={machine_id[:12]}...)"
+                        )
                         return token
 
                     msg = "API kaydı başarısız. Tekrar deneniyor..."
@@ -317,24 +538,83 @@ class TokenManager:
         finally:
             _release_register_lock(lock_fd)
 
+    def _reenroll(self, reason: str, root_window=None, t_func=None) -> Optional[str]:
+        """Quarantine local identity and mint a new hardware-bound token."""
+        log(f"[TOKEN] Re-enroll required ({reason})")
+        quarantine_local_identity(reason=reason)
+        return self.register_client(root_window, t_func)
+
+    def ensure_hardware_binding(self, root_window=None, t_func=None) -> Optional[str]:
+        """Bind token to hardware fingerprint; split VM clones onto unique tokens.
+
+        - CHP2 / binding fingerprint mismatch → clone or NIC change → re-enroll
+        - schema < 2 → one-time migrate: re-register under MAC-bound machine_id
+          so hosts that shared MachineGuid/token.dat each get a unique Client
+        """
+        fp = get_device_fingerprint()
+        tok, bound_fp = TokenStore.load_meta(self.token_file_new)
+        if not tok:
+            tok = self.get_token()
+            bound_fp = None
+        if not tok:
+            return None
+
+        binding = _load_binding()
+        bind_fp = str(binding.get("fingerprint") or "").strip()
+        schema = int(binding.get("schema") or 0)
+
+        if bound_fp and bound_fp != fp:
+            log(
+                f"[TOKEN] CHP2 fingerprint mismatch "
+                f"(bound={bound_fp[:12]}... now={fp[:12]}...) - clone/hardware change"
+            )
+            return self._reenroll("fp_mismatch", root_window, t_func)
+
+        if bind_fp and bind_fp != fp:
+            log(
+                f"[TOKEN] device_binding fingerprint mismatch "
+                f"(bound={bind_fp[:12]}... now={fp[:12]}...) - clone/hardware change"
+            )
+            return self._reenroll("binding_mismatch", root_window, t_func)
+
+        if schema < IDENTITY_SCHEMA_VERSION:
+            # One-time: re-key cloud identity by hardware fingerprint.
+            # Clones sharing MachineGuid/token.dat enroll as distinct Clients.
+            log(
+                "[TOKEN] Identity schema upgrade -> hardware fingerprint rebind "
+                "(one-time; re-link Account after upgrade)"
+            )
+            return self._reenroll("schema_v2", root_window, t_func)
+
+        # Already bound - refresh CHP2 envelope if still CHP1 on disk
+        if not bound_fp:
+            try:
+                self._persist_token(tok, fp, overwrite=True)
+            except Exception as e:
+                log(f"[TOKEN] CHP2 upgrade save failed: {e}")
+        elif not binding:
+            _save_binding(fingerprint=fp, token=tok, reason="repair")
+
+        return tok
+
     def load_token(self, root_window=None, t_func=None) -> Optional[str]:
         """Load durable token; register only if no token file exists anywhere."""
         tok = self.get_token()
         if tok:
-            return tok
+            return self.ensure_hardware_binding(root_window, t_func)
 
         # Corrupt/unreadable canonical file → do not register
         if os.path.isfile(self.token_file_new):
-            log("[TOKEN] Canonical token.dat present but unreadable — not re-registering")
+            log("[TOKEN] Canonical token.dat present but unreadable - not re-registering")
             return None
 
         # Any legacy file present but unreadable → still do not mint
         for path in get_legacy_token_paths(self._app_dir_hint):
             if os.path.isfile(path):
-                log(f"[TOKEN] Legacy token file present but unreadable ({path}) — not re-registering")
+                log(f"[TOKEN] Legacy token file present but unreadable ({path}) - not re-registering")
                 return None
 
-        log("[TOKEN] No durable token found — first-run registration")
+        log("[TOKEN] No durable token found - first-run registration")
         return self.register_client(root_window, t_func)
 
 

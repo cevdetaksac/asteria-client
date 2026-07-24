@@ -2,7 +2,7 @@
 
 ## Shared contract
 
-API / agent behavior SoT: [honeypot-contract](https://github.com/cevdetaksac/honeypot-contract) (`VERSION` ≥ **1.4.25**, [`FLEET.md`](https://github.com/cevdetaksac/honeypot-contract/blob/main/FLEET.md)).
+API / agent behavior SoT: [honeypot-contract](https://github.com/cevdetaksac/honeypot-contract) (`VERSION` ≥ **1.4.26**, [`FLEET.md`](https://github.com/cevdetaksac/honeypot-contract/blob/main/FLEET.md)).
 
 ## Build & Release
 
@@ -39,6 +39,27 @@ If a log with a token was exposed:
 1. Revoke token in the dashboard
 2. Delete `%ProgramData%\YesNext\CloudHoneypotClient\token.dat`
 3. Restart the client to re-register
+
+## Clone / shared token (two IPs, one token)
+
+**Symptom:** Two hosts (different public IPs) show the same agent token and often
+the same Windows hostname — usually an unsysprep’d VM/golden-image clone that
+copied `MachineGuid` and/or `token.dat`. Account link follows the token, so both
+appear under the same email.
+
+**Fix (client ≥ 4.9.28):** Upgrade both hosts. Each performs a one-time hardware
+fingerprint re-enroll (`MachineGuid` + NIC MACs + SMBIOS). Confirm tokens differ,
+then **Settings → Account link** on each server.
+
+**Manual reset (any version):** elevated
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "C:\Program Files\YesNext\Cloud Honeypot Client\scripts\reset-agent-identity.ps1" -AlsoKill
+```
+
+(If the script is not installed yet, run it from the repo `cloud-client\scripts\`.)
+Also rename the hostname if both still show the same `WIN-*` name; prefer sysprep
+`/generalize` before sealing templates. Never bake `token.dat` into images.
 
 ## Fleet defaults
 

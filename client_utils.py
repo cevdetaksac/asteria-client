@@ -206,8 +206,17 @@ class TokenStore:
         return out[4:]  # strip prepended length
 
     @staticmethod
-    def save(token: str, token_file_new: str, overwrite: bool = False):
-        """Persist token with DPAPI. By default refuses to replace a different existing token."""
+    def save(
+        token: str,
+        token_file_new: str,
+        overwrite: bool = False,
+        fingerprint: str = "",
+    ):
+        """Persist token with DPAPI. By default refuses to replace a different existing token.
+
+        CHP2 embeds a hardware fingerprint so VM clones that copy token.dat but
+        have different NIC MACs fail the bind check and must re-enroll.
+        """
         try:
             token = (token or "").strip()
             if not token:
@@ -224,12 +233,15 @@ class TokenStore:
                         f"(file={token_file_new})"
                     )
                     return
-                if existing and existing == token:
+                if existing and existing == token and not fingerprint:
                     return  # already stored
             data = token.encode("utf-8")
-            # küçük bir header ile integrity:
             h = hashlib.sha256(data).hexdigest().encode("ascii")
-            payload = b"CHP1|" + h + b"|" + data
+            fp = (fingerprint or "").strip().encode("ascii", "ignore")
+            if fp:
+                payload = b"CHP2|" + fp + b"|" + h + b"|" + data
+            else:
+                payload = b"CHP1|" + h + b"|" + data
             enc = TokenStore._crypt_protect(payload)
             # Atomic replace to avoid partial writes during kill/update
             fd, tmp_path = tempfile.mkstemp(
@@ -252,22 +264,40 @@ class TokenStore:
             print(f"token save error: {e}")
 
     @staticmethod
-    def load(token_file_new: str) -> Optional[str]:
+    def load_meta(token_file_new: str) -> tuple:
+        """Return (token, bound_fingerprint_or_None). Fingerprint mismatch → (None, fp)."""
         try:
-            if os.path.exists(token_file_new):
-                enc = open(token_file_new, "rb").read()
-                if not enc:
-                    return None
-                dec = TokenStore._crypt_unprotect(enc)
-                if not dec.startswith(b"CHP1|"):
-                    return None
+            if not os.path.exists(token_file_new):
+                return None, None
+            enc = open(token_file_new, "rb").read()
+            if not enc:
+                return None, None
+            dec = TokenStore._crypt_unprotect(enc)
+            if dec.startswith(b"CHP2|"):
+                parts = dec.split(b"|", 3)
+                if len(parts) != 4:
+                    return None, None
+                _, fp_b, h, data = parts
+                if hashlib.sha256(data).hexdigest().encode("ascii") != h:
+                    return None, None
+                tok = data.decode("utf-8", "ignore").strip()
+                fp = fp_b.decode("ascii", "ignore").strip() or None
+                return (tok or None), fp
+            if dec.startswith(b"CHP1|"):
                 _, h, data = dec.split(b"|", 2)
                 if hashlib.sha256(data).hexdigest().encode("ascii") != h:
-                    return None
-                return data.decode("utf-8", "ignore").strip()
+                    return None, None
+                tok = data.decode("utf-8", "ignore").strip()
+                return (tok or None), None
+            return None, None
         except Exception as e:
             print(f"token load error: {e}")
-        return None
+            return None, None
+
+    @staticmethod
+    def load(token_file_new: str) -> Optional[str]:
+        tok, _fp = TokenStore.load_meta(token_file_new)
+        return tok
 
     @staticmethod
     def migrate_from_plain(
