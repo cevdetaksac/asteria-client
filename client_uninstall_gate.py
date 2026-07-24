@@ -111,7 +111,7 @@ def _prompt_pin_interactive() -> Optional[str]:
     try:
         pin = prompt_pin_dialog(
             root,
-            "Cloud Honeypot — Uninstall",
+            "Asteria — Uninstall",
             "Kaldırmak için PIN girin",
             confirm=False,
             hint=dashboard_pin_hint(None),
@@ -135,7 +135,7 @@ def _confirm_no_pin_interactive() -> bool:
         except Exception:
             pass
         ok = bool(messagebox.askyesno(
-            "Cloud Honeypot — Uninstall",
+            "Asteria — Uninstall",
             "PIN tanımlı değil.\n\n"
             "Kaldırmaya devam edilsin mi?\n"
             "(Öneri: dashboard veya Ayarlar üzerinden PIN tanımlayın.)",
@@ -242,7 +242,7 @@ def run_uninstall_gate(argv: Optional[list] = None) -> int:
                 root = tk.Tk()
                 root.withdraw()
                 messagebox.showerror(
-                    "Cloud Honeypot — Uninstall",
+                    "Asteria — Uninstall",
                     "PIN hatalı veya kilitli. Kaldırma iptal edildi.\n"
                     "PIN unuttuysanız dashboard → GUI PIN sıfırlama kullanın.",
                     parent=root,

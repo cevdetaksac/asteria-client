@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Cloud Honeypot Client - Honeypot Services Module
+Asteria Client - Honeypot Services Module
 
 Lightweight honeypot servisleri: sahte protokol handshake yaparak
 saldırgan credential bilgilerini yakalar ve API'ye raporlar.

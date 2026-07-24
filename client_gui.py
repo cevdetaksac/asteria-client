@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Cloud Honeypot Client — Modern GUI Module (CustomTkinter).
+"""Asteria Client — Modern GUI Module (CustomTkinter).
 
 Tüm GUI bileşenlerini içerir. client.py'deki iş mantığından bağımsızdır.
 CloudHoneypotClient instance'ı üzerinden veri ve aksiyonlara erişir.

@@ -1,4 +1,4 @@
-# Cloud Honeypot Client - Build Script
+# Asteria Client - Build Script
 # Version is read automatically from client_constants.py (single source of truth)
 
 param(
@@ -24,7 +24,7 @@ $VMINOR = $parts[1]
 $VBUILD = $parts[2]
 
 Write-Host "===============================================" -ForegroundColor Green
-Write-Host "  Cloud Honeypot Client v$VERSION Builder     " -ForegroundColor Green
+Write-Host "  Asteria Client v$VERSION Builder     " -ForegroundColor Green
 Write-Host "  Optimized Build                             " -ForegroundColor Green  
 Write-Host "===============================================" -ForegroundColor Green
 
@@ -93,18 +93,18 @@ if ($WebRTC) {
 # Step 1: Build Python executable with performance optimizations
 Write-Host "[1/5] Building Python executable..." -ForegroundColor Yellow
 try {
-    & $PYTHON -m PyInstaller honeypot-client.spec --clean
+    & $PYTHON -m PyInstaller asteria-client.spec --clean
     if ($LASTEXITCODE -eq 0) {
         Write-Host "   SUCCESS: Executable built successfully" -ForegroundColor Green
         # Gate: our application modules must NOT appear as plain .py under onedir.
-        $onedirInternal = Join-Path (Get-Location) "dist\honeypot-client\_internal"
+        $onedirInternal = Join-Path (Get-Location) "dist\asteria-client\_internal"
         if (Test-Path $onedirInternal) {
             $leaked = @(Get-ChildItem -Path $onedirInternal -Recurse -Filter "client_*.py" -File -ErrorAction SilentlyContinue)
             $leaked += @(Get-ChildItem -Path $onedirInternal -Recurse -Filter "client.py" -File -ErrorAction SilentlyContinue)
             if ($leaked.Count -gt 0) {
                 Write-Host "   ERROR: Plain Python sources leaked into _internal:" -ForegroundColor Red
                 $leaked | Select-Object -First 20 | ForEach-Object { Write-Host ("      " + $_.FullName) -ForegroundColor Red }
-                Write-Host "   Remove client_*.py from honeypot-client.spec datas= (use hiddenimports/PYZ)." -ForegroundColor Yellow
+                Write-Host "   Remove client_*.py from asteria-client.spec datas= (use hiddenimports/PYZ)." -ForegroundColor Yellow
                 exit 1
             }
             Write-Host "   SUCCESS: No client_*.py sources in _internal (PYZ bytecode only)" -ForegroundColor Green
@@ -121,13 +121,13 @@ try {
 Write-Host "[2/5] Copying configuration files..." -ForegroundColor Yellow
 try {
     Copy-Item -Path "client_config.json", "client_lang.json", "LICENSE", "README.md" -Destination "dist" -Force
-    $onedir = Join-Path "dist" "honeypot-client"
+    $onedir = Join-Path "dist" "asteria-client"
     if (Test-Path $onedir) {
         Copy-Item -Path "client_config.json", "client_lang.json", "LICENSE", "README.md" -Destination $onedir -Force
-        Write-Host "   SUCCESS: Config copied to dist/ and dist/honeypot-client/" -ForegroundColor Green
+        Write-Host "   SUCCESS: Config copied to dist/ and dist/asteria-client/" -ForegroundColor Green
     } else {
         Write-Host "   SUCCESS: Configuration files copied to dist/" -ForegroundColor Green
-        Write-Host "   WARN: dist/honeypot-client/ missing - expected onedir output" -ForegroundColor Yellow
+        Write-Host "   WARN: dist/asteria-client/ missing - expected onedir output" -ForegroundColor Yellow
     }
 } catch {
     Write-Host "   ERROR: Failed to copy files: $_" -ForegroundColor Red
@@ -168,7 +168,7 @@ try {
 # Step 5: Optional Authenticode + provenance (SUP-001 / SUP-002)
 Write-Host "`n[5/6] Signing / provenance..." -ForegroundColor Yellow
 $installerPath = Join-Path (Get-Location) "cloud-client-installer.exe"
-$mainExe = Join-Path (Get-Location) "dist\honeypot-client\honeypot-client.exe"
+$mainExe = Join-Path (Get-Location) "dist\asteria-client\asteria-client.exe"
 $signed = $false
 if ($Sign) {
     if (-not $CertPath -or -not (Test-Path $CertPath)) {
@@ -209,7 +209,7 @@ if ($installerFile) {
     $sizeMB = [math]::Round($installerFile.Length / 1MB, 1)
     $sha = (Get-FileHash -Algorithm SHA256 -Path $installerFile.FullName).Hash.ToLowerInvariant()
     $provenance = [ordered]@{
-        product = "yesnext-cloud-honeypot-client"
+        product = "asteria-client"
         version = $VERSION
         artifact = "cloud-client-installer.exe"
         sha256 = $sha
@@ -219,7 +219,7 @@ if ($installerFile) {
         authenticode_signed = [bool]$signed
         toolchain = @{
             python = (python --version 2>&1 | Out-String).Trim()
-            pyinstaller = "honeypot-client.spec"
+            pyinstaller = "asteria-client.spec"
             nsis = "installer.nsi"
         }
     }

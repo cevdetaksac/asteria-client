@@ -1,10 +1,10 @@
 # Cloud Honeypot - safe update/install orchestrator
-# Runs elevated (UAC). Survives killing honeypot-client.exe because it is a separate powershell.exe.
+# Runs elevated (UAC). Survives killing asteria-client.exe because it is a separate powershell.exe.
 #
 # Flow:
 #   1) Disable/end scheduled tasks (no respawn)
 #   2) Wait for caller PID to exit (graceful QUIT)
-#   3) Force-kill any remaining honeypot-client.exe (SeDebug)
+#   3) Force-kill any remaining asteria-client.exe (SeDebug)
 #   4) Verify processes are gone (abort install if not - avoid corrupting onefile exe)
 #   5) Run NSIS installer and WAIT
 #   6) Re-create tasks / launch GUI
@@ -354,7 +354,10 @@ function Fail-Update([int]$Code, [string]$Message) {
         Write-UpdateUiStatus -Phase "failed" -Detail $Message -ErrorText $Message
     } catch {}
     Clear-UpdateLock
-    $exe = Join-Path ${env:ProgramFiles} "YesNext\Cloud Honeypot Client\honeypot-client.exe"
+    $exe = Join-Path ${env:ProgramFiles} "Asteria\Asteria Client\asteria-client.exe"
+    if (-not (Test-Path -LiteralPath $exe)) {
+        $exe = Join-Path ${env:ProgramFiles} "YesNext\Cloud Honeypot Client\honeypot-client.exe"
+    }
     if (-not (Test-Path -LiteralPath $exe)) {
         $exe = Join-Path ${env:ProgramFiles} "YesNext\CloudHoneypotClient\honeypot-client.exe"
     }
@@ -427,7 +430,7 @@ public class HpKillUp {
 "@
     try { Add-Type -TypeDefinition $kdef -ErrorAction Stop | Out-Null } catch {}
 
-    try { & taskkill.exe /F /T /IM honeypot-client.exe 2>$null | Out-Null } catch {}
+    try { & taskkill.exe /F /T /IM asteria-client.exe 2>$null | Out-Null } catch {}
     $pids = Get-HoneypotPids
     foreach ($procId in $pids) {
         try {
@@ -510,7 +513,7 @@ Start-Sleep -Milliseconds 800
 try {
     $prep = Join-Path $PSScriptRoot "prepare-install-dir.ps1"
     $kill = Join-Path $PSScriptRoot "kill-honeypot.ps1"
-    $installDir = Join-Path ${env:ProgramFiles} "YesNext\Cloud Honeypot Client"
+    $installDir = Join-Path ${env:ProgramFiles} "Asteria\Asteria Client"
     if (Test-Path $prep) {
         Write-UpLog "prepare-install-dir.ps1..."
         & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $prep -InstallDir $installDir -KillScript $kill
@@ -570,16 +573,23 @@ if ($mid.Count -gt 0) {
 }
 
 if ($InstallDir -eq "") {
-    $InstallDir = Join-Path ${env:ProgramFiles} "YesNext\Cloud Honeypot Client"
+    $InstallDir = Join-Path ${env:ProgramFiles} "Asteria\Asteria Client"
 }
-$exe = Join-Path $InstallDir "honeypot-client.exe"
+$exe = Join-Path $InstallDir "asteria-client.exe"
+if (-not (Test-Path -LiteralPath $exe)) {
+    $exe = Join-Path $InstallDir "honeypot-client.exe"
+}
+if (-not (Test-Path -LiteralPath $exe)) {
+    $alt = Join-Path ${env:ProgramFiles} "YesNext\Cloud Honeypot Client\honeypot-client.exe"
+    if (Test-Path -LiteralPath $alt) { $exe = $alt; $InstallDir = Split-Path $alt -Parent }
+}
 if (-not (Test-Path -LiteralPath $exe)) {
     $alt = Join-Path ${env:ProgramFiles} "YesNext\CloudHoneypotClient\honeypot-client.exe"
     if (Test-Path -LiteralPath $alt) { $exe = $alt; $InstallDir = Split-Path $alt -Parent }
 }
 
 if (-not (Test-Path -LiteralPath $exe)) {
-    Fail-Update 5 "ERROR: honeypot-client.exe missing after install at $InstallDir"
+    Fail-Update 5 "ERROR: asteria-client.exe / honeypot-client.exe missing after install at $InstallDir"
 }
 
 $size = (Get-Item -LiteralPath $exe).Length

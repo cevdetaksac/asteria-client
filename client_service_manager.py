@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Cloud Honeypot Client - Service Manager
+Asteria Client - Service Manager
 
 Tüm honeypot servislerinin yaşam döngüsünü yönetir:
     - Dashboard config ile senkronizasyon (start/stop reconciliation)

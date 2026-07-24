@@ -1,4 +1,4 @@
-# Reset Cloud Honeypot Client durable identity (clone / shared-token recovery).
+# Reset Asteria Client durable identity (clone / shared-token recovery).
 # Run elevated. Stops agent tasks, quarantines token.dat + account_link, then
 # the next agent start performs a fresh /register under the hardware fingerprint.
 #
@@ -8,7 +8,7 @@
 
 param(
     [switch]$AlsoKill,
-    [string]$InstallDir = "${env:ProgramFiles}\YesNext\Cloud Honeypot Client"
+    [string]$InstallDir = "${env:ProgramFiles}\Asteria\Asteria Client"
 )
 
 $ErrorActionPreference = "Stop"
@@ -44,7 +44,7 @@ if ($AlsoKill) {
     if (Test-Path -LiteralPath $kill) {
         & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $kill -Force
     } else {
-        try { & taskkill.exe /F /T /IM honeypot-client.exe 2>$null | Out-Null } catch {}
+        try { & taskkill.exe /F /T /IM asteria-client.exe 2>$null | Out-Null } catch {}
     }
 }
 
@@ -61,6 +61,6 @@ $legacy = @(
 foreach ($p in $legacy) { Move-Aside $p }
 
 Write-IdLog "Identity cleared."
-Write-IdLog "Next: start Cloud Honeypot Client (or re-enable scheduled tasks) so it /register's a NEW token."
+Write-IdLog "Next: start Asteria Client (or re-enable scheduled tasks) so it /register's a NEW token."
 Write-IdLog "Then: Settings → Account link (each physical server must get its own token)."
 Write-IdLog ("Tip: rename hostname if still shared (e.g. WIN-KD60285EPLN clones). InstallDir={0}" -f $InstallDir)

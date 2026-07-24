@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Cloud Honeypot Client — Remote Command Executor (v4.0)
+Asteria Client — Remote Command Executor (v4.0)
 
 Polls the backend API for pending commands issued from the dashboard
 and executes them securely on the local machine.  This is the
@@ -151,6 +151,7 @@ PROTECTED_ACCOUNTS: Set[str] = {
 PROTECTED_PROCESSES: Set[str] = {
     "system", "smss.exe", "csrss.exe", "wininit.exe",
     "services.exe", "lsass.exe", "svchost.exe",
+    "asteria-client.exe",
     "honeypot-client.exe",
 }
 

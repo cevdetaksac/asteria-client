@@ -3,7 +3,7 @@
 """
 Client Instance Management — Singleton control & process management.
 
-Ensures only one Cloud Honeypot Client instance runs at a time using
+Ensures only one Asteria Client instance runs at a time using
 Windows named mutexes. Handles graceful shutdown of existing instances.
 
 Key exports:

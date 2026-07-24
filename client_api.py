@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Cloud Honeypot Client - API Management Module
+Asteria Client - API Management Module
 
 Bu modül, Cloud Honeypot sunucusu ile olan tüm API iletişimini yönetir.
 İstemci kaydı, IP güncellemeleri, heartbeat gönderimi, servis durumu raporlama,
@@ -36,10 +36,18 @@ from client_security_utils import (
 )
 
 class HoneypotAPIClient:
-    """Honeypot API bağlantı yönetimi sınıfı"""
+    """Asteria API bağlantı yönetimi sınıfı"""
     
-    def __init__(self, base_url: str, log_func=None):
+    def __init__(self, base_url: str, log_func=None, legacy_base_url: str = ""):
         self.base_url = base_url.rstrip('/')
+        self.primary_base_url = self.base_url
+        try:
+            from client_constants import API_URL_LEGACY
+            default_legacy = API_URL_LEGACY
+        except Exception:
+            default_legacy = "https://honeypot.yesnext.com.tr/api"
+        self.legacy_base_url = (legacy_base_url or default_legacy).rstrip("/")
+        self._using_legacy = False
         self.session = self._create_session()
         self.log = log_func if log_func else print
         self._auth_token: Optional[str] = None
@@ -61,12 +69,31 @@ class HoneypotAPIClient:
         session.mount("https://", adapter)
         
         # Default headers
+        try:
+            from client_constants import VERSION as _VER
+        except Exception:
+            _VER = "1.0"
         session.headers.update({
-            'User-Agent': 'Cloud-Honeypot-Client/1.0',
+            'User-Agent': f'Asteria-Client/{_VER}',
             'Content-Type': 'application/json'
         })
         
         return session
+
+    def _activate_legacy_failover(self, reason: str) -> bool:
+        """One-shot session failover to legacy host (contract rebrand-asteria)."""
+        if self._using_legacy:
+            return False
+        legacy = (self.legacy_base_url or "").rstrip("/")
+        if not legacy or legacy == self.base_url:
+            return False
+        self.base_url = legacy
+        self._using_legacy = True
+        try:
+            self.log(f"[API] Primary unreachable ({reason}) — failover to legacy host")
+        except Exception:
+            pass
+        return True
 
     def set_auth_token(self, token: Optional[str]) -> None:
         """Set default Bearer token for subsequent requests."""
@@ -104,69 +131,79 @@ class HoneypotAPIClient:
     def api_request(self, method: str, endpoint: str, data: Optional[Dict] = None,
                    params: Optional[Dict] = None, timeout: int = API_REQUEST_TIMEOUT,
                    verbose_logging: bool = True, token: Optional[str] = None) -> Optional[Dict]:
-        """API isteği gönder"""
+        """API isteği gönder (primary → legacy failover on transport/5xx failure)."""
         try:
-            url = f"{self.base_url}/{endpoint.lstrip('/')}"
-            req_params, req_data, extra_headers = self._prepare_request(params, data, token)
-            # Body token for POST payloads (backend compatibility)
-            tok = token or self._auth_token
-            if tok and req_data is not None and "token" not in req_data:
-                req_data["token"] = tok
-            
-            # Sık çağrılan endpointler için sessiz mod
             from client_constants import VERBOSE_LOGGING
             is_frequent_endpoint = endpoint in [
                 'attack-count', 'heartbeat', 'agent/tunnel-status',
                 'commands/pending', 'attack', 'agent/account-status', 'client_status',
             ]
             show_logs = (verbose_logging or VERBOSE_LOGGING) and not is_frequent_endpoint
-            
-            if show_logs:
-                self.log(f"[API] {method.upper()} isteği: {url}")
-            
-            if req_params and show_logs:
-                self.log(f"[API] Params: {redact_sensitive(req_params)}")
-            
-            if req_data and show_logs:
-                self.log(f"[API] JSON: {redact_sensitive(req_data)}")
-            
-            response = self.session.request(
-                method=method,
-                url=url,
-                json=req_data,
-                params=req_params,
-                timeout=timeout,
-                verify=resolve_tls_verify(),
-                headers=extra_headers or None,
-            )
-            
-            if show_logs or response.status_code != 200:
-                self.log(f"[API] Yanıt: HTTP {response.status_code}")
-            
-            if 200 <= response.status_code < 300:
-                try:
-                    result = response.json()
-                except Exception:
-                    result = {"status": "ok"}
-                if show_logs:
-                    self.log(f"[API] Başarılı yanıt: {result}")
-                return result
 
-            # 422 = schema error — log detail for quick fix
-            body_text = response.text or ""
-            if response.status_code == 422:
+            attempts = 0
+            while attempts < 2:
+                attempts += 1
+                url = f"{self.base_url}/{endpoint.lstrip('/')}"
+                req_params, req_data, extra_headers = self._prepare_request(params, data, token)
+                tok = token or self._auth_token
+                if tok and req_data is not None and "token" not in req_data:
+                    req_data["token"] = tok
+
+                if show_logs and attempts == 1:
+                    self.log(f"[API] {method.upper()} isteği: {url}")
+                    if req_params:
+                        self.log(f"[API] Params: {redact_sensitive(req_params)}")
+                    if req_data:
+                        self.log(f"[API] JSON: {redact_sensitive(req_data)}")
+
                 try:
-                    detail = response.json()
-                    self.log(f"[API] 422 schema error ({endpoint}): {redact_sensitive(detail)}")
-                except Exception:
-                    self.log(f"[API] 422 schema error ({endpoint}): {body_text[:500]}")
-            else:
-                self.log(f"[API] Hata yanıtı: {body_text[:500]}")
+                    response = self.session.request(
+                        method=method,
+                        url=url,
+                        json=req_data,
+                        params=req_params,
+                        timeout=timeout,
+                        verify=resolve_tls_verify(),
+                        headers=extra_headers or None,
+                    )
+                except requests.exceptions.RequestException as e:
+                    if attempts == 1 and self._activate_legacy_failover(str(e)):
+                        continue
+                    self.log(f"[API] İstek hatası: {e}")
+                    return None
+
+                if show_logs or response.status_code != 200:
+                    self.log(f"[API] Yanıt: HTTP {response.status_code}")
+
+                if 200 <= response.status_code < 300:
+                    try:
+                        result = response.json()
+                    except Exception:
+                        result = {"status": "ok"}
+                    if show_logs:
+                        self.log(f"[API] Başarılı yanıt: {result}")
+                    return result
+
+                if (
+                    attempts == 1
+                    and response.status_code in (500, 502, 503, 504)
+                    and self._activate_legacy_failover(f"HTTP {response.status_code}")
+                ):
+                    continue
+
+                body_text = response.text or ""
+                if response.status_code == 422:
+                    try:
+                        detail = response.json()
+                        self.log(f"[API] 422 schema error ({endpoint}): {redact_sensitive(detail)}")
+                    except Exception:
+                        self.log(f"[API] 422 schema error ({endpoint}): {body_text[:500]}")
+                else:
+                    self.log(f"[API] Hata yanıtı: {body_text[:500]}")
+                return None
+
             return None
-                
-        except requests.exceptions.RequestException as e:
-            self.log(f"[API] İstek hatası: {e}")
-            return None
+
         except json.JSONDecodeError as e:
             self.log(f"[API] JSON parse hatası: {e}")
             return None

@@ -3,7 +3,7 @@
 # ASCII-only (installer PRE-KILL safety).
 #
 # Usage:
-#   prepare-install-dir.ps1 -InstallDir "C:\Program Files\YesNext\Cloud Honeypot Client"
+#   prepare-install-dir.ps1 -InstallDir "C:\Program Files\Asteria\Asteria Client"
 #   prepare-install-dir.ps1 -InstallDir "..." -KillScript "C:\...\kill-honeypot.ps1"
 
 param(
@@ -27,6 +27,7 @@ function Invoke-KillHelper {
             & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $KillScript -Force
         } catch {}
     }
+    try { & taskkill.exe /F /T /IM asteria-client.exe 2>$null | Out-Null } catch {}
     try { & taskkill.exe /F /T /IM honeypot-client.exe 2>$null | Out-Null } catch {}
 }
 
@@ -71,7 +72,8 @@ function Add-DefenderExclusionFast {
         Add-MpPreference -ExclusionPath $InstallDir -Force -ErrorAction SilentlyContinue
     } catch {}
     try {
-        $exe = Join-Path $InstallDir "honeypot-client.exe"
+        $exe = Join-Path $InstallDir "asteria-client.exe"
+        if (-not (Test-Path $exe)) { $exe = Join-Path $InstallDir "honeypot-client.exe" }
         Add-MpPreference -ExclusionProcess $exe -Force -ErrorAction SilentlyContinue
     } catch {}
 }
@@ -90,6 +92,7 @@ function Move-Aside([string]$path) {
         } catch {
             Start-Sleep -Milliseconds (150 * ($i + 1))
             Stop-ProcessesUnderInstallDir
+            try { & taskkill.exe /F /T /IM asteria-client.exe 2>$null | Out-Null } catch {}
             try { & taskkill.exe /F /T /IM honeypot-client.exe 2>$null | Out-Null } catch {}
         }
     }
@@ -190,9 +193,12 @@ Stop-ProcessesUnderInstallDir
 Add-DefenderExclusionFast
 
 $okInternal = Move-Aside (Join-Path $InstallDir "_internal")
-$okExe = Move-Aside (Join-Path $InstallDir "honeypot-client.exe")
+$okExeA = Move-Aside (Join-Path $InstallDir "asteria-client.exe")
+$okExeH = Move-Aside (Join-Path $InstallDir "honeypot-client.exe")
+$okExe = ($okExeA -or $okExeH)
 
 # Also clear common lock-prone helpers next to exe
+Move-Aside (Join-Path $InstallDir "asteria-client.exe.manifest") | Out-Null
 Move-Aside (Join-Path $InstallDir "honeypot_client.exe.manifest") | Out-Null
 Move-Aside (Join-Path $InstallDir "honeypot-client.exe.manifest") | Out-Null
 

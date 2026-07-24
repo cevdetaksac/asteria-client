@@ -35,17 +35,20 @@ TASK_NAME_MEMORY_RESTART = "CloudHoneypot-MemoryRestart"
 
 def get_client_exe_path():
     """Get the current executable path dynamically"""
-    if hasattr(sys, '_MEIPASS'):
-        # Running as PyInstaller bundle
+    if hasattr(sys, '_MEIPASS') or getattr(sys, "frozen", False):
         return sys.executable
-    else:
-        # Running as script, try to find honeypot-client.exe
+    try:
+        from client_constants import resolve_client_exe_path
+        return resolve_client_exe_path()
+    except Exception:
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        exe_path = os.path.join(script_dir, "honeypot-client.exe")
-        if os.path.exists(exe_path):
-            return exe_path
-        # Fallback to installed location
-        return os.path.join(r"C:\Program Files\YesNext\Cloud Honeypot Client", "honeypot-client.exe")
+        for name in ("asteria-client.exe", "honeypot-client.exe"):
+            exe_path = os.path.join(script_dir, name)
+            if os.path.exists(exe_path):
+                return exe_path
+        return os.path.join(
+            r"C:\Program Files\Asteria\Asteria Client", "asteria-client.exe"
+        )
 
 CLIENT_EXE = get_client_exe_path()
 
@@ -148,7 +151,7 @@ def is_admin():
 # Task configuration registry — all 6 tasks defined declaratively
 TASK_CONFIGS = {
     TASK_NAME_BACKGROUND: {
-        "description": "Cloud Honeypot Client - Background Service",
+        "description": "Asteria Client - Background Service",
         "trigger": "<BootTrigger><Enabled>true</Enabled><Delay>PT30S</Delay></BootTrigger>",
         "principal": "<UserId>S-1-5-18</UserId><RunLevel>HighestAvailable</RunLevel>",
         "args": "--mode=daemon --silent",
@@ -157,7 +160,7 @@ TASK_CONFIGS = {
         "exec_limit": "PT0S", "priority": 7,
     },
     TASK_NAME_TRAY: {
-        "description": "Cloud Honeypot Client - Interactive Tray",
+        "description": "Asteria Client - Interactive Tray",
         "trigger": "<LogonTrigger><Enabled>true</Enabled><Delay>PT5S</Delay></LogonTrigger>",
         # S-1-5-11 = Authenticated Users (includes local Administrator; Users group often does not).
         # Do NOT set LogonType=Group — schtasks rejects it on current Windows
@@ -174,7 +177,7 @@ TASK_CONFIGS = {
         "exec_limit": "PT0S", "priority": 7,
     },
     TASK_NAME_WATCHDOG: {
-        "description": "Cloud Honeypot Client - Watchdog Process Recovery (every 2 min)",
+        "description": "Asteria Client - Watchdog Process Recovery (every 2 min)",
         "trigger": (
             '<CalendarTrigger><StartBoundary>2025-01-01T00:00:00</StartBoundary>'
             '<Enabled>true</Enabled><ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>'
@@ -188,7 +191,7 @@ TASK_CONFIGS = {
         "exec_limit": "PT5M", "priority": 7,
     },
     TASK_NAME_UPDATER: {
-        "description": "Cloud Honeypot Client - Weekly Update Check and Auto-Install",
+        "description": "Asteria Client - Weekly Update Check and Auto-Install",
         "trigger": (
             '<CalendarTrigger><StartBoundary>2025-01-01T02:00:00</StartBoundary>'
             '<Enabled>true</Enabled><ScheduleByWeek><DaysOfWeek><Sunday /></DaysOfWeek>'
@@ -201,7 +204,7 @@ TASK_CONFIGS = {
         "exec_limit": "PT30M", "priority": 7,
     },
     TASK_NAME_SILENT_UPDATER: {
-        "description": "Cloud Honeypot Client - Silent Update Check and Auto-Install (Every 15 minutes)",
+        "description": "Asteria Client - Silent Update Check and Auto-Install (Every 15 minutes)",
         "trigger": (
             '<CalendarTrigger><StartBoundary>2025-01-01T00:05:00</StartBoundary>'
             '<Enabled>true</Enabled><ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>'
@@ -215,7 +218,7 @@ TASK_CONFIGS = {
         "exec_limit": "PT45M", "priority": 6,
     },
     TASK_NAME_MEMORY_RESTART: {
-        "description": "Cloud Honeypot Client - Memory Restart (Every 8 hours for memory cleanup)",
+        "description": "Asteria Client - Memory Restart (Every 8 hours for memory cleanup)",
         "trigger": (
             '<TimeTrigger><Repetition><Interval>PT8H</Interval>'
             '<StopAtDurationEnd>false</StopAtDurationEnd></Repetition>'
@@ -348,7 +351,7 @@ def _build_task_xml(cfg: dict) -> str:
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
     <Date>{datetime.now().isoformat()}</Date>
-    <Author>Cloud Honeypot Client</Author>
+    <Author>Asteria Client</Author>
     <Description>{cfg["description"]}</Description>
   </RegistrationInfo>
   <Triggers>
@@ -515,7 +518,7 @@ def install_all_tasks(include_silent_updater: bool = False) -> bool:
         return False
 
 def main():
-    print("Cloud Honeypot Client - Task Scheduler Setup")
+    print("Asteria Client - Task Scheduler Setup")
     print("=" * 50)
     
     if len(sys.argv) > 1 and sys.argv[1] == "uninstall":
@@ -543,10 +546,10 @@ def main():
     
     if not os.path.exists(CLIENT_EXE):
         print(f"ERROR: Client executable not found: {CLIENT_EXE}")
-        print("Please ensure Cloud Honeypot Client is properly installed")
+        print("Please ensure Asteria Client is properly installed")
         return False
     
-    print("Setting up scheduled tasks for Cloud Honeypot Client...")
+    print("Setting up scheduled tasks for Asteria Client...")
     print(f"Client executable: {CLIENT_EXE}")
     
     success = install_all_tasks(include_silent_updater=True)

@@ -80,7 +80,7 @@ do {
     $round++
     Write-UpLog ("Kill round " + $round)
     try { Get-Process -Name "honeypot-client" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue } catch {}
-    try { & taskkill.exe /F /IM honeypot-client.exe 2>$null | Out-Null } catch {}
+    try { & taskkill.exe /F /IM asteria-client.exe 2>$null | Out-Null } catch {}
     $left = @(Get-Process -Name "honeypot-client" -ErrorAction SilentlyContinue)
     if ($left.Count -eq 0) { break }
     Start-Sleep -Milliseconds 300
@@ -113,7 +113,7 @@ foreach ($n in @("CloudHoneypot-Background","CloudHoneypot-Watchdog","CloudHoney
     try { schtasks /change /tn $n /enable 2>$null | Out-Null } catch {}
 }
 try { schtasks /run /tn "CloudHoneypot-Background" 2>$null | Out-Null } catch {}
-$exe = Join-Path ${env:ProgramFiles} "YesNext\Cloud Honeypot Client\honeypot-client.exe"
+$exe = Join-Path ${env:ProgramFiles} "Asteria\Asteria Client\asteria-client.exe"
 if (Test-Path -LiteralPath $exe) {
     try {
         Start-Process -FilePath $exe -ArgumentList "--mode=daemon","--create-tasks" -WindowStyle Hidden

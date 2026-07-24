@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Cloud Honeypot Client - Helper Functions
+Asteria Client - Helper Functions
 Yardımcı fonksiyonlar ve genel amaçlı utilities
 
 Version: See client_constants.VERSION
@@ -476,10 +476,10 @@ class ClientHelpers:
             try:
                 from client_winproc import run_hidden
                 _rc, out, _ = run_hidden(
-                    ["tasklist", "/FI", "IMAGENAME eq honeypot-client.exe"],
+                    ["tasklist", "/FI", "IMAGENAME eq asteria-client.exe"],
                     timeout=10,
                 )
-                return "honeypot-client.exe" in (out or "")
+                return ("asteria-client.exe" in (out or "").lower() or "honeypot-client.exe" in (out or "").lower())
             except Exception as e:
                 log(f"Process check error: {e}")
                 return False
@@ -503,7 +503,7 @@ class ClientHelpers:
                     # Check command line for daemon mode
                     if proc.info['cmdline']:
                         cmdline = ' '.join(proc.info['cmdline'])
-                        if ('client.py' in cmdline or 'honeypot-client' in cmdline.lower()) and '--mode=daemon' in cmdline:
+                        if ('client.py' in cmdline or 'asteria-client' in cmdline.lower() or 'honeypot-client' in cmdline.lower()) and '--mode=daemon' in cmdline:
                             return True
                             
                 except (psutil.NoSuchProcess, psutil.AccessDenied):

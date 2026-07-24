@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Cloud Honeypot Client — Process Self-Protection (v4.0 Faz 3)
+Asteria Client — Process Self-Protection (v4.0 Faz 3)
 
 Üç katmanlı süreç koruma sistemi:
 

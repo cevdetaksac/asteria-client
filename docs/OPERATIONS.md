@@ -54,7 +54,7 @@ then **Settings → Account link** on each server.
 **Manual reset (any version):** elevated
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File "C:\Program Files\YesNext\Cloud Honeypot Client\scripts\reset-agent-identity.ps1" -AlsoKill
+powershell -NoProfile -ExecutionPolicy Bypass -File "C:\Program Files\YesNext\Asteria Client\scripts\reset-agent-identity.ps1" -AlsoKill
 ```
 
 (If the script is not installed yet, run it from the repo `cloud-client\scripts\`.)

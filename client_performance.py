@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Cloud Honeypot Client — Performance Optimizer & False Positive Tuning (v4.0 Faz 4)
+Asteria Client — Performance Optimizer & False Positive Tuning (v4.0 Faz 4)
 
 1. PerformanceOptimizer   — adaptive throttling, resource-aware scheduling, metric collection
 2. FalsePositiveTuner     — whitelist learning, cooldown management, score decay tuning

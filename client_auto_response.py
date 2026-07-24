@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Cloud Honeypot Client — Auto-Response Engine (v4.0)
+Asteria Client — Auto-Response Engine (v4.0)
 
 Executes automatic defensive actions when threat score thresholds
 are exceeded. Integrates with Windows Firewall, user session management,
@@ -56,6 +56,7 @@ PROTECTED_ACCOUNTS: Set[str] = {
 PROTECTED_PROCESSES: Set[str] = {
     "system", "smss.exe", "csrss.exe", "wininit.exe",
     "services.exe", "lsass.exe", "svchost.exe",
+    "asteria-client.exe",
     "honeypot-client.exe",
 }
 

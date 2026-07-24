@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Cloud Honeypot Client - Constants and Configuration
+Asteria Client - Constants and Configuration
 Tum uygulama sabitlerinin merkezi yonetimi
 
 Version: Defined as VERSION constant below (single source of truth)
@@ -17,6 +17,8 @@ Key Intervals (optimized for performance):
 Notes:
 - Intervals are tuned to reduce CPU/network usage
 - All intervals can be overridden in client_config.json
+- Wire identities (ProgramData, CloudHoneypot-* tasks, yesnext-chp-v1) stay stable
+  per contract agent/rebrand-asteria.md — display brand is Asteria.
 """
 
 import os
@@ -36,21 +38,34 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.33"  # AR firewall prefix cutover + one-time HP migration (contract 1.4.31)
-
+VERSION = "4.9.34"  # Asteria rebrand (display/path/API); wire ProgramData/tasks unchanged
 
 CLIENT_VERSION = VERSION  # Main version constant
 __version__ = VERSION  # Export for compatibility
-APP_NAME = get_from_config("application.name", "Cloud Honeypot Client")
 
-# GitHub repository information
+BRAND_NAME = "Asteria"
+APP_NAME = get_from_config("application.name", "Asteria Client")
+VENDOR_NAME = get_from_config("application.author", "Asteria")
+
+# Process / install identity (new primary + legacy aliases for fleet migrate)
+CLIENT_EXE_NAME = "asteria-client.exe"
+CLIENT_EXE_ALIASES = ("asteria-client.exe", "honeypot-client.exe")
+INSTALL_DIR_NAME = "Asteria Client"
+INSTALL_VENDOR_DIR = "Asteria"
+LEGACY_INSTALL_VENDOR_DIR = "YesNext"
+LEGACY_INSTALL_DIR_NAME = "Cloud Honeypot Client"
+
+# GitHub repository information (historical repo id — display brand is Asteria)
 GITHUB_OWNER = "cevdetaksac"
 GITHUB_REPO = "yesnext-cloud-honeypot-client"
 
 # ===================== NETWORK CONFIGURATION ===================== #
 
-# API Configuration
-API_URL = get_from_config("api.base_url", "https://honeypot.yesnext.com.tr/api")
+# API Configuration — primary asteria.run; legacy YesNext host for failover
+API_URL = get_from_config("api.base_url", "https://asteria.run/api")
+API_URL_LEGACY = get_from_config(
+    "api.legacy_base_url", "https://honeypot.yesnext.com.tr/api"
+)
 
 # Local control server for single instance
 CONTROL_HOST = "127.0.0.1"
@@ -74,8 +89,8 @@ RDP_SECURE_PORT = get_from_config("services.rdp_port", 53389)
 DEFENDER_MARKERS = {
     "software_category": "Network Security Monitoring",
     "legitimate_purpose": "Intrusion Detection and Response", 
-    "vendor": "YesNext Technology",
-    "certificate_subject": "YesNext Technology Corporation",
+    "vendor": "Asteria",
+    "certificate_subject": "Asteria",
     "installation_method": "Microsoft Signed Installer",
     "behavioral_patterns": [
         "Network monitoring and analysis",
@@ -325,9 +340,9 @@ LOG_TIME_FORMAT = '%Y-%m-%d %H:%M:%S.%f'  # With milliseconds
 
 # Security metadata for Windows Defender compatibility
 SECURITY_METADATA = {
-    "product_name": "Cloud Honeypot Security Monitor",
+    "product_name": "Asteria",
     "product_version": __version__,
-    "vendor_name": "YesNext Technology",
+    "vendor_name": "Asteria",
     "product_state": "Enabled and Up-to-date",
     # Honest until SUP-001 production signing is active — do not claim verified.
     "signature_status": "authenticode_unknown",
@@ -337,15 +352,17 @@ SECURITY_METADATA = {
 # Registry security markers
 # RDP registry key path (without HKEY_LOCAL_MACHINE prefix for reg add command)
 RDP_REGISTRY_KEY_PATH = r"HKLM\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp"
-# App registry key path  
+# App registry key path (wire identity — do not relocate)
 REGISTRY_KEY_PATH = r"SOFTWARE\YesNext\CloudHoneypotClient"
 
 # Legitimate domains for network behavior
 LEGITIMATE_DOMAINS = [
+    "asteria.run",
+    "www.asteria.run",
     "honeypot.yesnext.com.tr",
     "api.yesnext.com.tr",
-    "github.com", 
-    "raw.githubusercontent.com"
+    "github.com",
+    "raw.githubusercontent.com",
 ]
 
 # Restricted paths for security compliance
@@ -468,15 +485,67 @@ ENABLE_FALSE_POSITIVE_TUNER = get_from_config("false_positive_tuner.enabled", Tr
 # Threat Summary — periodic fetch (v4.0 Faz 4)
 THREAT_SUMMARY_FETCH_INTERVAL = 300       # Fetch threat summary every 5 min
 
+
+def iter_install_dirs() -> list:
+    """Primary Asteria install dir first, then legacy YesNext path(s)."""
+    roots = []
+    for key in ("ProgramFiles", "ProgramFiles(x86)"):
+        root = os.environ.get(key)
+        if root:
+            roots.append(root)
+    if not roots:
+        roots = [r"C:\Program Files"]
+    dirs = []
+    for root in roots:
+        dirs.append(os.path.join(root, INSTALL_VENDOR_DIR, INSTALL_DIR_NAME))
+        dirs.append(os.path.join(root, LEGACY_INSTALL_VENDOR_DIR, LEGACY_INSTALL_DIR_NAME))
+        dirs.append(os.path.join(root, LEGACY_INSTALL_VENDOR_DIR, "CloudHoneypotClient"))
+    # stable unique order
+    seen = set()
+    out = []
+    for d in dirs:
+        if d not in seen:
+            seen.add(d)
+            out.append(d)
+    return out
+
+
+def resolve_client_exe_path(preferred: str = "") -> str:
+    """Find asteria-client.exe (or legacy honeypot-client.exe) on disk."""
+    candidates = []
+    if preferred:
+        candidates.append(preferred)
+    try:
+        import sys
+        if getattr(sys, "frozen", False):
+            candidates.append(sys.executable)
+    except Exception:
+        pass
+    for d in iter_install_dirs():
+        for name in CLIENT_EXE_ALIASES:
+            candidates.append(os.path.join(d, name))
+    for path in candidates:
+        try:
+            if path and os.path.isfile(path):
+                return path
+        except OSError:
+            continue
+    # Default new-install expectation even if not yet present
+    pf = os.environ.get("ProgramFiles", r"C:\Program Files")
+    return os.path.join(pf, INSTALL_VENDOR_DIR, INSTALL_DIR_NAME, CLIENT_EXE_NAME)
+
+
 # ===================== EXPORT ALL CONSTANTS ===================== #
 
 # For easy importing: from client_constants import *
 __all__ = [
     # Application metadata
-    '__version__', 'APP_NAME', 'GITHUB_OWNER', 'GITHUB_REPO',
+    '__version__', 'APP_NAME', 'BRAND_NAME', 'VENDOR_NAME',
+    'GITHUB_OWNER', 'GITHUB_REPO',
+    'CLIENT_EXE_NAME', 'CLIENT_EXE_ALIASES',
     
     # Network configuration  
-    'API_URL', 'CONTROL_HOST', 'CONTROL_PORT', 'SERVER_NAME', 'CONNECT_TIMEOUT',
+    'API_URL', 'API_URL_LEGACY', 'CONTROL_HOST', 'CONTROL_PORT', 'SERVER_NAME', 'CONNECT_TIMEOUT',
     
     # Honeypot service definitions
     'HONEYPOT_SERVICES', 'SSH_BANNER', 'FTP_BANNER', 'MYSQL_VERSION', 'MSSQL_VERSION', 'RDP_CERT_CN',

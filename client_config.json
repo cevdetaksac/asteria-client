@@ -1,8 +1,8 @@
 {
   "application": {
-    "name": "Cloud Honeypot Client",
-    "version": "4.9.33",
-    "author": "YesNext Technology"
+    "name": "Asteria Client",
+    "version": "4.9.34",
+    "author": "Asteria"
   },
   "language": {
     "selected": "tr",
@@ -33,7 +33,8 @@
     "debug_mode": false
   },
   "api": {
-    "base_url": "https://honeypot.yesnext.com.tr/api",
+    "base_url": "https://asteria.run/api",
+    "legacy_base_url": "https://honeypot.yesnext.com.tr/api",
     "timeout": 30,
     "retry_count": 3,
     "tls_verify": true,

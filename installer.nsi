@@ -1,18 +1,18 @@
-; Cloud Honeypot Client Installer Script
+; Asteria Client Installer Script
 ; Version is injected by build.ps1 from client_constants.py
 !include "MUI2.nsh"
 !include "WinVer.nsh"
 !include "LogicLib.nsh"
 
-Name "Cloud Honeypot Client"
+Name "Asteria Client"
 OutFile "cloud-client-installer.exe"
 
-!define APPNAME "Cloud Honeypot Client"
-!define COMPANYNAME "YesNext"
-!define DESCRIPTION "Cloud Honeypot Client - System Security Monitor"
+!define APPNAME "Asteria Client"
+!define COMPANYNAME "Asteria"
+!define DESCRIPTION "Asteria Client - Deception Cloud Agent"
 !define VERSIONMAJOR 4
 !define VERSIONMINOR 9
-!define VERSIONBUILD 33
+!define VERSIONBUILD 34
 
 InstallDir "$PROGRAMFILES64\${COMPANYNAME}\${APPNAME}"
 
@@ -58,20 +58,20 @@ Var UninstallGateCode
 Function un.RunUninstallGate
     DetailPrint "[PIN] Uninstall authorization gate..."
     StrCpy $UninstallGateCode "2"
-    IfFileExists "$INSTDIR\honeypot-client.exe" 0 unGateMissing
+    IfFileExists "$INSTDIR\asteria-client.exe" 0 unGateMissing
         IfSilent unGateSilent unGateInteractive
         unGateSilent:
-            nsExec::ExecToLog '"$INSTDIR\honeypot-client.exe" --uninstall-gate --silent'
+            nsExec::ExecToLog '"$INSTDIR\asteria-client.exe" --uninstall-gate --silent'
             Pop $UninstallGateCode
             Goto unGateAfterExec
         unGateInteractive:
-            nsExec::ExecToLog '"$INSTDIR\honeypot-client.exe" --uninstall-gate'
+            nsExec::ExecToLog '"$INSTDIR\asteria-client.exe" --uninstall-gate'
             Pop $UninstallGateCode
         unGateAfterExec:
         DetailPrint "[PIN] uninstall-gate exit=$UninstallGateCode"
         Goto unGateDone
     unGateMissing:
-        DetailPrint "[PIN] honeypot-client.exe missing — allowing cleanup"
+        DetailPrint "[PIN] asteria-client.exe missing — allowing cleanup"
         StrCpy $UninstallGateCode "0"
     unGateDone:
 FunctionEnd
@@ -81,7 +81,7 @@ Function un.onInit
     Call un.RunUninstallGate
     ${If} $UninstallGateCode != "0"
         IfSilent unGateAbortQuiet
-            MessageBox MB_ICONSTOP|MB_OK "Cloud Honeypot kaldırma iptal edildi.$\r$\n$\r$\nPIN gerekli veya doğrulama başarısız.$\r$\nPIN unuttuysanız dashboard → GUI PIN sıfırlama kullanın."
+            MessageBox MB_ICONSTOP|MB_OK "Asteria kaldırma iptal edildi.$\r$\n$\r$\nPIN gerekli veya doğrulama başarısız.$\r$\nPIN unuttuysanız dashboard → GUI PIN sıfırlama kullanın."
         unGateAbortQuiet:
         Abort
     ${EndIf}
@@ -110,6 +110,7 @@ Function LaunchAsCurrentUser
             Pop $0
             Goto LaunchAfterKill
     LaunchTaskkill:
+        nsExec::Exec 'taskkill /F /T /IM asteria-client.exe >nul 2>&1'
         nsExec::Exec 'taskkill /F /T /IM honeypot-client.exe >nul 2>&1'
         Pop $0
     LaunchAfterKill:
@@ -120,7 +121,7 @@ Function LaunchAsCurrentUser
     Delete /REBOOTOK "$R9"
 
     ; Single launch — app __init__ installs Task Scheduler when elevated/needed
-    ExecShell "open" "$INSTDIR\honeypot-client.exe" "--show-gui"
+    ExecShell "open" "$INSTDIR\asteria-client.exe" "--show-gui"
 FunctionEnd
 
 ; Simple log function
@@ -311,7 +312,7 @@ Function KillHoneypotProcesses
     DetailPrint "[KILL] Fast shutdown sequence..."
 
     ; Skip full script if nothing to kill (e.g. already stopped in .onInit)
-    nsExec::ExecToStack 'cmd /c (tasklist /FI "IMAGENAME eq honeypot-client.exe" 2>nul | find /I "honeypot-client.exe" >nul) && (echo RUNNING) || (echo STOPPED)'
+    nsExec::ExecToStack 'cmd /c ((tasklist /FI "IMAGENAME eq asteria-client.exe" 2>nul | find /I "asteria-client.exe" >nul) || (tasklist /FI "IMAGENAME eq honeypot-client.exe" 2>nul | find /I "honeypot-client.exe" >nul)) && (echo RUNNING) || (echo STOPPED)'
     Pop $0
     Pop $1
     StrCmp $1 "STOPPED" KillDone
@@ -321,7 +322,7 @@ Function KillHoneypotProcesses
     ; Quick verify: max 3 short polls, cheap taskkill retry (no full script loop)
     StrCpy $2 "0"
     KillWaitLoop:
-        nsExec::ExecToStack 'cmd /c (tasklist /FI "IMAGENAME eq honeypot-client.exe" 2>nul | find /I "honeypot-client.exe" >nul) && (echo RUNNING) || (echo STOPPED)'
+        nsExec::ExecToStack 'cmd /c ((tasklist /FI "IMAGENAME eq asteria-client.exe" 2>nul | find /I "asteria-client.exe" >nul) || (tasklist /FI "IMAGENAME eq honeypot-client.exe" 2>nul | find /I "honeypot-client.exe" >nul)) && (echo RUNNING) || (echo STOPPED)'
         Pop $0
         Pop $1
         StrCmp $1 "STOPPED" KillDone
@@ -329,6 +330,7 @@ Function KillHoneypotProcesses
         IntCmp $2 3 KillForce KillWaitMore KillForce
         KillWaitMore:
             DetailPrint "[KILL] Still running - quick retry $2..."
+            nsExec::Exec 'taskkill /F /T /IM asteria-client.exe >nul 2>&1'
             nsExec::Exec 'taskkill /F /T /IM honeypot-client.exe >nul 2>&1'
             Pop $0
             Sleep 150
@@ -357,6 +359,7 @@ Function un.KillHoneypotProcesses
     DetailPrint "[KILL] Uninstall shutdown..."
     Call un.PreInstallKillFast
 
+    nsExec::Exec 'taskkill /f /t /im "asteria-client.exe" >nul 2>&1'
     nsExec::Exec 'taskkill /f /t /im "honeypot-client.exe" >nul 2>&1'
     Pop $0
     Sleep 300
@@ -392,6 +395,7 @@ Function un.PreInstallKillFast
         nsExec::Exec 'powershell -NoProfile -ExecutionPolicy Bypass -Command "try{$$c=New-Object Net.Sockets.TcpClient;$$iar=$$c.BeginConnect(\"127.0.0.1\",58632,$$null,$$null);$$iar.AsyncWaitHandle.WaitOne(800)|Out-Null;if($$c.Connected){$$b=[Text.Encoding]::ASCII.GetBytes(\"QUIT`n\");$$c.GetStream().Write($$b,0,$$b.Length)};$$c.Close()}catch{}"'
         Pop $0
         Sleep 500
+        nsExec::Exec 'powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process -Filter \"Name=''asteria-client.exe''\" | ForEach-Object { $$_.Terminate() }; taskkill /F /T /IM asteria-client.exe 2>$$null"'
         nsExec::Exec 'powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process -Filter \"Name=''honeypot-client.exe''\" | ForEach-Object { $$_.Terminate() }; taskkill /F /T /IM honeypot-client.exe 2>$$null"'
         Pop $0
         Sleep 400
@@ -421,7 +425,7 @@ FunctionEnd
 ; ===================================================================
 ; MAIN INSTALL SECTION
 ; ===================================================================
-Section "Cloud Honeypot Client (Required)" SEC_MAIN
+Section "Asteria Client (Required)" SEC_MAIN
     SectionIn RO
 
     ; =================================================================
@@ -457,7 +461,7 @@ Section "Cloud Honeypot Client (Required)" SEC_MAIN
     ; Install main files (onedir: exe + _internal next to it)
     !insertmacro LOG "[FILES] Installing application files (onedir)..."
     SetOutPath $INSTDIR
-    File /r "dist\honeypot-client\*.*"
+    File /r "dist\asteria-client\*.*"
     ; Extra config copies at install root (also inside _internal via PyInstaller datas)
     File /oname=client_config.json "dist\client_config.json"
     File /oname=client_lang.json "dist\client_lang.json"
@@ -486,7 +490,7 @@ Section "Cloud Honeypot Client (Required)" SEC_MAIN
     ; Windows Defender exclusions — already attempted in prepare-install-dir;
     ; refresh async (Add-MpPreference can hang under nsExec::Exec).
     !insertmacro LOG "[CONFIG] Refreshing Defender exclusions (async)..."
-    nsExec::Exec 'cmd /c start "" /b powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command "try{Add-MpPreference -ExclusionPath \"$INSTDIR\" -Force -EA SilentlyContinue;Add-MpPreference -ExclusionProcess \"$INSTDIR\honeypot-client.exe\" -Force -EA SilentlyContinue}catch{}"'
+    nsExec::Exec 'cmd /c start "" /b powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command "try{Add-MpPreference -ExclusionPath \"$INSTDIR\" -Force -EA SilentlyContinue;Add-MpPreference -ExclusionProcess \"$INSTDIR\asteria-client.exe\" -Force -EA SilentlyContinue}catch{}"'
 
     ; Create uninstaller
     !insertmacro LOG "[CONFIG] Creating uninstaller..."
@@ -498,7 +502,7 @@ Section "Cloud Honeypot Client (Required)" SEC_MAIN
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}" "UninstallString" "$\"$INSTDIR\Uninstall.exe$\""
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}" "QuietUninstallString" "$\"$INSTDIR\Uninstall.exe$\" /S"
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}" "InstallLocation" "$\"$INSTDIR$\""
-    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}" "DisplayIcon" "$\"$INSTDIR\honeypot-client.exe$\""
+    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}" "DisplayIcon" "$\"$INSTDIR\asteria-client.exe$\""
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}" "Publisher" "${COMPANYNAME}"
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}" "DisplayVersion" "${VERSIONMAJOR}.${VERSIONMINOR}.${VERSIONBUILD}"
     WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}" "VersionMajor" ${VERSIONMAJOR}
@@ -509,12 +513,12 @@ Section "Cloud Honeypot Client (Required)" SEC_MAIN
     ; Start Menu shortcuts (always)
     !insertmacro LOG "[CONFIG] Creating Start Menu shortcuts..."
     CreateDirectory "$SMPROGRAMS\${COMPANYNAME}"
-    CreateShortCut "$SMPROGRAMS\${COMPANYNAME}\Cloud Honeypot Client.lnk" "$INSTDIR\honeypot-client.exe" "--show-gui"
+    CreateShortCut "$SMPROGRAMS\${COMPANYNAME}\Asteria.lnk" "$INSTDIR\asteria-client.exe" "--show-gui"
     CreateShortCut "$SMPROGRAMS\${COMPANYNAME}\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
 
     ; =================================================================
     ; PHASE 4: AUTO-START
-    ; Silent (/S): NEVER start honeypot-client here.
+    ; Silent (/S): NEVER start asteria-client here.
     ; update-and-install.ps1 owns kill → install → --create-tasks → daemon/GUI.
     ; Exec mid-install while helper Start-Process -Wait = classic self-deadlock
     ; (new process locks files / Defender / finalize never returns).
@@ -544,7 +548,7 @@ SectionEnd
 ; Start Menu shortcut is always created in SEC_MAIN.
 Section /o "Desktop Shortcut" SEC_DESKTOP
     !insertmacro LOG "[CONFIG] Creating desktop shortcut..."
-    CreateShortCut "$DESKTOP\Cloud Honeypot Client.lnk" "$INSTDIR\honeypot-client.exe" "--show-gui"
+    CreateShortCut "$DESKTOP\Asteria.lnk" "$INSTDIR\asteria-client.exe" "--show-gui"
 SectionEnd
 
 ; ===================================================================
@@ -552,7 +556,7 @@ SectionEnd
 ; ===================================================================
 Section "Uninstall"
     ; Remove compatibility flag
-    DeleteRegValue HKCU "Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers" "$INSTDIR\honeypot-client.exe"
+    DeleteRegValue HKCU "Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers" "$INSTDIR\asteria-client.exe"
 
     ; Phase 1: Stop everything
     DetailPrint "Phase 1: Stopping all services..."
@@ -561,12 +565,12 @@ Section "Uninstall"
 
     ; Phase 2: Remove Windows Defender exclusions
     DetailPrint "Removing Windows Defender exclusions..."
-    nsExec::ExecToLog 'powershell -ExecutionPolicy Bypass -Command "try { Remove-MpPreference -ExclusionPath \"$INSTDIR\" -Force; Remove-MpPreference -ExclusionProcess \"$INSTDIR\honeypot-client.exe\" -Force } catch { }"'
+    nsExec::ExecToLog 'powershell -ExecutionPolicy Bypass -Command "try { Remove-MpPreference -ExclusionPath \"$INSTDIR\" -Force; Remove-MpPreference -ExclusionProcess \"$INSTDIR\asteria-client.exe\" -Force } catch { }"'
 
     ; Phase 3: Remove shortcuts
     DetailPrint "Removing shortcuts..."
-    Delete "$DESKTOP\Cloud Honeypot Client.lnk"
-    Delete "$SMPROGRAMS\${COMPANYNAME}\Cloud Honeypot Client.lnk"
+    Delete "$DESKTOP\Asteria.lnk"
+    Delete "$SMPROGRAMS\${COMPANYNAME}\Asteria.lnk"
     Delete "$SMPROGRAMS\${COMPANYNAME}\Uninstall.lnk"
     RMDir "$SMPROGRAMS\${COMPANYNAME}"
 
@@ -574,7 +578,7 @@ Section "Uninstall"
     DetailPrint "Removing application files..."
     RMDir /r "$INSTDIR\_internal"
     RMDir /r "$INSTDIR\runtime"
-    Delete "$INSTDIR\honeypot-client.exe"
+    Delete "$INSTDIR\asteria-client.exe"
     Delete "$INSTDIR\client_config.json"
     Delete "$INSTDIR\client_lang.json"
     Delete "$INSTDIR\LICENSE"
@@ -595,11 +599,11 @@ Section "Uninstall"
     nsExec::Exec 'cmd /c del "%APPDATA%\YesNext\CloudHoneypot\watchdog_token.txt" 2>nul'
     nsExec::Exec 'cmd /c del "%ProgramData%\YesNext\CloudHoneypot\watchdog_stop.flag" 2>nul'
 
-    DetailPrint "Cloud Honeypot Client has been completely removed."
+    DetailPrint "Asteria Client has been completely removed."
 SectionEnd
 
 ; Section descriptions
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
-!insertmacro MUI_DESCRIPTION_TEXT ${SEC_MAIN} "Core Cloud Honeypot Client application and configuration files. This component is required."
+!insertmacro MUI_DESCRIPTION_TEXT ${SEC_MAIN} "Core Asteria Client application and configuration files. This component is required."
 !insertmacro MUI_DESCRIPTION_TEXT ${SEC_DESKTOP} "Optional: create a desktop shortcut. Off by default — check to enable."
 !insertmacro MUI_FUNCTION_DESCRIPTION_END

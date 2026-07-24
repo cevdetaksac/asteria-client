@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <assemblyIdentity
-    version="4.9.33.0"
+    version="4.9.34.0"
     processorArchitecture="*"
-    name="YesNext.CloudHoneypotClient.Installer"
+    name="Asteria.Client.Installer"
     type="win32"/>
     
-  <description>Cloud Honeypot Client Installer</description>
+  <description>Asteria Client Installer</description>
   
   <!-- Request Administrator Privileges -->
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">

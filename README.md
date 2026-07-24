@@ -1,8 +1,8 @@
-# Cloud Honeypot Client
+# Asteria Client
 
-**Current Version: 4.9.33**
+**Current Version: 4.9.34**
 
-Windows agent for [YesNext Cloud Honeypot](https://honeypot.yesnext.com.tr): honeypot tunnels, threat response, remote desktop, and firewall sync. Open-source client; cloud/dashboard features may require a license.
+Windows agent for [Asteria](https://asteria.run): honeypot tunnels, threat response, remote desktop, and firewall sync. Open-source client; cloud/dashboard features may require a license.
 
 | | |
 |--|--|
@@ -28,7 +28,7 @@ Windows agent for [YesNext Cloud Honeypot](https://honeypot.yesnext.com.tr): hon
 2. Run as Administrator (`/S` for silent).
 3. Agent registers with the cloud API and stores the token under ProgramData.
 
-API base (default): `https://honeypot.yesnext.com.tr/api`
+API base (default): `https://asteria.run/api` (legacy failover: honeypot.yesnext.com.tr)
 
 ## Build
 

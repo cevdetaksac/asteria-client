@@ -90,6 +90,8 @@ function Resolve-InstallPath {
     $candidates = @()
     if ($Hint) { $candidates += $Hint }
     $candidates += @(
+        "C:\Program Files\Asteria\Asteria Client",
+        "C:\Program Files (x86)\Asteria\Asteria Client",
         "C:\Program Files\YesNext\Cloud Honeypot Client",
         "C:\Program Files (x86)\YesNext\Cloud Honeypot Client",
         "C:\Program Files\YesNext\CloudHoneypotClient",
@@ -99,8 +101,10 @@ function Resolve-InstallPath {
     )
     foreach ($c in $candidates) {
         if (-not $c) { continue }
-        $exe = Join-Path $c "honeypot-client.exe"
-        if (Test-Path $exe) { return $c }
+        foreach ($name in @("asteria-client.exe", "honeypot-client.exe")) {
+            $exe = Join-Path $c $name
+            if (Test-Path $exe) { return $c }
+        }
     }
     return $null
 }
@@ -141,7 +145,7 @@ if (-not $resolved) {
     exit 1
 }
 
-$exePath = Join-Path $resolved "honeypot-client.exe"
+$exePath = Join-Path $resolved "asteria-client.exe"
 Write-Lifecycle -EventType "memory_restart_path" -Reason "resolved" -Severity "info" -Details @{
     install_path = $resolved
     exe = $exePath

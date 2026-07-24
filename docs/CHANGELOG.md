@@ -1,3 +1,7 @@
+# v4.9.34
+- **Asteria rebrand (contract 1.4.30):** Display name, installer, Start Menu, and tray/GUI titles are **Asteria**. Default API host is `https://asteria.run/api` with one-shot failover to legacy `honeypot.yesnext.com.tr`. New installs go to `Program Files\Asteria\Asteria Client\` with `asteria-client.exe` (legacy `honeypot-client.exe` / YesNext path still probed).
+- **Wire identities unchanged:** ProgramData `YesNext\CloudHoneypotClient`, `CloudHoneypot-*` tasks, and `yesnext-chp-v1` signing context stay stable.
+
 # v4.9.33
 - **Asteria firewall wire identity (contract 1.4.31):** New dashboard/auto blocks use `AR-BLOCK-{ip}` and threat intel uses `AR-INTEL-{id}`. Unblock, whitelist enforcement, and full wipe remove AR, HP, HONEYPOT, and CloudHoneypot legacy names.
 - **One-time boot migration:** Existing `HP-BLOCK-*` / `HP-INTEL-*` rules are copied to AR names before legacy deletion, then reported with `sync-rules mode=snapshot`. A ProgramData marker is written only after migration and HTTP 200 sync.

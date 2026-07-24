@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Design tokens for Cloud Honeypot Client v4.4 UI."""
+"""Design tokens for Asteria Client v4.4 UI."""
 
 # Modern dark theme — slate + emerald accent
 COLORS = {

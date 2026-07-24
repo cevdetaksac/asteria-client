@@ -32,7 +32,7 @@ def create_heartbeat_file(app_dir: str) -> str:
     heartbeat_path = os.path.join(app_dir, HEARTBEAT_FILE)
     try:
         heartbeat_data = {
-            "application": "Cloud Honeypot Client",
+            "application": "Asteria Client",
             "version": __version__ if '__version__' in globals() else "1.0.0",
             "pid": os.getpid(),
             "executable": sys.executable if getattr(sys, 'frozen', False) else os.path.abspath(sys.argv[0]),

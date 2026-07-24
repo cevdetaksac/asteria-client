@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Cloud Honeypot Client — Windows Event Log Watcher (v4.0)
+Asteria Client — Windows Event Log Watcher (v4.0)
 
 Real-time monitoring of Windows Security, System, Application and RDP
 event logs using win32evtlog push-based subscriptions (EvtSubscribe).

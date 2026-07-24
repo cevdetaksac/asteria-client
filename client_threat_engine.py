@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Cloud Honeypot Client — Threat Detection Engine (v4.0)
+Asteria Client — Threat Detection Engine (v4.0)
 
 Receives structured events from EventLogWatcher and performs:
   1. Enrichment   — add context (IP history, service info)

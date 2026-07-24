@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Cloud Honeypot Client — System Health Monitor (v4.0 Faz 3)
+Asteria Client — System Health Monitor (v4.0 Faz 3)
 
 psutil ile sistem metriklerini toplar, hareketli ortalama (z-score)
 bazlı anomali tespiti yapar ve sonuçları ThreatEngine'e besler.

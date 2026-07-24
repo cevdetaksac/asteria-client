@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Cloud Honeypot Client — main application orchestrator.
+"""Asteria Client — main application orchestrator.
 
 Coordinates GUI/tray display, API communication, honeypot service management,
 RDP operations, and background health monitoring. Runs in two modes:
@@ -3562,7 +3562,7 @@ if __name__ == "__main__":
         pass
 
     # Parse arguments first to check for non-GUI modes
-    parser = argparse.ArgumentParser(add_help=True, description="Cloud Honeypot Client - Advanced Honeypot Management System")
+    parser = argparse.ArgumentParser(add_help=True, description="Asteria Client - Advanced Honeypot Management System")
     
     # Simplified mode system
     parser.add_argument("--mode", choices=["daemon", "tray", "watchdog", "gui", "frontend", "guardian"], help="Operation mode: daemon (SYSTEM motor), guardian (watchdog service), tray/gui/frontend (UI), watchdog. Default is GUI mode.")

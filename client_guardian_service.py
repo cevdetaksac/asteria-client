@@ -5,7 +5,7 @@ daemon (CloudHoneypot-Background task / :58632 motor_ok) stays alive.
 
 Cross-watchdog: motor also ensures this service exists and is running.
 
-Entry: honeypot-client.exe --mode=guardian
+Entry: asteria-client.exe --mode=guardian (legacy: honeypot-client.exe)
 """
 
 from __future__ import annotations
@@ -18,9 +18,9 @@ import time
 
 CREATE_NO_WINDOW = 0x08000000
 SERVICE_NAME = "CloudHoneypotGuardian"
-SERVICE_DISPLAY = "Cloud Honeypot Guardian"
+SERVICE_DISPLAY = "Asteria Guardian"
 SERVICE_DESC = (
-    "YesNext Cloud Honeypot watchdog — keeps the SYSTEM security motor alive. "
+    "Asteria watchdog — keeps the SYSTEM security motor alive. "
     "Does not replace the motor process."
 )
 
@@ -54,6 +54,7 @@ def _exe_path() -> str:
         return sys.executable
     return os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
+        "asteria-client.exe",
         "honeypot-client.exe",
     )
 

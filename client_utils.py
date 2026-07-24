@@ -1,5 +1,5 @@
 """
-Cloud Honeypot Client - Utilities Module
+Asteria Client - Utilities Module
 Yardımcı fonksiyonlar ve araçlar modülü
 """
 
@@ -720,9 +720,9 @@ CONFIG_FILE = get_config_file_path()
 # Default application configuration — single source of truth
 DEFAULT_CONFIG: dict = {
     "application": {
-        "name": "Cloud Honeypot Client",
+        "name": "Asteria Client",
         "version": "0.0.0",
-        "author": "YesNext Technology"
+        "author": "Asteria"
     },
     "language": {
         "selected": "en",
@@ -749,7 +749,8 @@ DEFAULT_CONFIG: dict = {
         "debug_mode": False
     },
     "api": {
-        "base_url": "https://honeypot.yesnext.com.tr/api",
+        "base_url": "https://asteria.run/api",
+        "legacy_base_url": "https://honeypot.yesnext.com.tr/api",
         "timeout": 30,
         "retry_count": 3
     },

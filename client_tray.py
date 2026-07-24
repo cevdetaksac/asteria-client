@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-CLIENT TRAY MODULE — System tray integration for Cloud Honeypot Client.
+CLIENT TRAY MODULE — System tray integration for Asteria Client.
 Version: See client_constants.VERSION
 
 Provides:

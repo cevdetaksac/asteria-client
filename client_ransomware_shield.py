@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Cloud Honeypot Client — Ransomware Shield (v4.0 Faz 3)
+Asteria Client — Ransomware Shield (v4.0 Faz 3)
 
 Çok katmanlı ransomware algılama ve savunma sistemi.
 
@@ -88,7 +88,7 @@ _LEGACY_CANARY_FILES = [
     ("recovery_keys.txt", 1024),
 ]
 
-CANARY_README_CONTENT = """Cloud Honeypot Client — koruma dosyalari (yonetici)
+CANARY_README_CONTENT = """Asteria Client — koruma dosyalari (yonetici)
 
 Bu dosyalar arka planda ransomware erken tespiti icindir.
 Explorer'da gizli + sistem ozelliklidir; normal kullanicida gorunmez.
@@ -100,7 +100,7 @@ _QUARANTINE_FILE = "ransomware_quarantine.json"
 _PROTECTED_IMAGES = {
     "system", "smss.exe", "csrss.exe", "wininit.exe",
     "services.exe", "lsass.exe", "svchost.exe", "explorer.exe",
-    "honeypot-client.exe", "winlogon.exe", "dwm.exe",
+    "asteria-client.exe", "honeypot-client.exe", "winlogon.exe", "dwm.exe",
     # Benign scanners / sync / indexers — never IFEO-kill (UX + false positive)
     "searchindexer.exe", "searchprotocolhost.exe", "searchfilterhost.exe",
     "msmpeng.exe", "mpcmdrun.exe", "nissrv.exe", "securityhealthservice.exe",

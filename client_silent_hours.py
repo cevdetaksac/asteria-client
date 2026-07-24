@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Cloud Honeypot Client — Silent Hours Guard (v4.0)
+Asteria Client — Silent Hours Guard (v4.0)
 
 Mesai dışı saatlerde beyaz listede olmayan tüm başarılı girişleri
 otomatik olarak engeller.

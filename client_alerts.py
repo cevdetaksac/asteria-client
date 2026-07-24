@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Cloud Honeypot Client — Alert Pipeline (v4.0)
+Asteria Client — Alert Pipeline (v4.0)
 
 Receives alerts from ThreatEngine and routes them through appropriate
 notification channels based on severity:

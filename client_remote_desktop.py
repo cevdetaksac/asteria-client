@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Cloud Honeypot Client — Remote Desktop Screen Mirror
+Asteria Client — Remote Desktop Screen Mirror
 
 Dashboard “Uzak Masaüstü” — akıcı WebSocket + HTTP fallback.
 
