@@ -66,29 +66,26 @@ def has_interactive_user_session(query_stdout: Optional[str] = None) -> bool:
     """True if any Active console/RDP session with id > 0 exists (not services/Session 0).
 
     Locale-aware: EN Active, TR Aktif, DE Aktiv, ES Activo, IT Attivo, …
+
+    Note: ``query session`` often returns exit code 1 on Windows even when it
+    printed a valid Active console line — never discard stdout solely on rc.
     """
     try:
         from client_winproc import run_hidden
         stdout = query_stdout
         if stdout is None:
             rc, out, _ = run_hidden(["query", "session"], timeout=10)
-            if rc != 0:
-                # Fallback: query user (also localized)
-                rc, out, _ = run_hidden(["query", "user"], timeout=10)
-                if rc != 0:
-                    return False
             stdout = out or ""
-        if _stdout_has_active_interactive(stdout):
-            return True
-        # Second source if first was session-only and empty
-        if query_stdout is None:
-            try:
-                rc2, out2, _ = run_hidden(["query", "user"], timeout=8)
-                if rc2 == 0 and _stdout_has_active_interactive(out2 or ""):
-                    return True
-            except Exception:
-                pass
-        return False
+            # Prefer parsing session output even when rc != 0 (common on Win10/11)
+            if _stdout_has_active_interactive(stdout):
+                return True
+            # Fallback: query user (also localized)
+            rc2, out2, _ = run_hidden(["query", "user"], timeout=10)
+            stdout = out2 or ""
+            if _stdout_has_active_interactive(stdout):
+                return True
+            return False
+        return bool(_stdout_has_active_interactive(stdout))
     except Exception:
         return False
 
@@ -143,8 +140,7 @@ def get_active_interactive_session_id() -> int:
     try:
         from client_winproc import run_hidden
         rc, out, _ = run_hidden(["query", "session"], timeout=10)
-        if rc != 0:
-            return 0
+        # query session often exits 1 with valid stdout — still parse it
         for line in (out or "").splitlines()[1:]:
             low = line.lower()
             if "services" in low or "servis" in low:
@@ -157,6 +153,8 @@ def get_active_interactive_session_id() -> int:
                     return sid
             except (StopIteration, ValueError, IndexError):
                 continue
+        if rc != 0:
+            return 0
     except Exception:
         pass
     return 0

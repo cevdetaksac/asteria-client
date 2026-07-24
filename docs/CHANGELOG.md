@@ -1,3 +1,6 @@
+# v4.9.30
+- **Critical tray auto-start:** Tray task XML dropped invalid LogonType=Group (schtasks reject left tray_task=false). install_task no longer delete-then-create. has_interactive_user_session parses query session stdout even when exit code is 1 (was blocking watchdog/daemon tray launch).
+
 # v4.9.29
 - **Tray stay-alive:** Supervised pystray loop + TaskbarCreated respawn; GUI health restarts dead tray thread; --mode=watchdog relaunches tray when logon has no frontend; close-to-tray no longer exits during tray startup; silent-update session match includes Aktif.
 

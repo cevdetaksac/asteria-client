@@ -159,10 +159,11 @@ TASK_CONFIGS = {
     TASK_NAME_TRAY: {
         "description": "Cloud Honeypot Client - Interactive Tray",
         "trigger": "<LogonTrigger><Enabled>true</Enabled><Delay>PT5S</Delay></LogonTrigger>",
-        # S-1-5-11 = Authenticated Users (includes local Administrator; Users group often does not)
+        # S-1-5-11 = Authenticated Users (includes local Administrator; Users group often does not).
+        # Do NOT set LogonType=Group — schtasks rejects it on current Windows
+        # ("Task XML ... incorrect value (LogonType:Group)") and leaves Tray missing.
         "principal": (
             "<GroupId>S-1-5-11</GroupId>"
-            "<LogonType>Group</LogonType>"
             "<RunLevel>HighestAvailable</RunLevel>"
         ),
         # Logon → tray icon (not forced window); onboarding still forces GUI via should_force_gui_visible
@@ -393,7 +394,11 @@ def create_silent_updater_task_xml(): return create_task_xml(TASK_NAME_SILENT_UP
 def create_memory_restart_task_xml(): return create_task_xml(TASK_NAME_MEMORY_RESTART)
 
 def install_task(task_name: str, xml_content: str) -> bool:
-    """Install a scheduled task using schtasks command"""
+    """Install a scheduled task using schtasks command.
+
+    Uses /F overwrite only — never delete-then-create (a failed create after
+    delete left CloudHoneypot-Tray missing permanently on this host).
+    """
     try:
         print(f"Installing task: {task_name}")
         
@@ -403,16 +408,8 @@ def install_task(task_name: str, xml_content: str) -> bool:
         with open(temp_xml, 'w', encoding='utf-16') as f:
             f.write(xml_content)
         
-        # Delete existing task if it exists
-        try:
-            subprocess.run([
-                'schtasks', '/Delete', '/TN', task_name, '/F'
-            ], capture_output=True, check=False, encoding='utf-8', errors='ignore',
-            creationflags=subprocess.CREATE_NO_WINDOW)
-        except:
-            pass
-        
-        # Create new task
+        # Create/overwrite in one step (/F). Do NOT pre-delete — if create fails
+        # the previous working task must remain.
         result = subprocess.run([
             'schtasks', '/Create', '/TN', task_name, '/XML', temp_xml, '/F'
         ], capture_output=True, text=True, encoding='utf-8', errors='ignore',
@@ -421,19 +418,21 @@ def install_task(task_name: str, xml_content: str) -> bool:
         # Clean up temporary file
         try:
             os.remove(temp_xml)
-        except:
+        except Exception:
             pass
         
         if result.returncode == 0:
             print(f"[OK] Task {task_name} installed successfully")
             return True
         else:
-            print(f"[X] Failed to install task {task_name}: {result.stderr}")
+            err = (result.stderr or result.stdout or "").strip()
+            print(f"[X] Failed to install task {task_name}: {err}")
             return False
             
     except Exception as e:
         print(f"[X] Error installing task {task_name}: {e}")
         return False
+
 
 def uninstall_task(task_name: str) -> bool:
     """Uninstall a scheduled task"""

@@ -36,7 +36,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.29"  # Tray stay-alive: supervised icon, TaskbarCreated, watchdog relaunch
+VERSION = "4.9.30"  # Fix Tray task XML + query session rc=1 (tray auto-revive)
 
 
 CLIENT_VERSION = VERSION  # Main version constant
