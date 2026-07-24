@@ -637,7 +637,8 @@ if (-not $Silent) {
     if (-not $wantTray) {
         try {
             $q = & query session 2>$null | Out-String
-            if ($q -match '(?i)(console|rdp-tcp).*\s+Active') {
+            # EN Active / TR Aktif / Disc(onnected) must not match
+            if ($q -match '(?i)(console|rdp-tcp).*\s+(Active|Aktif)\b') {
                 $wantTray = $true
             }
         } catch {}

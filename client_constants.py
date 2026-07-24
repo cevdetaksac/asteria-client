@@ -36,7 +36,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.28"  # Hardware-bound token (MAC+MachineGuid fingerprint); clone split
+VERSION = "4.9.29"  # Tray stay-alive: supervised icon, TaskbarCreated, watchdog relaunch
 
 
 CLIENT_VERSION = VERSION  # Main version constant

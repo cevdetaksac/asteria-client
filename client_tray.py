@@ -122,6 +122,9 @@ class TrayManager:
         self.tray_thread = None
         self.show_callback = None
         self.minimize_callback = None
+        self._tray_stop = False
+        self._tray_starting = False
+        self._taskbar_watcher_stop = None
         
 
     def is_protection_active(self) -> bool:
@@ -392,11 +395,100 @@ class TrayManager:
         self.app_instance.graceful_exit(0)
     
     def tray_loop(self):
-        """Main tray loop - runs in background thread"""
-        if not TRY_TRAY: return
-        # Tray ikonu oluştur
+        """Supervised tray loop — restarts icon after crash or explorer TaskbarCreated."""
+        if not TRY_TRAY:
+            return
+        import time
+
+        while not self._tray_stop:
+            if getattr(self.app_instance, "_exiting", False):
+                break
+            try:
+                self._run_tray_icon_once()
+            except Exception as e:
+                log(f"[TRAY] icon loop error: {e}")
+            self.tray_icon = None
+            if self._tray_stop or getattr(self.app_instance, "_exiting", False):
+                break
+            log("[TRAY] Icon loop ended — restarting in 1.5s (explorer restart / crash recovery)")
+            time.sleep(1.5)
+
+    def _start_taskbar_created_watcher(self, icon) -> None:
+        """When explorer.exe restarts, Windows broadcasts TaskbarCreated — stop icon to respawn."""
+        stop = threading.Event()
+        self._taskbar_watcher_stop = stop
+
+        def _watch():
+            hwnd = None
+            try:
+                import time as _time
+                try:
+                    import win32gui
+                    import win32con
+                    import win32api
+                except ImportError:
+                    return
+
+                msg_id = win32gui.RegisterWindowMessage("TaskbarCreated")
+                if not msg_id:
+                    return
+
+                class_name = f"CloudHoneypotTrayTB{os.getpid()}"
+
+                def _wndproc(h, msg, wparam, lparam):
+                    if msg == msg_id:
+                        log("[TRAY] TaskbarCreated — restarting NotifyIcon")
+                        try:
+                            icon.stop()
+                        except Exception:
+                            pass
+                        stop.set()
+                        return 0
+                    return win32gui.DefWindowProc(h, msg, wparam, lparam)
+
+                # Keep callback alive for the window lifetime
+                self._tb_wndproc = _wndproc
+                wc = win32gui.WNDCLASS()
+                wc.lpfnWndProc = _wndproc
+                wc.hInstance = win32api.GetModuleHandle(None)
+                wc.lpszClassName = class_name
+                try:
+                    win32gui.RegisterClass(wc)
+                except Exception:
+                    # Already registered in this process from a prior icon cycle
+                    pass
+                hwnd = win32gui.CreateWindowEx(
+                    0,
+                    class_name,
+                    "CHPTrayWatch",
+                    0,
+                    0, 0, 0, 0,
+                    win32con.HWND_MESSAGE,
+                    0,
+                    wc.hInstance,
+                    None,
+                )
+                while not stop.is_set() and not self._tray_stop:
+                    # Pump with timeout so we can exit
+                    if win32gui.PumpWaitingMessages() == 0:
+                        _time.sleep(0.25)
+            except Exception as e:
+                log(f"[TRAY] TaskbarCreated watcher error: {e}")
+            finally:
+                if hwnd:
+                    try:
+                        import win32gui
+                        win32gui.DestroyWindow(hwnd)
+                    except Exception:
+                        pass
+
+        threading.Thread(target=_watch, name="TrayTaskbarWatch", daemon=True).start()
+
+    def _run_tray_icon_once(self):
+        """Create and run one pystray Icon until stop/crash/TaskbarCreated."""
         icon = pystray.Icon("honeypot_client")
         self.tray_icon = icon
+        self._tray_starting = False
         icon.title = f"{self.t('app_title')} v{__version__}"
         icon.icon = tray_make_image(self.app_instance.state.get("running", False))
         
@@ -501,17 +593,47 @@ class TrayManager:
                 TrayItem(self.t('tray_show'), lambda: self.show_window()),
                 TrayItem(self.t('tray_exit'), lambda: self.exit_app())
             )
-            
-        # Tray ikonunu başlat    
-        icon.run()
+
+        self._start_taskbar_created_watcher(icon)
+        try:
+            icon.run()
+        finally:
+            try:
+                if self._taskbar_watcher_stop:
+                    self._taskbar_watcher_stop.set()
+            except Exception:
+                pass
+
+    def ensure_tray_alive(self) -> bool:
+        """Restart tray thread if it died while GUI process still runs."""
+        if not TRY_TRAY:
+            return False
+        if self._tray_stop or getattr(self.app_instance, "_exiting", False):
+            return False
+        alive = bool(self.tray_thread and self.tray_thread.is_alive())
+        if alive and self.tray_icon:
+            # Soft re-assert visibility (helps some explorer races without full restart)
+            try:
+                self.tray_icon.visible = True
+            except Exception:
+                pass
+            return True
+        if alive:
+            return True
+        log("[TRAY] Tray thread dead while GUI alive — restarting")
+        return self.start_tray_system()
 
     def start_tray_system(self):
-        """Start tray system in background thread"""
+        """Start tray system in background thread (idempotent if already alive)."""
         if not TRY_TRAY:
             log("Tray support not available")
             return False
+        if self.tray_thread and self.tray_thread.is_alive():
+            return True
             
         try:
+            self._tray_stop = False
+            self._tray_starting = True
             self.tray_thread = threading.Thread(
                 target=self.tray_loop, 
                 daemon=True,
@@ -521,12 +643,19 @@ class TrayManager:
             log("Tray system started")
             return True
         except Exception as e:
+            self._tray_starting = False
             log(f"Tray system start error: {e}")
             return False
     
     def stop_tray_system(self):
         """Stop tray system"""
         try:
+            self._tray_stop = True
+            try:
+                if self._taskbar_watcher_stop:
+                    self._taskbar_watcher_stop.set()
+            except Exception:
+                pass
             if self.tray_icon:
                 self.tray_icon.stop()
             log("Tray system stopped")
@@ -580,25 +709,39 @@ class TrayManager:
                 log(f"Tray balloon fallback error: {ex}")
     
     def on_window_close(self):
-        """Handle main window close event"""
+        """Handle main window close - prefer tray minimize; never exit mid-startup."""
         try:
-            # Tray ikonu varsa minimize et
-            if TRY_TRAY and self.tray_icon:
+            tray_ready = bool(TRY_TRAY and (
+                self.tray_icon
+                or self._tray_starting
+                or (self.tray_thread and self.tray_thread.is_alive())
+            ))
+            if tray_ready:
                 if self.minimize_callback:
                     self.minimize_callback()
-            # Tray yoksa normal kapat
-            else:
-                if self.app_instance.state.get("running", False):
-                    try:
-                        import tkinter.messagebox as messagebox
-                        messagebox.showwarning(self.t("warn"), self.t("tray_warn_stop_first"))
-                    except:
-                        pass
-                    return
-                    
-                if hasattr(self.app_instance, 'root') and self.app_instance.root:
-                    self.app_instance.root.destroy()
-                    
-                self.app_instance.graceful_exit(0)
+                else:
+                    self.minimize_to_tray()
+                return
+
+            if TRY_TRAY:
+                import time
+                for _ in range(10):
+                    time.sleep(0.1)
+                    if self.tray_icon or (self.tray_thread and self.tray_thread.is_alive()):
+                        self.minimize_to_tray()
+                        return
+
+            if self.app_instance.state.get("running", False):
+                try:
+                    import tkinter.messagebox as messagebox
+                    messagebox.showwarning(self.t("warn"), self.t("tray_warn_stop_first"))
+                except Exception:
+                    pass
+                return
+
+            if hasattr(self.app_instance, "root") and self.app_instance.root:
+                self.app_instance.root.destroy()
+
+            self.app_instance.graceful_exit(0)
         except Exception as e:
             log(f"Window close error: {e}")

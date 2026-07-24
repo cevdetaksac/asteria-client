@@ -1,15 +1,18 @@
+# v4.9.29
+- **Tray stay-alive:** Supervised pystray loop + TaskbarCreated respawn; GUI health restarts dead tray thread; --mode=watchdog relaunches tray when logon has no frontend; close-to-tray no longer exits during tray startup; silent-update session match includes Aktif.
+
 # v4.9.28
-- **Critical — clone/shared token:** `/register` `machine_id` = SHA-256(MachineGuid + NIC MACs + SMBIOS + vol serial). CHP2 `token.dat` + `device_binding.json` bind identity; fingerprint mismatch ? quarantine + re-enroll. One-time schema v2 hardware rebind so VM clones that shared one UUID each get a unique Client (re-link Account). Ops: `scripts/reset-agent-identity.ps1`. Contract **1.4.26**.
+- **Critical ï¿½ clone/shared token:** `/register` `machine_id` = SHA-256(MachineGuid + NIC MACs + SMBIOS + vol serial). CHP2 `token.dat` + `device_binding.json` bind identity; fingerprint mismatch ? quarantine + re-enroll. One-time schema v2 hardware rebind so VM clones that shared one UUID each get a unique Client (re-link Account). Ops: `scripts/reset-agent-identity.ps1`. Contract **1.4.26**.
 
 # v4.9.27
 - **Installer FileInUse (`memory_restart.ps1`):** Relocate `scripts\` before extract; kill PowerShell locking install helpers; install `memory_restart.ps1` via lock-safe copy (`install-memory-restart.ps1`) instead of NSIS `File` (no Abort/Retry/Ignore). `SetOverwrite try` on main extract for residual handle races.
 
 # v4.9.26
 - **Winlogon on dashboard:** Health/`list_sessions` always offers a `pre_logon` "Logon / Lock screen" sibling (even when a console user is Active). `remote_stream_start` accepts `prefer`/`desktop`/`pre_logon` and attaches named Winlogon before OpenInputDesktop. Hello capabilities advertise `winlogon`/`pre_logon`.
-- **self_update download completion:** Installer download succeeds only when transfer is complete (Content-Length match + PE MZ + min size) — never "timeout expired = done". Stall timeout only detects idle sockets. Up to 5 retries with backoff; then launch installer. Richer `detail` on failure.
+- **self_update download completion:** Installer download succeeds only when transfer is complete (Content-Length match + PE MZ + min size) ï¿½ never "timeout expired = done". Stall timeout only detects idle sockets. Up to 5 retries with backoff; then launch installer. Richer `detail` on failure.
 - **Server users (contract 1.4.22):** `list_local_users` defaults to `include_disabled=true` with `status` / `protected` / `can_enable` / `can_disable` / `counts`. `enable_account` / `disable_account` return refreshed `data.user` snapshot for cloud toggle UI.
 - **GUI defense mode UX:** Security Layers banner + action buttons refresh with active policy (no stale "Yaln?z bildir" after switching to Balanced).
-- **Account link Settings:** Ayarlar › Hesap baðlantýsý (durum, baðla, baðlantýyý kes, Sunucularým). In-app unlink via POST /api/agent/unlink-account (contract 1.4.23).
+- **Account link Settings:** Ayarlar ï¿½ Hesap baï¿½lantï¿½sï¿½ (durum, baï¿½la, baï¿½lantï¿½yï¿½ kes, Sunucularï¿½m). In-app unlink via POST /api/agent/unlink-account (contract 1.4.23).
 
 # v4.9.25
 - **Source packing fix:** Stop copying `client_*.py` into `_internal` via PyInstaller `datas=` (they were world-readable source). Modules go into PYZ as bytecode via Analysis/`hiddenimports` only. Build fails if any `client_*.py` leaks into onedir.

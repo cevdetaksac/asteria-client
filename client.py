@@ -1410,12 +1410,19 @@ class CloudHoneypotClient:
             return None
 
     def check_gui_health(self):
-        """Periodic GUI health check — tray icon sync & session monitoring"""
+        """Periodic GUI health check — tray icon sync, tray thread revive & session monitoring"""
         if not self.root: return
         try:
             self.root.winfo_exists()
             self.gui_health['update_count'] += 1
             
+            # Tray must stay alive while user session GUI process is up
+            if hasattr(self, 'tray_manager') and self.tray_manager:
+                try:
+                    self.tray_manager.ensure_tray_alive()
+                except Exception as e:
+                    log(f"[GUI_HEALTH] tray ensure failed: {e}")
+
             # Tray icon update — only if service state changed
             if hasattr(self, 'tray_manager'):
                 current_state = len(self.service_manager.running_services) > 0
@@ -2826,6 +2833,7 @@ class CloudHoneypotClient:
         """Merkezi temiz çıkış — tüm kaynakları serbest bırakır"""
         try:
             log(f"[EXIT] Graceful exit başlatılıyor (code={code})")
+            self._exiting = True
             self._quit_protect_until = 0.0
             # Presence goodbye before tearing down WS (daemon motor only)
             if getattr(self, "_is_daemon_motor", False) and goodbye_reason:
@@ -3522,6 +3530,12 @@ class CloudHoneypotClient:
 
             def _show_from_event():
                 try:
+                    # Second launch / handoff — also revive a dead tray icon
+                    if hasattr(self, "tray_manager") and self.tray_manager:
+                        try:
+                            self.tray_manager.ensure_tray_alive()
+                        except Exception:
+                            pass
                     self._gui_safe(self.show_cb)
                 except Exception:
                     try:
@@ -4110,6 +4124,19 @@ if __name__ == "__main__":
                     )
             else:
                 log("SYSTEM motor healthy - watchdog check passed")
+
+            # Logon session without tray/GUI frontend → resurrect tray (same as --watchdog)
+            try:
+                from client_helpers import (
+                    has_interactive_user_session,
+                    interactive_frontend_running,
+                    launch_interactive_tray_gui,
+                )
+                if has_interactive_user_session() and not interactive_frontend_running():
+                    log("Watchdog mode: interactive session without tray — launching Tray task")
+                    launch_interactive_tray_gui()
+            except Exception as e:
+                log(f"Watchdog mode tray check failed: {e}")
 
             try:
                 flush_queue_to_api(log_func=log)
