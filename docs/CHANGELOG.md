@@ -1,3 +1,6 @@
+# v4.9.31
+- **GUI card hover/click:** Protection chips + stat cards ignore Leave when pointer stays on child labels; bind click/hover to full widget tree (Ransomware Shield / AKTIF text works).
+
 # v4.9.30
 - **Critical tray auto-start:** Tray task XML dropped invalid LogonType=Group (schtasks reject left tray_task=false). install_task no longer delete-then-create. has_interactive_user_session parses query session stdout even when exit code is 1 (was blocking watchdog/daemon tray launch).
 

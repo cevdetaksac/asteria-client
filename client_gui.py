@@ -70,6 +70,75 @@ class ModernGUI:
         except Exception:
             pass
 
+    @staticmethod
+    def _widget_is_under(widget, ancestor) -> bool:
+        """True if widget is ancestor or a descendant (Tk parent chain)."""
+        w = widget
+        guard = 0
+        while w is not None and guard < 64:
+            if w == ancestor:
+                return True
+            w = getattr(w, "master", None)
+            guard += 1
+        return False
+
+    def _iter_widget_tree(self, root_widget):
+        yield root_widget
+        try:
+            children = list(root_widget.winfo_children())
+        except Exception:
+            children = []
+        for child in children:
+            yield from self._iter_widget_tree(child)
+
+    def _bind_hover_click(
+        self,
+        root_widget,
+        *,
+        on_click=None,
+        on_enter=None,
+        on_leave=None,
+        cursor: str = "hand2",
+    ) -> None:
+        """Make a card/chip fully clickable — including labels inside it.
+
+        Tk/CustomTkinter fires Leave when the pointer moves onto a child label,
+        which breaks border hover. We ignore Leave while the pointer is still
+        inside the root widget tree, and bind click/hover to all descendants.
+        """
+        def _enter(_event=None):
+            if on_enter:
+                on_enter()
+
+        def _leave(_event=None):
+            try:
+                x, y = root_widget.winfo_pointerxy()
+                under = root_widget.winfo_containing(x, y)
+                if under is not None and self._widget_is_under(under, root_widget):
+                    return
+            except Exception:
+                pass
+            if on_leave:
+                on_leave()
+
+        def _click(_event=None):
+            if on_click:
+                on_click()
+            return "break"
+
+        for w in self._iter_widget_tree(root_widget):
+            if on_enter is not None:
+                w.bind("<Enter>", _enter, add="+")
+            if on_leave is not None:
+                w.bind("<Leave>", _leave, add="+")
+            if on_click is not None:
+                w.bind("<Button-1>", _click, add="+")
+            if cursor:
+                try:
+                    w.configure(cursor=cursor)
+                except Exception:
+                    pass
+
     # ═══════════════════════════════════════════════════════════════
     #  ANA BUILD
     # ═══════════════════════════════════════════════════════════════
@@ -446,22 +515,20 @@ class ModernGUI:
         def _activate(_event=None):
             self._show_page(page_id)
 
-        def _on_enter(_event=None):
+        def _on_enter():
             if self._active_page != page_id:
                 row.configure(fg_color=COLORS["nav_hover"])
 
-        def _on_leave(_event=None):
+        def _on_leave():
             if self._active_page != page_id:
                 row.configure(fg_color="transparent")
 
-        for widget in (row, inner, icon_col, icon_lbl, text_lbl):
-            widget.bind("<Button-1>", _activate)
-            widget.bind("<Enter>", _on_enter)
-            widget.bind("<Leave>", _on_leave)
-            try:
-                widget.configure(cursor="hand2")
-            except Exception:
-                pass
+        self._bind_hover_click(
+            row,
+            on_click=_activate,
+            on_enter=_on_enter,
+            on_leave=_on_leave,
+        )
 
         return {"frame": row, "icon": icon_lbl, "text": text_lbl, "page_id": page_id}
 
@@ -2553,16 +2620,12 @@ class ModernGUI:
             )
             status_lbl.pack(anchor="w")
 
-            def _bind_click(widget, fn=handler, frame=chip):
-                widget.bind("<Button-1>", lambda _e: fn())
-                frame.bind(
-                    "<Enter>", lambda _e: frame.configure(border_color=COLORS["blue"])
-                )
-                frame.bind(
-                    "<Leave>", lambda _e: frame.configure(border_color=COLORS["border"])
-                )
-            for w in (chip, inner, text_col, status_lbl):
-                _bind_click(w)
+            self._bind_hover_click(
+                chip,
+                on_click=handler,
+                on_enter=lambda frame=chip: frame.configure(border_color=COLORS["blue"]),
+                on_leave=lambda frame=chip: frame.configure(border_color=COLORS["border"]),
+            )
 
             self._prot_chips[key] = {"frame": chip, "status": status_lbl}
 
@@ -5139,17 +5202,6 @@ class ModernGUI:
         card = ctk.CTkFrame(parent, fg_color=COLORS["bg"], corner_radius=10,
                             border_width=1, border_color=COLORS["border"])
 
-        # Tıklanabilirlik — cursor + hover efekti
-        if on_click:
-            card.configure(cursor="hand2")
-
-            def _on_enter(e):
-                card.configure(border_color=COLORS["blue"])
-            def _on_leave(e):
-                card.configure(border_color=COLORS["border"])
-            card.bind("<Enter>", _on_enter)
-            card.bind("<Leave>", _on_leave)
-
         # Üst satır: ikon | büyük değer (yan yana — wrap yok)
         top = ctk.CTkFrame(card, fg_color="transparent")
         top.pack(fill="x", padx=12, pady=(10, 0))
@@ -5193,12 +5245,13 @@ class ModernGUI:
                 text_color=COLORS["text_dim"],
             )
             hint_lbl.pack(side="left")
-            # Click bind — card ve tüm child widget'lara
-            for widget in [
-                card, top, emoji_lbl, value_lbl, label_lbl,
-                hint_row, hint_icon, hint_lbl,
-            ]:
-                widget.bind("<Button-1>", lambda e, cb=on_click: cb())
+            # Hover/click on card + every child (labels used to steal Leave/clicks)
+            self._bind_hover_click(
+                card,
+                on_click=on_click,
+                on_enter=lambda: card.configure(border_color=COLORS["blue"]),
+                on_leave=lambda: card.configure(border_color=COLORS["border"]),
+            )
         else:
             # Alt padding
             ctk.CTkFrame(card, height=8, fg_color="transparent").pack()
