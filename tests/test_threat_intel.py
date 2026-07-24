@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Threat-intel HP-INTEL apply / reconcile unit tests."""
+"""Threat-intel AR-INTEL apply / legacy reconcile unit tests."""
 
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -43,10 +43,10 @@ class TestThreatIntelHelpers(unittest.TestCase):
     def test_intel_rule_name(self):
         self.assertEqual(
             WindowsFirewallBackend.intel_rule_name("feodo-ip-abc"),
-            "HP-INTEL-feodo-ip-abc",
+            "AR-INTEL-feodo-ip-abc",
         )
         self.assertTrue(
-            WindowsFirewallBackend.intel_rule_name("a/b c").startswith("HP-INTEL-")
+            WindowsFirewallBackend.intel_rule_name("a/b c").startswith("AR-INTEL-")
         )
 
 
@@ -74,7 +74,7 @@ class TestThreatIntelFirewallApply(unittest.TestCase):
         self.assertGreaterEqual(out["firewall_skipped"], 1)
         self.backend.apply_intel_block.assert_not_called()
 
-    def test_adds_hp_intel_not_auto_response(self):
+    def test_adds_ar_intel_not_auto_response(self):
         ar = mock.Mock()
         ar._is_whitelisted = mock.Mock(return_value=False)
         self.mgr.auto_response = ar

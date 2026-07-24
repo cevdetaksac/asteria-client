@@ -97,7 +97,8 @@ def load_blocked_map(*, force: bool = False) -> Dict[str, dict]:
         data: Dict[str, dict] = {}
         if os.path.isfile(path):
             try:
-                raw = json.loads(open(path, "r", encoding="utf-8").read() or "{}")
+                with open(path, "r", encoding="utf-8") as fh:
+                    raw = json.loads(fh.read() or "{}")
                 blocks = raw.get("blocks") if isinstance(raw, dict) else raw
                 if isinstance(blocks, list):
                     for item in blocks:
@@ -108,7 +109,7 @@ def load_blocked_map(*, force: bool = False) -> Dict[str, dict]:
                             continue
                         data[ip] = {
                             "ip": ip,
-                            "rule_name": item.get("rule_name") or f"HP-BLOCK-{ip}",
+                            "rule_name": item.get("rule_name") or f"AR-BLOCK-{ip}",
                             "source": item.get("source") or "firewall",
                             "reason": item.get("reason") or "persisted",
                             "blocked_at": float(item.get("blocked_at") or 0),
@@ -121,7 +122,7 @@ def load_blocked_map(*, force: bool = False) -> Dict[str, dict]:
                             item = {}
                         data[ip] = {
                             "ip": ip,
-                            "rule_name": item.get("rule_name") or f"HP-BLOCK-{ip}",
+                            "rule_name": item.get("rule_name") or f"AR-BLOCK-{ip}",
                             "source": item.get("source") or "firewall",
                             "reason": item.get("reason") or "persisted",
                             "blocked_at": float(item.get("blocked_at") or 0),
@@ -142,7 +143,7 @@ def save_blocked_map(blocks: Dict[str, dict]) -> None:
             continue
         cleaned[ip] = {
             "ip": ip,
-            "rule_name": (item or {}).get("rule_name") or f"HP-BLOCK-{ip}",
+            "rule_name": (item or {}).get("rule_name") or f"AR-BLOCK-{ip}",
             "source": (item or {}).get("source") or "firewall",
             "reason": (item or {}).get("reason") or "persisted",
             "blocked_at": float((item or {}).get("blocked_at") or 0),
@@ -190,7 +191,7 @@ def upsert_block(
     m = load_blocked_map()
     m[ip] = {
         "ip": ip,
-        "rule_name": rule_name or f"HP-BLOCK-{ip}",
+        "rule_name": rule_name or f"AR-BLOCK-{ip}",
         "source": source or "local",
         "reason": reason or "block",
         "blocked_at": float(blocked_at if blocked_at is not None else time.time()),
@@ -225,7 +226,7 @@ def merge_from_firewall_rules(rules: List[dict]) -> Dict[str, dict]:
             old = prev.get(ip) or {}
             merged[ip] = {
                 "ip": ip,
-                "rule_name": rule_name or f"HP-BLOCK-{ip}",
+                "rule_name": rule_name or f"AR-BLOCK-{ip}",
                 "source": old.get("source") or source,
                 "reason": old.get("reason") or "firewall_rule",
                 "blocked_at": float(old.get("blocked_at") or now),
@@ -247,7 +248,7 @@ def refresh_from_live_firewall(
     min_interval_sec: float = 30.0,
     force: bool = False,
 ) -> Dict[str, dict]:
-    """Scan live Windows Firewall HP-BLOCK-* → rewrite ProgramData store.
+    """Scan live Windows Firewall AR-* plus legacy → rewrite ProgramData store.
 
     GUI Engellenen and API inventory must track firewall SoT even when the
     SYSTEM daemon has not yet run _migrate_and_sync_rules.

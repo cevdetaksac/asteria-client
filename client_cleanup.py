@@ -5,7 +5,7 @@ Client Data Cleanup — yerel + firewall + sunucu/dashboard senkronu.
 
 Scopes:
   local     — IP pool, session stats, dedup, threats.log
-  firewall  — HP-BLOCK-* kuralları + auto_response + sync-rules([])
+  firewall  — AR + HP/HONEYPOT legacy kuralları + auto_response + sync-rules([])
   server    — POST /api/agent/clear-data (attacks/blocks/alerts)
   all       — hepsi
 
@@ -115,7 +115,7 @@ class DataCleanupManager:
             return result
 
     def clear_firewall(self, sync_dashboard: bool = True) -> Dict[str, Any]:
-        """Tum HP-BLOCK-* kurallarini sil + dashboard sync.
+        """Tüm AR/HP/HONEYPOT firewall kurallarını sil + dashboard sync.
 
         Must run elevated (SYSTEM daemon). Non-admin GUI must IPC to daemon.
         Long netsh/API work runs outside _lock so IPC/enforcer do not hang.
@@ -397,9 +397,6 @@ class DataCleanupManager:
             backend = WindowsFirewallBackend(logger=_CleanupLogger())
             before_ok, before = backend.scan_existing_rules_detailed()
             before_n = len(before) if before_ok else 0
-            if before_n == 0 and before_ok:
-                log("[CLEANUP] No honeypot firewall rules to remove")
-                return 0
 
             if not elevated and before_n > 0:
                 log(
@@ -413,12 +410,12 @@ class DataCleanupManager:
                 "$ErrorActionPreference='SilentlyContinue'; "
                 "$rules = Get-NetFirewallRule | Where-Object { "
                 "  $n = $_.DisplayName; "
+                "  $n -like 'AR-BLOCK-*' -or "
+                "  $n -like 'AR-INTEL-*' -or "
                 "  $n -like 'HP-BLOCK-*' -or "
                 "  $n -like 'HP-INTEL-*' -or "
-                "  $n -like 'HONEYPOT_BLOCK*' -or "
-                "  $n -like 'HONEYPOT_THREAT_BLOCK_*' -or "
-                "  $n -like 'HONEYPOT_BLOCK_REMOTE_*' -or "
-                "  $n -like 'HONEYPOT_REMOTE_BLOCK_*' "
+                "  $n -like 'HONEYPOT_*' -or "
+                "  $n -like 'CloudHoneypot*' "
                 "}; "
                 "$c = @($rules).Count; "
                 "if ($c -gt 0) { $rules | Remove-NetFirewallRule }; "
@@ -466,7 +463,7 @@ class DataCleanupManager:
         return removed
 
     def _trim_firewall_rules(self, max_rules: int) -> int:
-        """Max üstü en eski HP-BLOCK kurallarını sil (FIFO by name scan order)."""
+        """Max üstü en eski AR/legacy block kurallarını sil."""
         trimmed = 0
         try:
             from client_firewall import WindowsFirewallBackend, is_windows, run_cmd
@@ -479,7 +476,11 @@ class DataCleanupManager:
             # Prefer auto_response IP-named rules for trim; keep numeric dashboard IDs longer
             def _priority(r):
                 name = r.get("name", "")
-                suffix = name.replace("HP-BLOCK-", "").replace("HONEYPOT_THREAT_BLOCK_", "")
+                suffix = (
+                    name.replace("AR-BLOCK-", "")
+                    .replace("HP-BLOCK-", "")
+                    .replace("HONEYPOT_THREAT_BLOCK_", "")
+                )
                 return (0 if any(c.isalpha() for c in suffix.replace(".", "").replace("_", "")) else 1, name)
 
             ordered = sorted(rules, key=_priority)

@@ -40,7 +40,7 @@ from client_winproc import run_hidden
 
 # ── Constants ─────────────────────────────────────────────────────
 
-FIREWALL_RULE_PREFIX = "HP-BLOCK"
+FIREWALL_RULE_PREFIX = "AR-BLOCK"
 
 # Safety limits
 MAX_BLOCKS_PER_HOUR = 50
@@ -244,6 +244,11 @@ class AutoResponse:
 
         # Execute firewall command
         rule_name = f"{FIREWALL_RULE_PREFIX}-{ip}"
+        # Prefix cutover is idempotent: remove the old HP name before AR write.
+        self._run_system_cmd([
+            "netsh", "advfirewall", "firewall", "delete", "rule",
+            f"name=HP-BLOCK-{ip}", "dir=in",
+        ])
         cmd = [
             "netsh", "advfirewall", "firewall", "add", "rule",
             f"name={rule_name}", "dir=in", "action=block",
@@ -339,7 +344,7 @@ class AutoResponse:
         except Exception:
             rule_names.append(f"{FIREWALL_RULE_PREFIX}-{ip}")
 
-        # Also drop any HP-INTEL-* rules whose RemoteIP matches this host
+        # Also drop any AR/HP-INTEL rules whose RemoteIP matches this host.
         try:
             from client_firewall import WindowsFirewallBackend
             import logging as _logging
@@ -359,7 +364,7 @@ class AutoResponse:
         success = False
         hard_fail = False
         for rule_name in rule_names:
-            # Prefer delete without dir= so in+out HP-INTEL pairs clear together
+            # Prefer delete without dir= so in+out INTEL pairs clear together
             cmds = [
                 [
                     "netsh", "advfirewall", "firewall", "delete", "rule",
@@ -615,7 +620,7 @@ class AutoResponse:
     def update_whitelist(self, ips: Set[str], subnets: Optional[List[str]] = None):
         """Update whitelist IPs and subnets (thread-safe).
 
-        Immediately clears any existing HP-BLOCK / HP-INTEL rules for those IPs.
+        Immediately clears existing AR/HP BLOCK and INTEL rules for those IPs.
         """
         self.whitelist_ips = set(ips or set())
         if subnets is not None:
@@ -759,7 +764,7 @@ class AutoResponse:
 
                 from datetime import datetime, timezone
                 blocked_at = datetime.now(timezone.utc).isoformat()
-                rule_name = f"HP-BLOCK-{ip}"
+                rule_name = f"{FIREWALL_RULE_PREFIX}-{ip}"
 
                 payload = {
                     "token": token,

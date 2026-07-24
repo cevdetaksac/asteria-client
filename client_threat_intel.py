@@ -4,7 +4,7 @@
 
 Contract: honeypot-contract api/09-threat-intel.md
 Cloud is the source of truth. This module does NOT scrape Abuse.ch/CISA.
-Firewall IoCs → HP-INTEL-<id> (never HP-BLOCK-*).
+Firewall IoCs → AR-INTEL-<id> (HP-* remains read/delete legacy only).
 """
 
 from __future__ import annotations
@@ -73,7 +73,7 @@ def _is_expired(item: dict, *, now: Optional[datetime] = None) -> bool:
 
 
 def _collect_allowlist(policy: dict, bundle: dict) -> Set[str]:
-    """IPs/CIDRs that must never receive HP-INTEL blocks."""
+    """IPs/CIDRs that must never receive AR-INTEL blocks."""
     out: Set[str] = set()
 
     def _add(val: Any) -> None:
@@ -353,7 +353,7 @@ class ThreatIntelManager:
         *,
         bundle: Optional[dict] = None,
     ) -> dict:
-        """Reconcile HP-INTEL-* rules to bundle.firewall_blocks (contract 09)."""
+        """Reconcile AR-INTEL-* rules to bundle.firewall_blocks (contract 09)."""
         out = {
             "firewall_added": 0,
             "firewall_skipped": 0,
@@ -439,7 +439,7 @@ class ThreatIntelManager:
             desired_names.add(name)
             desired_ids[name] = c["_ip"]
 
-        # Orphan cleanup — HP-INTEL not in desired set
+        # Orphan cleanup — AR desired; HP legacy is always removed.
         try:
             existing = backend.list_intel_rules()
         except Exception as e:
@@ -449,7 +449,7 @@ class ThreatIntelManager:
         existing_names = {str(r.get("name") or "") for r in existing}
         for r in existing:
             name = str(r.get("name") or "")
-            if not name.startswith("HP-INTEL-"):
+            if not name.startswith(("AR-INTEL-", "HP-INTEL-")):
                 continue
             if name not in desired_names:
                 try:

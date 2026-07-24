@@ -1,6 +1,6 @@
 # Cloud Honeypot Client
 
-**Current Version: 4.9.32**
+**Current Version: 4.9.33**
 
 Windows agent for [YesNext Cloud Honeypot](https://honeypot.yesnext.com.tr): honeypot tunnels, threat response, remote desktop, and firewall sync. Open-source client; cloud/dashboard features may require a license.
 
@@ -9,7 +9,7 @@ Windows agent for [YesNext Cloud Honeypot](https://honeypot.yesnext.com.tr): hon
 | **Releases** | https://github.com/cevdetaksac/yesnext-cloud-honeypot-client/releases |
 | **Latest installer** | [cloud-client-installer.exe](https://github.com/cevdetaksac/yesnext-cloud-honeypot-client/releases/latest/download/cloud-client-installer.exe) |
 | **Changelog** | [`docs/CHANGELOG.md`](docs/CHANGELOG.md) |
-| **API contract (SoT)** | https://github.com/cevdetaksac/honeypot-contract (`VERSION` ≥ **1.4.25**) |
+| **API contract (SoT)** | https://asteria.run/static/shared-contract.zip (`VERSION` ≥ **1.4.31**) |
 | **Production floor** | Client ≥ **4.9.0** (see contract [`FLEET.md`](https://github.com/cevdetaksac/honeypot-contract/blob/main/FLEET.md)) |
 
 ## Features
@@ -18,7 +18,7 @@ Windows agent for [YesNext Cloud Honeypot](https://honeypot.yesnext.com.tr): hon
 - **Threat / defense policy** — observe → balanced → paranoid; ransomware shield, canaries, Network Guard
 - **Remote Desktop** — JPEG/WS + WebRTC; Winlogon / pre-logon mirror (≥4.9.21+)
 - **Server management** — sessions, processes, services, local users (enable/disable)
-- **Firewall agent** — applies `HP-BLOCK-*` rules from the dashboard
+- **Firewall agent** — applies `AR-BLOCK-*` / `AR-INTEL-*`; removes HP/legacy rules
 - **Self-update** — GitHub Releases; completion-verified download + retries
 - **Tray / GUI** — TR/EN; account link in Settings
 

@@ -30,6 +30,8 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import ipaddress
+import json
 import logging
 import os
 import platform
@@ -46,6 +48,30 @@ import requests
 from requests.adapters import HTTPAdapter
 from client_security_utils import auth_headers, resolve_tls_verify, use_legacy_token_query
 from urllib3.util.retry import Retry
+
+BLOCK_PREFIX = "AR-BLOCK-"
+INTEL_PREFIX = "AR-INTEL-"
+LEGACY_BLOCK_PREFIX = "HP-BLOCK-"
+LEGACY_INTEL_PREFIX = "HP-INTEL-"
+FIREWALL_BRAND = "ar"
+COUNTRY_PREFIX = "country:"
+
+
+def block_rule_name(value: str) -> str:
+    """Canonical safe AR-BLOCK name; plain IPs remain exactly AR-BLOCK-{ip}."""
+    raw = (value or "").strip()
+    if "/" in raw:
+        raw = raw.split("/", 1)[0]
+    if raw.lower().startswith(COUNTRY_PREFIX):
+        raw = "country-" + raw[len(COUNTRY_PREFIX):].strip().upper()
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", raw).strip("-")[:96]
+    return f"{BLOCK_PREFIX}{safe or 'unknown'}"
+
+
+def _firewall_brand_state_path() -> Path:
+    return Path(
+        os.environ.get("ProgramData", r"C:\ProgramData")
+    ) / "YesNext" / "CloudHoneypotClient" / "firewall_brand.json"
 
 
 # ---------------------------- Logging ---------------------------- #
@@ -210,10 +236,14 @@ class WindowsFirewallBackend(FirewallBackend):
         bid = (block_id or "").strip()
         ip = (ip_or_cidr or "").strip().split("/")[0]
         if bid:
-            names.append(f"HP-BLOCK-{bid}")
+            names.extend((
+                block_rule_name(bid),
+                f"{LEGACY_BLOCK_PREFIX}{bid}",
+            ))
         if ip:
             for n in (
-                f"HP-BLOCK-{ip}",
+                block_rule_name(ip),
+                f"{LEGACY_BLOCK_PREFIX}{ip}",
                 f"HONEYPOT_THREAT_BLOCK_{ip.replace('.', '_')}",
                 f"HONEYPOT_BLOCK_REMOTE_{ip}",
                 f"HONEYPOT_BLOCK_REMOTE_{ip.replace('.', '_')}",
@@ -229,10 +259,13 @@ class WindowsFirewallBackend(FirewallBackend):
 
         status: 'removed' | 'missing' | 'failed'
         """
-        rc, out, err = run_cmd([
+        cmd = [
             "netsh", "advfirewall", "firewall", "delete", "rule",
-            f"name={name}", "dir=in",
-        ])
+            f"name={name}",
+        ]
+        if not name.startswith((INTEL_PREFIX, LEGACY_INTEL_PREFIX)):
+            cmd.append("dir=in")
+        rc, out, err = run_cmd(cmd)
         combined = f"{out}\n{err}".lower()
         if rc == 0:
             if "0 rule" in combined:
@@ -244,18 +277,18 @@ class WindowsFirewallBackend(FirewallBackend):
             return "missing", rc, out, err
         return "failed", rc, out, err
 
-    # ── Threat-intel dedicated rules (HP-INTEL-*) ─────────────────
+    # ── Threat-intel dedicated rules (AR-INTEL-*; HP legacy read/delete) ──
 
     @staticmethod
     def intel_rule_name(rule_id: str) -> str:
-        """Stable Windows firewall rule name: HP-INTEL-<id>."""
+        """Stable Windows firewall rule name: AR-INTEL-<id>."""
         import re
         raw = (rule_id or "").strip() or "unknown"
         safe = re.sub(r"[^A-Za-z0-9._-]+", "-", raw).strip("-")[:96]
-        return f"HP-INTEL-{safe or 'unknown'}"
+        return f"{INTEL_PREFIX}{safe or 'unknown'}"
 
     def _delete_intel_rule_by_name(self, name: str) -> str:
-        """Delete HP-INTEL rule (in + out). Returns removed|missing|failed."""
+        """Delete AR/HP-INTEL rule (in + out). Returns removed|missing|failed."""
         # Omit dir= so both inbound and outbound with same name are cleared.
         rc, out, err = run_cmd([
             "netsh", "advfirewall", "firewall", "delete", "rule",
@@ -273,12 +306,15 @@ class WindowsFirewallBackend(FirewallBackend):
         return "failed"
 
     def apply_intel_block(self, rule_id: str, ip_or_cidr: str) -> bool:
-        """Add inbound+outbound block as HP-INTEL-<id> (idempotent replace)."""
+        """Add inbound+outbound block as AR-INTEL-<id> (idempotent replace)."""
         name = self.intel_rule_name(rule_id)
         remote = (ip_or_cidr or "").strip()
         if not remote:
             return False
         self._delete_intel_rule_by_name(name)
+        self._delete_intel_rule_by_name(
+            name.replace(INTEL_PREFIX, LEGACY_INTEL_PREFIX, 1)
+        )
         ok_in = self._add_rule(name, remote)
         # Outbound block (same name; netsh allows parallel dir=out)
         rc, out, err = run_cmd([
@@ -293,7 +329,7 @@ class WindowsFirewallBackend(FirewallBackend):
         return bool(ok_in or ok_out)
 
     def remove_intel_block(self, rule_id: str = "", rule_name: str = "") -> bool:
-        """Remove HP-INTEL rule. True if removed or already absent."""
+        """Remove AR/HP-INTEL rule. True if removed or already absent."""
         name = (rule_name or "").strip() or self.intel_rule_name(rule_id)
         if not name:
             return False
@@ -301,7 +337,7 @@ class WindowsFirewallBackend(FirewallBackend):
         return status in ("removed", "missing")
 
     def list_intel_rules(self) -> List[dict]:
-        """Return existing HP-INTEL-* firewall rules (name + remoteip)."""
+        """Return existing AR/HP-INTEL rules (name + remoteip)."""
         ok, rules = self.scan_existing_rules_detailed()
         if not ok:
             # Fallback dedicated show — still try parse via show all path
@@ -309,11 +345,15 @@ class WindowsFirewallBackend(FirewallBackend):
         out: List[dict] = []
         for r in rules or []:
             name = str(r.get("name") or "")
-            if name.startswith("HP-INTEL-"):
+            prefix = next(
+                (p for p in (INTEL_PREFIX, LEGACY_INTEL_PREFIX) if name.startswith(p)),
+                "",
+            )
+            if prefix:
                 out.append({
                     "name": name,
                     "remoteip": r.get("remoteip") or "",
-                    "id": name[len("HP-INTEL-"):],
+                    "id": name[len(prefix):],
                 })
         if out:
             return out
@@ -333,11 +373,17 @@ class WindowsFirewallBackend(FirewallBackend):
                 key_ns = key_raw.replace(" ", "")
                 val = val.strip()
                 if "rule name" in key_raw or "kural ad" in key_raw:
-                    if current.get("name", "").startswith("HP-INTEL-"):
+                    current_name = current.get("name", "")
+                    prefix = next(
+                        (p for p in (INTEL_PREFIX, LEGACY_INTEL_PREFIX)
+                         if current_name.startswith(p)),
+                        "",
+                    )
+                    if prefix:
                         out.append({
-                            "name": current["name"],
+                            "name": current_name,
                             "remoteip": current.get("remoteip") or "",
-                            "id": current["name"][len("HP-INTEL-"):],
+                            "id": current_name[len(prefix):],
                         })
                     current = {"name": val}
                 elif (
@@ -346,11 +392,17 @@ class WindowsFirewallBackend(FirewallBackend):
                     or "uzakip" in key_ns
                 ):
                     current["remoteip"] = val
-            if current.get("name", "").startswith("HP-INTEL-"):
+            current_name = current.get("name", "")
+            prefix = next(
+                (p for p in (INTEL_PREFIX, LEGACY_INTEL_PREFIX)
+                 if current_name.startswith(p)),
+                "",
+            )
+            if prefix:
                 out.append({
-                    "name": current["name"],
+                    "name": current_name,
                     "remoteip": current.get("remoteip") or "",
-                    "id": current["name"][len("HP-INTEL-"):],
+                    "id": current_name[len(prefix):],
                 })
         except Exception as e:
             self.logger.error(f"list_intel_rules: {e}")
@@ -378,9 +430,10 @@ class WindowsFirewallBackend(FirewallBackend):
         return False
 
     def apply_block(self, block_id: str, cidrs: List[str]) -> bool:
-        name = f"HP-BLOCK-{block_id}"
+        name = block_rule_name(block_id)
         # Replace any existing rules for id to be idempotent
         self._delete_rule_by_name(name)
+        self._delete_rule_by_name(f"{LEGACY_BLOCK_PREFIX}{block_id}")
 
         # netsh has command length limits; chunk remote IPs
         # Conservative chunking by count (e.g., 200 per rule)
@@ -435,9 +488,15 @@ class WindowsFirewallBackend(FirewallBackend):
         Returns False on hard failure (access denied) — do NOT ACK.
         """
         if not ip_or_cidr and block_id:
-            ip_or_cidr = self._lookup_rule_remoteip(f"HP-BLOCK-{block_id}")
+            ip_or_cidr = self._lookup_rule_remoteip(f"{BLOCK_PREFIX}{block_id}")
+        if not ip_or_cidr:
+            ip_or_cidr = self._lookup_rule_remoteip(
+                f"{LEGACY_BLOCK_PREFIX}{block_id}"
+            )
             if ip_or_cidr:
-                self.logger.info(f"Resolved IP from rule HP-BLOCK-{block_id}: {ip_or_cidr}")
+                self.logger.info(
+                    f"Resolved IP from firewall rule {block_id}: {ip_or_cidr}"
+                )
 
         names_to_try = self.rule_name_candidates(block_id, ip_or_cidr)
         if extra_names:
@@ -471,7 +530,7 @@ class WindowsFirewallBackend(FirewallBackend):
         return True
 
     def scan_existing_rules(self) -> List[dict]:
-        """Scan honeypot block rules: HP-BLOCK-*, HONEYPOT_BLOCK*, legacy.
+        """Scan AR firewall rules plus HP/HONEYPOT/CloudHoneypot legacy.
 
         Returns list of dicts: {name, remoteip, prefix, ip?, legacy?}
         On enumeration failure returns [] and sets last_scan_ok=False
@@ -545,8 +604,12 @@ class WindowsFirewallBackend(FirewallBackend):
                 ("HONEYPOT_REMOTE_BLOCK_", True),
                 ("HONEYPOT_THREAT_BLOCK_", True),
                 ("HONEYPOT_BLOCK_", True),
-                ("HP-INTEL-", False),
-                ("HP-BLOCK-", False),
+                ("HONEYPOT_", True),
+                ("CloudHoneypot", True),
+                (LEGACY_INTEL_PREFIX, True),
+                (LEGACY_BLOCK_PREFIX, True),
+                (INTEL_PREFIX, False),
+                (BLOCK_PREFIX, False),
             ):
                 if name.startswith(prefix):
                     return prefix, legacy
@@ -570,39 +633,47 @@ class WindowsFirewallBackend(FirewallBackend):
             }
             if legacy and suffix:
                 # Convert underscored IP back to dotted when applicable
-                entry["ip"] = suffix.replace("_", ".")
+                candidate = suffix.replace("_", ".")
+                try:
+                    ipaddress.ip_address(candidate.split("/")[0])
+                    entry["ip"] = candidate
+                except ValueError:
+                    pass
             result.append(entry)
         return True, result
 
     def migrate_legacy_rule(self, old_name: str, ip: str, remoteip: str) -> bool:
-        """Rename a legacy HONEYPOT_THREAT_BLOCK_ rule to HP-BLOCK-{ip}.
-
-        netsh doesn't support rename, so delete old + create new.
-        """
-        new_name = f"HP-BLOCK-{ip}"
-        # Delete old rule
-        rc, out, err = run_cmd([
-            "netsh", "advfirewall", "firewall", "delete", "rule",
-            f"name={old_name}", "dir=in",
-        ])
-        if rc != 0:
-            msg = (out + err).lower()
-            if "no rules match" not in msg:
-                self.logger.error(f"Failed to delete legacy rule {old_name}: {err}")
-                return False
-
-        # Create new rule with same remoteip
+        """Copy a legacy HP/HONEYPOT rule to AR, then delete the old rule."""
+        is_intel = old_name.startswith(LEGACY_INTEL_PREFIX)
+        if is_intel:
+            suffix = old_name[len(LEGACY_INTEL_PREFIX):]
+            new_name = f"{INTEL_PREFIX}{suffix}"
+        else:
+            new_name = f"{BLOCK_PREFIX}{ip}"
         remote = remoteip if remoteip and remoteip.lower() not in ("any", "herhangi") else ip
-        rc, out, err = run_cmd([
-            "netsh", "advfirewall", "firewall", "add", "rule",
-            f"name={new_name}", "dir=in", "action=block",
-            f"remoteip={remote}", "enable=yes",
-        ])
-        if rc == 0:
-            self.logger.info(f"Migrated: {old_name} → {new_name}")
-            return True
-        self.logger.error(f"Failed to create migrated rule {new_name}: {err}")
-        return False
+        if not remote:
+            self.logger.error(f"Cannot migrate {old_name}: RemoteIP missing")
+            return False
+        self._delete_rule_by_name(new_name)
+        created = self._add_rule(new_name, remote)
+        if created and is_intel:
+            rc, out, err = run_cmd([
+                "netsh", "advfirewall", "firewall", "add", "rule",
+                f"name={new_name}", "dir=out", "action=block",
+                f"remoteip={remote}", "enable=yes",
+            ])
+            created = rc == 0
+            if not created:
+                self.logger.error(err.strip() or out.strip())
+        if not created:
+            self.logger.error(f"Failed to create migrated rule {new_name}")
+            return False
+        status, _, _, _ = self._delete_rule_by_name(old_name)
+        if status == "failed":
+            self.logger.error(f"Created {new_name}, but could not delete {old_name}")
+            return False
+        self.logger.info(f"Migrated: {old_name} → {new_name}")
+        return True
 
 
 class LinuxFirewallBackend(FirewallBackend):
@@ -631,7 +702,7 @@ class LinuxFirewallBackend(FirewallBackend):
         run_cmd(["iptables", "-D", "INPUT", "-m", "set", "--match-set", set_name, "src", "-j", "DROP"])  # best-effort
 
     def _apply_with_ipset(self, block_id: str, cidrs: List[str]) -> bool:
-        set_name = f"HP-BLOCK-{block_id}"
+        set_name = f"{BLOCK_PREFIX}{block_id}"
         # Create set (idempotent)
         rc, _, err = run_cmd(["ipset", "create", set_name, "hash:net", "family", "inet", "-exist"])
         if rc != 0:
@@ -648,7 +719,7 @@ class LinuxFirewallBackend(FirewallBackend):
         return ok_all
 
     def _remove_with_ipset(self, block_id: str) -> bool:
-        set_name = f"HP-BLOCK-{block_id}"
+        set_name = f"{BLOCK_PREFIX}{block_id}"
         self._iptables_del_set_rule(set_name)
         rc, _, err = run_cmd(["ipset", "destroy", set_name])
         if rc == 0:
@@ -664,12 +735,12 @@ class LinuxFirewallBackend(FirewallBackend):
         for cidr in cidrs:
             # Check if exists
             rc, _, _ = run_cmd([
-                "iptables", "-C", "INPUT", "-s", cidr, "-j", "DROP", "-m", "comment", "--comment", f"HP-BLOCK-{block_id}",
+                "iptables", "-C", "INPUT", "-s", cidr, "-j", "DROP", "-m", "comment", "--comment", f"{BLOCK_PREFIX}{block_id}",
             ])
             if rc == 0:
                 continue
             rc, _, err = run_cmd([
-                "iptables", "-I", "INPUT", "-s", cidr, "-j", "DROP", "-m", "comment", "--comment", f"HP-BLOCK-{block_id}",
+                "iptables", "-I", "INPUT", "-s", cidr, "-j", "DROP", "-m", "comment", "--comment", f"{BLOCK_PREFIX}{block_id}",
             ])
             if rc != 0:
                 self.logger.error(err.strip() or f"iptables add rule for {cidr} failed")
@@ -683,7 +754,7 @@ class LinuxFirewallBackend(FirewallBackend):
             self.logger.error(err.strip() or "iptables -S failed")
             return False
         lines = out.splitlines()
-        target = f"-m comment --comment HP-BLOCK-{block_id}"
+        target = f"-m comment --comment {BLOCK_PREFIX}{block_id}"
         removed_any = False
         for ln in lines:
             if target in ln:
@@ -701,7 +772,7 @@ class LinuxFirewallBackend(FirewallBackend):
 
     def apply_block(self, block_id: str, cidrs: List[str]) -> bool:
         if not cidrs:
-            self.logger.warning(f"No CIDRs to apply for HP-BLOCK-{block_id}")
+            self.logger.warning(f"No CIDRs to apply for {BLOCK_PREFIX}{block_id}")
             return False
         if self.has_ipset:
             return self._apply_with_ipset(block_id, cidrs)
@@ -717,9 +788,6 @@ class LinuxFirewallBackend(FirewallBackend):
 
 
 # ---------------------------- Agent core ---------------------------- #
-
-COUNTRY_PREFIX = "country:"
-
 
 class FirewallAgent:
     def __init__(
@@ -830,7 +898,9 @@ class FirewallAgent:
                 cidrs = self._expand_ip_or_cidr(spec)
                 if not cidrs:
                     continue
-                ok = self.backend.apply_block(block_id, cidrs)
+                # Contract 1.4.31: the firewall wire name is AR-BLOCK-{ip/spec};
+                # block_id remains cloud ACK identity only.
+                ok = self.backend.apply_block(spec, cidrs)
                 if ok:
                     self.logger.info(f"Applied block {block_id} ({spec})")
                     batch_ids.append(block_id)
@@ -1013,7 +1083,7 @@ class FirewallAgent:
     # --------------- Migration & sync --------------- #
 
     def _migrate_and_sync_rules(self) -> None:
-        """After unblocks/blocks: migrate legacy names + report remaining inventory.
+        """Migrate HP/HONEYPOT names once, then report remaining inventory.
 
         Does NOT re-apply local blocks to the cloud as new pending-blocks.
         Source of truth remains pending-unblocks / pending-blocks queues.
@@ -1023,7 +1093,18 @@ class FirewallAgent:
         if not isinstance(self.backend, WindowsFirewallBackend):
             return
 
-        self.logger.info("🔄 Firewall rule migration & sync starting...")
+        state_path = _firewall_brand_state_path()
+        already_migrated = False
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            already_migrated = state.get("firewall_brand") == FIREWALL_BRAND
+        except (OSError, ValueError, TypeError):
+            pass
+
+        self.logger.info(
+            "🔄 Firewall inventory sync starting"
+            + (" (brand already AR)" if already_migrated else " (HP→AR migrate)")
+        )
 
         try:
             ok, rules = self.backend.scan_existing_rules_detailed()
@@ -1038,20 +1119,33 @@ class FirewallAgent:
             return
 
         if not rules:
-            self.logger.info("No existing HP-BLOCK / legacy rules found")
+            self.logger.info("No existing AR/HP/legacy firewall rules found")
             try:
                 from client_block_store import save_blocked_map
                 save_blocked_map({})
             except Exception:
                 pass
             self._hydrate_blocked_runtime({})
-            self._sync_rules_to_api([])
+            sync_ok = self._sync_rules_to_api(
+                [], mode="snapshot" if not already_migrated else ""
+            )
+            if not already_migrated and sync_ok:
+                self._write_firewall_brand_marker(state_path)
             return
 
         migrated = 0
-        for r in rules:
-            if r.get("legacy"):
+        migration_failed = False
+        if not already_migrated:
+            for r in rules:
+                if not r.get("legacy"):
+                    continue
                 ip = r.get("ip", "")
+                if not ip:
+                    try:
+                        from client_block_store import extract_ip_from_rule
+                        ip = extract_ip_from_rule(r) or ""
+                    except Exception:
+                        ip = ""
                 if ip:
                     ok = self.backend.migrate_legacy_rule(
                         old_name=r["name"],
@@ -1060,12 +1154,26 @@ class FirewallAgent:
                     )
                     if ok:
                         migrated += 1
-                        r["name"] = f"HP-BLOCK-{ip}"
+                        old_name = str(r.get("name") or "")
+                        if old_name.startswith(LEGACY_INTEL_PREFIX):
+                            suffix = old_name[len(LEGACY_INTEL_PREFIX):]
+                            r["name"] = f"{INTEL_PREFIX}{suffix}"
+                            r["prefix"] = INTEL_PREFIX
+                        else:
+                            r["name"] = f"{BLOCK_PREFIX}{ip}"
+                            r["prefix"] = BLOCK_PREFIX
                         r["legacy"] = False
                         r["suffix"] = ip
+                    else:
+                        migration_failed = True
+                else:
+                    migration_failed = True
+                    self.logger.warning(
+                        f"Cannot migrate legacy rule without IP: {r.get('name')}"
+                    )
 
         if migrated:
-            self.logger.info(f"✅ Migrated {migrated} legacy rule(s) to HP-BLOCK- prefix")
+            self.logger.info(f"✅ Migrated {migrated} legacy firewall rule(s) to AR")
 
         # Persist inventory under ProgramData + hydrate RAM for GUI / AutoResponse
         try:
@@ -1126,14 +1234,19 @@ class FirewallAgent:
             ip = ab.get("ip", "")
             if ip and ip not in sync_ips:
                 sync_ips[ip] = {
-                    "rule_name": f"HP-BLOCK-{ip}",
+                    "rule_name": f"{BLOCK_PREFIX}{ip}",
                     "source": "auto_response",
                     "reason": ab.get("reason", ""),
                     "blocked_at": ab.get("blocked_at", 0),
                 }
 
         self._hydrate_blocked_runtime(sync_ips)
-        self._sync_rules_to_api(list(sync_ips.items()))
+        sync_ok = self._sync_rules_to_api(
+            list(sync_ips.items()),
+            mode="snapshot" if not already_migrated else "",
+        )
+        if not already_migrated and not migration_failed and sync_ok:
+            self._write_firewall_brand_marker(state_path)
         self.logger.info(
             f"🔄 Sync complete: {len(sync_ips)} active block(s) reported to API"
         )
@@ -1157,7 +1270,24 @@ class FirewallAgent:
         except Exception as e:
             self.logger.error(f"ThreatEngine hydrate failed: {e}")
 
-    def _sync_rules_to_api(self, ip_entries: list) -> None:
+    def _write_firewall_brand_marker(self, path: Path) -> None:
+        """Persist brand migration only after a successful snapshot sync."""
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "firewall_brand": FIREWALL_BRAND,
+                "firewall_brand_migrated_at": dt.datetime.now(
+                    dt.timezone.utc
+                ).isoformat(),
+            }
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            os.replace(str(tmp), str(path))
+            self.logger.info(f"[FW-BRAND] Migration marker written: {path}")
+        except Exception as e:
+            self.logger.warning(f"[FW-BRAND] Could not write migration marker: {e}")
+
+    def _sync_rules_to_api(self, ip_entries: list, *, mode: str = "") -> bool:
         """POST /api/agent/sync-rules — inventory only (replace semantics on server)."""
         import datetime as _dt
 
@@ -1169,7 +1299,7 @@ class FirewallAgent:
                 continue
             blocks.append({
                 "ip": ip,
-                "rule_name": info.get("rule_name", f"HP-BLOCK-{ip}"),
+                "rule_name": info.get("rule_name", f"{BLOCK_PREFIX}{ip}"),
                 "source": info.get("source", "unknown"),
                 "reason": info.get("reason", ""),
                 "blocked_at": info.get("blocked_at", ""),
@@ -1181,14 +1311,18 @@ class FirewallAgent:
             "total_rules": len(blocks),
             "synced_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
         }
+        if mode:
+            body["mode"] = mode
         _, code = self._post_json("/api/agent/sync-rules", body)
         if code == 200:
             self.logger.info(f"API sync-rules accepted ({len(blocks)} blocks)")
+            return True
         else:
             self.logger.warning(
                 f"sync-rules HTTP {code} — inventory report skipped "
                 f"(pending queues remain source of truth)"
             )
+            return False
 
     def run_once(self) -> dict:
         """Run a single poll cycle — unblocks first (stale cleanup), then blocks."""

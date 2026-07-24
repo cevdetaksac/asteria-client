@@ -71,7 +71,7 @@ SELF_UPDATE_EXPIRY_SECONDS = 1800  # 30 minutes (dashboard self_update TTL)
 CREATE_NO_WINDOW = 0x08000000
 
 ALLOWED_COMMANDS: Set[str] = {
-    "block_ip", "unblock_ip", "clear_firewall",
+    "block_ip", "unblock_ip", "clear_firewall", "migrate_firewall_brand",
     "logoff_user", "disable_account", "enable_account", "reset_password",
     "contain_user",  # IR: logoff + password reset (+ optional disable) in one shot
     "disable_all_users",  # IR panic: disable every local SAM user (excl. machine IDs)
@@ -123,7 +123,7 @@ _IR_URGENT_COMMANDS = frozenset({
     "emergency_lockdown", "lift_lockdown",
     "enable_lockdown", "disable_lockdown",
     "unlock_ransomware_quarantine",
-    "clear_firewall",
+    "clear_firewall", "migrate_firewall_brand",
     "self_update", "check_update",  # dashboard update — same urgency as IR
     "remote_session_prepare", "list_local_users",
     "list_processes", "list_sessions",
@@ -1332,7 +1332,7 @@ class RemoteCommandExecutor:
             return {"success": ok, "message": f"IP {ip} blocked for {duration}h"}
 
         # Fallback: direct netsh
-        return self._netsh_block(ip, f"HONEYPOT_REMOTE_BLOCK_{ip.replace('.', '_')}")
+        return self._netsh_block(ip, f"AR-BLOCK-{ip}")
 
     def _cmd_unblock_ip(self, params: dict) -> dict:
         ip = params.get("ip", "")
@@ -1351,15 +1351,19 @@ class RemoteCommandExecutor:
             return {"success": False, "error": str(e)}
 
     def _cmd_clear_firewall(self, params: dict) -> dict:
-        """Dashboard maintenance: wipe honeypot block rules (HP-BLOCK / HONEYPOT_BLOCK*).
+        """Dashboard maintenance: wipe AR rules and all HP/HONEYPOT legacy names.
 
         params:
           wipe_all_honeypot_rules: bool (default True)
+          wipe_prefixes: optional AR/HP/HONEYPOT prefix list (treated as wipe)
           ips: optional list — also delete known name templates per IP
           reason: audit string
         """
         wipe_all = params.get("wipe_all_honeypot_rules", True)
         if wipe_all is None:
+            wipe_all = True
+        wipe_prefixes = params.get("wipe_prefixes") or []
+        if isinstance(wipe_prefixes, list) and wipe_prefixes:
             wipe_all = True
         ips = params.get("ips") or []
         if not isinstance(ips, list):
@@ -1450,6 +1454,46 @@ class RemoteCommandExecutor:
             "wipe_all": bool(wipe_all),
             "ips_requested": len(ips),
         }
+
+    def _cmd_migrate_firewall_brand(self, params: dict) -> dict:
+        """Force the idempotent HP→AR migration and snapshot sync."""
+        token = self.token_getter()
+        base = str(getattr(self.api_client, "base_url", "") or "").rstrip("/")
+        if base.lower().endswith("/api"):
+            base = base[:-4]
+        if not token or not base:
+            return {"success": False, "error": "missing_token_or_api_base"}
+        try:
+            from client_firewall import (
+                FirewallAgent,
+                _firewall_brand_state_path,
+                make_logger,
+            )
+            marker = _firewall_brand_state_path()
+            try:
+                marker.unlink()
+            except FileNotFoundError:
+                pass
+            agent = FirewallAgent(
+                api_base=base,
+                token=token,
+                logger=make_logger(),
+                auto_response=self.auto_response,
+            )
+            agent._migrate_and_sync_rules()
+            migrated = False
+            try:
+                migrated = marker.exists()
+            except OSError:
+                pass
+            return {
+                "success": migrated,
+                "message": "Firewall brand migration completed" if migrated
+                else "Migration/sync incomplete; will retry at boot",
+                "firewall_brand": "ar" if migrated else "pending",
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     def _cmd_logoff_user(self, params: dict) -> dict:
         """Terminate session(s) immediately — any account including Administrator."""

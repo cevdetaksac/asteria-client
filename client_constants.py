@@ -36,7 +36,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.32"  # In-place rotate-token (contract 1.4.29); no ghost /register on rekey
+VERSION = "4.9.33"  # AR firewall prefix cutover + one-time HP migration (contract 1.4.31)
 
 
 CLIENT_VERSION = VERSION  # Main version constant

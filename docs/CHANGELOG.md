@@ -1,3 +1,7 @@
+# v4.9.33
+- **Asteria firewall wire identity (contract 1.4.31):** New dashboard/auto blocks use `AR-BLOCK-{ip}` and threat intel uses `AR-INTEL-{id}`. Unblock, whitelist enforcement, and full wipe remove AR, HP, HONEYPOT, and CloudHoneypot legacy names.
+- **One-time boot migration:** Existing `HP-BLOCK-*` / `HP-INTEL-*` rules are copied to AR names before legacy deletion, then reported with `sync-rules mode=snapshot`. A ProgramData marker is written only after migration and HTTP 200 sync.
+
 # v4.9.32
 - **In-place token rotate (contract 1.4.29):** Rekey/identity_v2 uses POST /api/agent/rotate-token before writing token.dat — no bare /register while old token known (ghost Client fix). Same client_id / Account link / attack history. 409 retry; 403 machine_id candidates; rotate-fail then quarantine+register.
 
