@@ -1287,118 +1287,57 @@ class InstallerUpdateManager:
             return 0
     
     def download_installer(self, download_url: str, progress_callback=None) -> Optional[str]:
-        """Download installer to a writable machine-wide folder (never SYSTEM Desktop)."""
+        """Download installer until complete (size/stream verified), then return path."""
         try:
-            import requests
-            import os
-            
-            self.log("[UPDATE] Installer indiriliyor...")
-            
-            # Sürüm bilgisini al (URL'den veya update info'dan)
             version = "unknown"
             try:
-                if hasattr(self, '_latest_version') and self._latest_version:
+                if hasattr(self, "_latest_version") and self._latest_version:
                     version = self._latest_version
                 else:
-                    # URL'den version çıkarmayı dene
                     import re
-                    version_match = re.search(r'v?(\d+\.\d+\.\d+)', download_url)
+                    version_match = re.search(r"v?(\d+\.\d+\.\d+)", download_url or "")
                     if version_match:
                         version = version_match.group(1)
-            except:
+            except Exception:
                 pass
-            
-            # Always download into ProgramData\...\update\ — never user Downloads /
-            # systemprofile Desktop (SYSTEM Session-0 lacks a real profile; Downloads
-            # copies also accumulate across versions and bloat the disk).
-            downloads_dir = _update_helper_staging_dir()
 
+            downloads_dir = _update_helper_staging_dir()
             installer_filename = f"cloud-client-installer-v{version}.exe"
             installer_path = os.path.join(downloads_dir, installer_filename)
             try:
-                os.makedirs(os.path.dirname(installer_path) or downloads_dir, exist_ok=True)
+                os.makedirs(downloads_dir, exist_ok=True)
             except OSError:
                 pass
-            
+
             self.log(f"[UPDATE] İndirme yeri: {installer_path}")
-            
-            from client_security_utils import resolve_tls_verify, ensure_ca_bundle
-            try:
-                ensure_ca_bundle()
-            except Exception:
-                pass
-            response = requests.get(
-                download_url, stream=True, timeout=60, verify=resolve_tls_verify()
-            )
-            response.raise_for_status()
-            
-            import hashlib
-            sha = hashlib.sha256()
-            total_size = int(response.headers.get('content-length', 0))
-            downloaded = 0
-            
-            with open(installer_path, 'wb') as f:
-                last_touch = time.time()
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-                        sha.update(chunk)
-                        downloaded += len(chunk)
 
-                        # Keep machine-wide update lock fresh during long downloads
-                        now = time.time()
-                        if now - last_touch >= 15:
-                            last_touch = now
-                            try:
-                                touch_update_lock()
-                            except Exception:
-                                pass
-
-                        if progress_callback and total_size > 0:
-                            progress = int((downloaded / total_size) * 100)
-                            progress_callback(progress)
-
-            digest = sha.hexdigest()
             expected = str(getattr(self, "_expected_sha256", "") or "").strip()
             if not expected:
                 try:
                     expected = str(get_from_config("updates.expected_sha256", "") or "").strip()
                 except Exception:
                     expected = ""
+            expected_size = None
             try:
-                verify_checksum = bool(get_from_config("updates.verify_checksum", True))
+                expected_size = int(getattr(self, "_expected_size", 0) or 0) or None
             except Exception:
-                verify_checksum = True
-            if verify_checksum and expected and digest.lower() != expected.lower():
-                self.log("[UPDATE] Checksum mismatch — aborting")
-                try:
-                    os.remove(installer_path)
-                except OSError:
-                    pass
-                return None
+                expected_size = None
 
-            try:
-                from client_authenticode import (
-                    AuthenticodeError,
-                    assert_update_authenticode,
-                )
-                assert_update_authenticode(installer_path)
-            except AuthenticodeError as exc:
-                self.log(f"[UPDATE] Authenticode rejected: {exc}")
-                try:
-                    os.remove(installer_path)
-                except OSError:
-                    pass
-                return None
-            except Exception:
-                pass
-
-            self.log(
-                f"[UPDATE] Installer başarıyla indirildi: {installer_path} "
-                f"sha256={digest[:16]}…"
+            from client_updater import download_installer_complete
+            ok, detail = download_installer_complete(
+                download_url,
+                installer_path,
+                expected_size=expected_size,
+                expected_sha256=expected,
+                progress_callback=progress_callback,
+                max_attempts=5,
+                log_func=self.log,
             )
+            if not ok:
+                self.log(f"[UPDATE] İndirme tamamlanamadı: {detail}")
+                return None
+            self.log(f"[UPDATE] Installer başarıyla indirildi: {installer_path}")
             return installer_path
-            
         except Exception as e:
             self.log(f"[UPDATE] İndirme hatası: {e}")
             return None

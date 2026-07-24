@@ -1136,6 +1136,13 @@ class RemoteCommandExecutor:
             session_id=sid,
             username=(params.get("username") or None),
             monitor=mon,
+            prefer=(params.get("prefer") or None),
+            desktop=(params.get("desktop") or None),
+            pre_logon=(
+                bool(params.get("pre_logon"))
+                if params.get("pre_logon") is not None
+                else None
+            ),
         )
         if result.get("success"):
             self._notify_remote_desktop_ui("started")
@@ -1191,13 +1198,27 @@ class RemoteCommandExecutor:
 
     def _cmd_list_local_users(self, params: dict) -> dict:
         from client_remote_session import list_local_users
+        # Server Management / cloud always want the full SAM inventory.
         include_disabled = bool(params.get("include_disabled", True))
         try:
             users = list_local_users(include_disabled=include_disabled)
+            enabled_n = sum(1 for u in users if u.get("enabled"))
+            disabled_n = len(users) - enabled_n
             return {
                 "success": True,
-                "message": f"{len(users)} local user(s)",
-                "data": {"users": users},
+                "message": (
+                    f"{len(users)} local user(s) "
+                    f"(active={enabled_n}, disabled={disabled_n})"
+                ),
+                "data": {
+                    "users": users,
+                    "include_disabled": include_disabled,
+                    "counts": {
+                        "total": len(users),
+                        "active": enabled_n,
+                        "disabled": disabled_n,
+                    },
+                },
             }
         except Exception as e:
             return {"success": False, "error": str(e), "message": str(e)}
@@ -1531,20 +1552,76 @@ class RemoteCommandExecutor:
             ),
         }
 
+    def _account_mutate_result(
+        self, username: str, *, want_enabled: bool, ok: bool, action: str
+    ) -> dict:
+        """Shared enable/disable result with refreshed user row for cloud UI."""
+        from client_remote_session import find_local_user
+
+        user = None
+        try:
+            user = find_local_user(username, include_disabled=True)
+        except Exception:
+            user = None
+        enabled = bool(user.get("enabled")) if isinstance(user, dict) else want_enabled if ok else None
+        err = None
+        if not ok:
+            try:
+                from client_auto_response import PROTECTED_ACCOUNTS
+                if username.upper() in PROTECTED_ACCOUNTS:
+                    err = "PROTECTED_ACCOUNT"
+            except Exception:
+                pass
+            err = err or f"Failed to {action} {username}"
+        return {
+            "success": ok,
+            "ok": ok,
+            "username": username,
+            "enabled": enabled,
+            "status": (
+                "active" if enabled else "disabled"
+            ) if enabled is not None else None,
+            "message": (
+                f"Account {username} {action}"
+                if ok
+                else (err or f"Failed to {action} {username}")
+            ),
+            "error": None if ok else err,
+            "data": {
+                "username": username,
+                "enabled": enabled,
+                "status": (
+                    "active" if enabled else "disabled"
+                ) if enabled is not None else None,
+                "user": user,
+            },
+        }
+
     def _cmd_disable_account(self, params: dict) -> dict:
         username = self._sam_account_name(params.get("username", ""))
         if not username:
             return {"success": False, "ok": False, "error": "No username specified"}
         if self.auto_response:
             ok = self.auto_response.disable_account(username)
-            return {
-                "success": ok,
-                "ok": ok,
-                "username": username,
-                "message": f"Account {username} disabled" if ok else f"Failed to disable {username}",
-                "error": None if ok else f"Failed to disable {username}",
-            }
-        return self._run_net_user(username, "/active:no", "disabled")
+        else:
+            raw = self._run_net_user(username, "/active:no", "disabled")
+            ok = bool(raw.get("ok") or raw.get("success"))
+        return self._account_mutate_result(
+            username, want_enabled=False, ok=ok, action="disabled"
+        )
+
+    def _cmd_enable_account(self, params: dict) -> dict:
+        username = self._sam_account_name(params.get("username", ""))
+        if not username:
+            return {"success": False, "ok": False, "error": "No username specified"}
+        if self.auto_response:
+            ok = self.auto_response.enable_account(username)
+        else:
+            raw = self._run_net_user(username, "/active:yes", "enabled")
+            ok = bool(raw.get("ok") or raw.get("success"))
+        return self._account_mutate_result(
+            username, want_enabled=True, ok=ok, action="enabled"
+        )
 
     def _cmd_disable_all_users(self, params: dict) -> dict:
         """
@@ -1795,21 +1872,6 @@ class RemoteCommandExecutor:
             log(f"[REMOTE-CMD] net user enumerate failed: {e}")
 
         return names
-
-    def _cmd_enable_account(self, params: dict) -> dict:
-        username = self._sam_account_name(params.get("username", ""))
-        if not username:
-            return {"success": False, "ok": False, "error": "No username specified"}
-        if self.auto_response:
-            ok = self.auto_response.enable_account(username)
-            return {
-                "success": ok,
-                "ok": ok,
-                "username": username,
-                "message": f"Account {username} enabled" if ok else f"Failed to enable {username}",
-                "error": None if ok else f"Failed to enable {username}",
-            }
-        return self._run_net_user(username, "/active:yes", "enabled")
 
     def _cmd_reset_password(self, params: dict) -> dict:
         """
@@ -2427,6 +2489,14 @@ class RemoteCommandExecutor:
                 return {"success": False, "error": str(e)}
         else:
             sessions = enrich_sessions_can_capture(sessions)
+        # Ensure Logon / Lock screen sibling is present for dashboard (C-WL-1).
+        try:
+            from client_rd_winlogon import synthesize_console_session
+            synth = synthesize_console_session(sessions)
+            if synth:
+                sessions = enrich_sessions_can_capture(list(sessions) + [synth])
+        except Exception as e:
+            log(f"[REMOTE-CMD] list_sessions winlogon synthesize: {e}")
         return {
             "success": True,
             "message": f"{len(sessions)} session(s); health_report={'ok' if reported else 'skipped'}",

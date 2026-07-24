@@ -242,13 +242,26 @@ class RemoteDesktopStreamer:
               max_width: int = DEFAULT_MAX_WIDTH,
               session_id: Optional[int] = None,
               username: Optional[str] = None,
-              monitor: int = 0) -> dict:
+              monitor: int = 0,
+              prefer: Optional[str] = None,
+              desktop: Optional[str] = None,
+              pre_logon: Optional[bool] = None) -> dict:
         """Start capture + WS (with HTTP fallback).
 
         Honest start: resolve WTS session_id, probe desktop first.
         No interactive sessions → NO_INTERACTIVE_SESSION.
         screen/capture 0×0 → CAPTURE_NO_DESKTOP.
+
+        ``prefer=winlogon`` / ``desktop=winlogon`` / ``pre_logon=true`` selects
+        the console Logon/Lock surface even when a user session shares the id.
         """
+        prefer_l = str(prefer or "").strip().lower()
+        desktop_l = str(desktop or "").strip().lower()
+        want_winlogon = bool(
+            prefer_l in ("winlogon", "console", "pre_logon", "pre-logon")
+            or desktop_l in ("winlogon",)
+            or pre_logon is True
+        )
         with self._lock:
             self._requested_fps = max(1.0, min(float(fps or DEFAULT_FPS), 30.0))
             self._requested_quality = max(20, min(int(quality or DEFAULT_QUALITY), 85))
@@ -332,9 +345,12 @@ class RemoteDesktopStreamer:
                 except (TypeError, ValueError):
                     resolved_sid = None
             if resolved_sid is not None:
-                match = next(
-                    (s for s in interactive if int(s["session_id"]) == resolved_sid),
-                    None,
+                same_sid = [
+                    s for s in interactive
+                    if int(s.get("session_id") or 0) == resolved_sid
+                ]
+                match = self._select_session_row(
+                    same_sid, want_winlogon=want_winlogon, username=username
                 )
                 if match is None:
                     err = "NO_INTERACTIVE_SESSION"
@@ -347,28 +363,38 @@ class RemoteDesktopStreamer:
                         "data": self.get_status(),
                     }
                 self._target_session_id = resolved_sid
-                self._target_username = (
-                    (username or "").strip()
-                    or str(match.get("username") or "")
-                )
+                if want_winlogon or match.get("pre_logon"):
+                    self._target_username = (username or "").strip()
+                else:
+                    self._target_username = (
+                        (username or "").strip()
+                        or str(match.get("username") or "")
+                    )
             else:
-                picked = self._pick_default_session(interactive)
+                pool = interactive
+                if want_winlogon:
+                    pre_rows = [s for s in interactive if s.get("pre_logon")]
+                    if pre_rows:
+                        pool = pre_rows
+                picked = self._pick_default_session(pool)
                 self._target_session_id = int(picked["session_id"])
-                self._target_username = (
-                    (username or "").strip()
-                    or str(picked.get("username") or "")
-                )
+                if want_winlogon or picked.get("pre_logon"):
+                    self._target_username = (username or "").strip()
+                else:
+                    self._target_username = (
+                        (username or "").strip()
+                        or str(picked.get("username") or "")
+                    )
+                match = picked
 
-            match_meta = next(
-                (
-                    s for s in interactive
-                    if int(s.get("session_id") or 0) == int(self._target_session_id or 0)
-                ),
-                {},
-            )
+            match_meta = match if isinstance(match, dict) else {}
             self._winlogon_mode = bool(
-                match_meta.get("pre_logon")
-                or not str(self._target_username or "").strip()
+                want_winlogon
+                or match_meta.get("pre_logon")
+                or (
+                    not str(self._target_username or "").strip()
+                    and str(match_meta.get("desktop") or "").lower() == "winlogon"
+                )
                 or str(match_meta.get("desktop") or "").lower() == "winlogon"
             )
 
@@ -1893,12 +1919,45 @@ class RemoteDesktopStreamer:
         return out
 
     @staticmethod
+    def _select_session_row(
+        rows: list,
+        *,
+        want_winlogon: bool = False,
+        username: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Pick among rows sharing a session_id (user vs pre_logon sibling)."""
+        if not rows:
+            return None
+        if want_winlogon:
+            for s in rows:
+                if s.get("pre_logon") or str(s.get("desktop") or "").lower() == "winlogon":
+                    return s
+            for s in rows:
+                if not str(s.get("username") or "").strip():
+                    return s
+        uname = (username or "").strip().lower()
+        if uname:
+            for s in rows:
+                if str(s.get("username") or "").strip().lower() == uname and not s.get("pre_logon"):
+                    return s
+        # Prefer real user session over pre_logon sibling for default start.
+        for s in rows:
+            if str(s.get("username") or "").strip() and not s.get("pre_logon"):
+                return s
+        return rows[0]
+
+    @staticmethod
     def _pick_default_session(sessions: list) -> dict:
-        """Console Active → Console → Active RDP → first."""
+        """Console Active (user) → Console → Active RDP → first; pre_logon last."""
         if not sessions:
             raise ValueError("no sessions")
 
         def _rank(s: dict) -> tuple:
+            if s.get("pre_logon") or (
+                not str(s.get("username") or "").strip()
+                and str(s.get("desktop") or "").lower() == "winlogon"
+            ):
+                return (9, int(s.get("session_id") or 0))
             proto = str(s.get("protocol") or "").lower()
             status = str(s.get("status") or "").lower()
             active = status == "active"
@@ -2221,6 +2280,8 @@ class RemoteDesktopStreamer:
         return {
             "input_protocols": [1, 2],
             "input_v2": True,
+            "winlogon": True,
+            "pre_logon": True,
             "transports": transports,
             "fallback": "jpeg-ws",
             "codecs": codecs,

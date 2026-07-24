@@ -906,9 +906,15 @@ class ModernGUI:
                 font=ctk.CTkFont(size=10),
                 text_color=COLORS["green"],
             ).pack(side="left")
-            # Click badge → open My servers
+            # Click badge → account manage (Settings) + My servers
             try:
-                slot.bind("<Button-1>", lambda _e: webbrowser.open(f"{self._account_base_url()}/servers"))
+                def _on_badge(_e=None):
+                    try:
+                        self._show_page("settings")
+                        self._refresh_settings_account_section()
+                    except Exception:
+                        webbrowser.open(f"{self._account_base_url()}/servers")
+                slot.bind("<Button-1>", _on_badge)
             except Exception:
                 pass
         else:
@@ -940,6 +946,7 @@ class ModernGUI:
                 now = is_account_linked()
                 if force_ui or (result is not None and prev != now):
                     self._gui_safe(lambda: self._render_account_link_controls(tok))
+                    self._gui_safe(self._refresh_settings_account_section)
             except Exception as e:
                 log(f"account link sync error: {e}")
 
@@ -1111,6 +1118,10 @@ class ModernGUI:
                         except Exception:
                             pass
                         self._render_account_link_controls(token)
+                        try:
+                            self._refresh_settings_account_section()
+                        except Exception:
+                            pass
                         try:
                             dlg.destroy()
                         except Exception:
@@ -1337,11 +1348,14 @@ class ModernGUI:
             border_width=1, border_color=COLORS["orange"],
         )
         safety.pack(fill="x", padx=18, pady=(0, 12))
-        ctk.CTkLabel(
-            safety, text=f"🛟  {self.t('layers_alert_only')}",
+        self._layers_mode_banner_frame = safety
+        self._layers_mode_banner = ctk.CTkLabel(
+            safety, text=f"🛟  {self.t('layers_mode_observe')}",
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color=COLORS["orange"],
-        ).pack(anchor="w", padx=12, pady=9)
+            justify="left", wraplength=740,
+        )
+        self._layers_mode_banner.pack(anchor="w", padx=12, pady=9)
 
         # Defense Policy education + mode actions (contract 1.4.19)
         self._build_defense_policy_card(shell)
@@ -1451,26 +1465,29 @@ class ModernGUI:
             pass
         btns = ctk.CTkFrame(card, fg_color="transparent")
         btns.pack(fill="x", padx=10, pady=(4, 12))
-        ctk.CTkButton(
+        self._dp_btn_balanced = ctk.CTkButton(
             btns, text=self.t("dp_btn_balanced"),
             font=ctk.CTkFont(size=11), height=28, width=160,
             fg_color=COLORS.get("green", "#2d6a4f"),
             command=lambda: self._set_defense_policy_gui("balanced"),
-        ).pack(side="left", padx=4)
-        ctk.CTkButton(
+        )
+        self._dp_btn_balanced.pack(side="left", padx=4)
+        self._dp_btn_observe = ctk.CTkButton(
             btns, text=self.t("dp_btn_observe_lock"),
             font=ctk.CTkFont(size=11), height=28, width=160,
             fg_color="transparent", border_width=1, border_color=COLORS["border"],
             text_color=COLORS["text"],
             command=self._lock_observe_gui,
-        ).pack(side="left", padx=4)
-        ctk.CTkButton(
+        )
+        self._dp_btn_observe.pack(side="left", padx=4)
+        self._dp_btn_paranoid = ctk.CTkButton(
             btns, text=self.t("dp_btn_paranoid"),
             font=ctk.CTkFont(size=11), height=28, width=140,
             fg_color="transparent", border_width=1, border_color=COLORS["orange"],
             text_color=COLORS["orange"],
             command=lambda: self._set_defense_policy_gui("paranoid"),
-        ).pack(side="left", padx=4)
+        )
+        self._dp_btn_paranoid.pack(side="left", padx=4)
         self._refresh_defense_policy_card()
 
     def _refresh_defense_policy_card(self):
@@ -1478,22 +1495,112 @@ class ModernGUI:
             from client_defense_policy import education_for, get_state, promote_due_info
             st = get_state()
             due = promote_due_info()
-            edu = education_for(st.get("policy_name") or "observe", "tr")
+            policy = str(st.get("policy_name") or "observe").lower()
+            edu = education_for(policy, "tr")
             days = int(st.get("observe_auto_promote_days") or 3)
             extra = ""
-            if st.get("policy_name") == "observe" and not st.get("defense_policy_locked"):
+            if policy == "observe" and not st.get("defense_policy_locked"):
                 if due.get("due"):
                     extra = " — " + self.t("dp_promote_due")
                 elif due.get("in_sec") is not None:
                     extra = f" — {self.t('dp_promote_in')} ~{max(1, int(due['in_sec']) // 86400)}g / {days}g"
             text = (
                 f"{self.t('dp_current')}: {edu.get('title')} "
-                f"({st.get('policy_name')}){extra}\n{edu.get('blurb')}"
+                f"({policy}){extra}\n{edu.get('blurb')}"
             )
             if getattr(self, "_dp_status", None):
                 self._dp_status.configure(text=text)
+            self._refresh_layers_mode_banner(policy)
+            self._refresh_defense_policy_buttons(policy, bool(st.get("defense_policy_locked")))
         except Exception:
             pass
+
+    def _refresh_layers_mode_banner(self, policy: str):
+        """Top safety strip must match active defense mode (not a stale observe tip)."""
+        label = getattr(self, "_layers_mode_banner", None)
+        frame = getattr(self, "_layers_mode_banner_frame", None)
+        if not label:
+            return
+        key = {
+            "observe": "layers_mode_observe",
+            "balanced": "layers_mode_balanced",
+            "paranoid": "layers_mode_paranoid",
+        }.get(str(policy or "observe").lower(), "layers_mode_observe")
+        color = {
+            "observe": COLORS["orange"],
+            "balanced": COLORS.get("green", "#2d6a4f"),
+            "paranoid": COLORS.get("red", "#c1121f"),
+        }.get(str(policy or "observe").lower(), COLORS["orange"])
+        try:
+            label.configure(text=f"🛟  {self.t(key)}", text_color=color)
+            if frame is not None:
+                frame.configure(border_color=color)
+        except Exception:
+            pass
+
+    def _refresh_defense_policy_buttons(self, policy: str, locked: bool = False):
+        """Highlight the active mode; keep others as clear switch actions."""
+        policy = str(policy or "observe").lower()
+        green = COLORS.get("green", "#2d6a4f")
+        orange = COLORS["orange"]
+        transparent = "transparent"
+        border = COLORS["border"]
+        text = COLORS["text"]
+
+        bal = getattr(self, "_dp_btn_balanced", None)
+        obs = getattr(self, "_dp_btn_observe", None)
+        par = getattr(self, "_dp_btn_paranoid", None)
+        if bal:
+            if policy == "balanced":
+                bal.configure(
+                    text=self.t("dp_btn_balanced_active"),
+                    fg_color=green,
+                    state="disabled",
+                )
+            else:
+                bal.configure(
+                    text=self.t("dp_btn_balanced"),
+                    fg_color=green,
+                    state="normal",
+                )
+        if obs:
+            if policy == "observe":
+                obs.configure(
+                    text=self.t("dp_btn_observe_lock"),
+                    fg_color=transparent,
+                    border_width=1,
+                    border_color=orange if not locked else border,
+                    text_color=orange if not locked else text,
+                    state="normal",
+                    command=self._lock_observe_gui,
+                )
+            else:
+                obs.configure(
+                    text=self.t("dp_btn_observe"),
+                    fg_color=transparent,
+                    border_width=1,
+                    border_color=border,
+                    text_color=text,
+                    state="normal",
+                    command=lambda: self._set_defense_policy_gui("observe"),
+                )
+        if par:
+            if policy == "paranoid":
+                par.configure(
+                    text=self.t("dp_btn_paranoid_active"),
+                    fg_color=orange,
+                    text_color=COLORS.get("text_bright", "#fff"),
+                    state="disabled",
+                )
+            else:
+                par.configure(
+                    text=self.t("dp_btn_paranoid"),
+                    fg_color=transparent,
+                    border_width=1,
+                    border_color=orange,
+                    text_color=orange,
+                    state="normal",
+                )
 
     def _set_defense_policy_gui(self, policy_name: str):
         token = self.app.state.get("token", "")
@@ -1751,6 +1858,7 @@ class ModernGUI:
             ctk.CTkFrame(sec, height=6, fg_color="transparent").pack()
 
         # Yerel güvenlik PIN — cloud SECTIONS dışında (GuiLock)
+        self._build_settings_account_section(shell)
         self._build_settings_pin_section(shell)
 
         # Alt satır: durum etiketi + kaydet
@@ -1782,6 +1890,237 @@ class ModernGUI:
 
         self._load_settings_values()
         self._refresh_settings_pin_ui()
+
+    def _build_settings_account_section(self, parent):
+        """Hesap bağlantısı — durum, bağla / ayır / Sunucularım (Ayarlar'da görünür)."""
+        sec = ctk.CTkFrame(
+            parent, fg_color=COLORS["bg"], corner_radius=8,
+            border_width=1, border_color=COLORS["border"],
+        )
+        sec.pack(fill="x", padx=18, pady=6)
+        self._settings_account_frame = sec
+        ctk.CTkLabel(
+            sec, text=self.t("settings_account_title"),
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=COLORS["text_bright"],
+        ).pack(anchor="w", padx=12, pady=(10, 2))
+        ctk.CTkLabel(
+            sec, text=self.t("settings_account_hint"),
+            font=ctk.CTkFont(size=11), text_color=COLORS["text_dim"],
+            justify="left", wraplength=720,
+        ).pack(anchor="w", padx=12, pady=(0, 8))
+        self._settings_account_status = ctk.CTkLabel(
+            sec, text="",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=COLORS["text"],
+            justify="left", wraplength=720,
+        )
+        self._settings_account_status.pack(anchor="w", padx=12, pady=(0, 8))
+        btns = ctk.CTkFrame(sec, fg_color="transparent")
+        btns.pack(fill="x", padx=10, pady=(0, 12))
+        self._settings_account_btn_link = ctk.CTkButton(
+            btns, text=self.t("btn_link_account"),
+            font=ctk.CTkFont(size=11), height=28, width=130,
+            fg_color=COLORS["accent"],
+            command=lambda: self._open_link_account(self.app.state.get("token", "")),
+        )
+        self._settings_account_btn_link.pack(side="left", padx=4)
+        self._settings_account_btn_unlink = ctk.CTkButton(
+            btns, text=self.t("btn_unlink_account"),
+            font=ctk.CTkFont(size=11), height=28, width=140,
+            fg_color="transparent", border_width=1, border_color=COLORS["orange"],
+            text_color=COLORS["orange"],
+            command=self._open_unlink_account,
+        )
+        self._settings_account_btn_unlink.pack(side="left", padx=4)
+        ctk.CTkButton(
+            btns, text=self.t("menu_open_my_servers"),
+            font=ctk.CTkFont(size=11), height=28, width=120,
+            fg_color="transparent", border_width=1, border_color=COLORS["border"],
+            text_color=COLORS["text"],
+            command=lambda: webbrowser.open(f"{self._account_base_url()}/servers"),
+        ).pack(side="left", padx=4)
+        ctk.CTkButton(
+            btns, text=self.t("settings_account_refresh"),
+            font=ctk.CTkFont(size=11), height=28, width=100,
+            fg_color="transparent", border_width=1, border_color=COLORS["border"],
+            text_color=COLORS["text"],
+            command=lambda: self._sync_account_link_from_api(force_ui=True),
+        ).pack(side="left", padx=4)
+        self._refresh_settings_account_section()
+
+    def _refresh_settings_account_section(self):
+        try:
+            from client_utils import get_linked_account_email, is_account_linked
+            linked = is_account_linked()
+            email = get_linked_account_email()
+            lbl = getattr(self, "_settings_account_status", None)
+            btn_link = getattr(self, "_settings_account_btn_link", None)
+            btn_unlink = getattr(self, "_settings_account_btn_unlink", None)
+            if lbl:
+                if linked:
+                    shown = email or self.t("btn_account_linked")
+                    lbl.configure(
+                        text=self.t("settings_account_linked_fmt").format(email=shown),
+                        text_color=COLORS["green"],
+                    )
+                else:
+                    lbl.configure(
+                        text=self.t("settings_account_not_linked"),
+                        text_color=COLORS["text_dim"],
+                    )
+            if btn_link:
+                btn_link.configure(state="disabled" if linked else "normal")
+            if btn_unlink:
+                btn_unlink.configure(state="normal" if linked else "disabled")
+        except Exception:
+            pass
+
+    def _open_unlink_account(self):
+        tok = self.app.state.get("token", "") or ""
+        if not tok:
+            messagebox.showwarning(self.t("warn"), self.t("err_no_token"))
+            return
+        self._show_unlink_account_dialog(tok)
+
+    def _show_unlink_account_dialog(self, token: str):
+        """Confirm unlink with account email+password (cloud source of truth)."""
+        try:
+            dlg = ctk.CTkToplevel(self.root)
+        except Exception:
+            webbrowser.open(f"{self._account_base_url()}/servers")
+            messagebox.showinfo(self.t("info"), self.t("link_account_api_still_linked"))
+            return
+
+        dlg.title(self.t("btn_unlink_account"))
+        dlg.resizable(False, False)
+        dlg.grab_set()
+        try:
+            dlg.transient(self.root)
+        except Exception:
+            pass
+
+        frame = ctk.CTkFrame(dlg, fg_color=COLORS["card"], corner_radius=10)
+        frame.pack(fill="both", expand=True, padx=14, pady=14)
+
+        ctk.CTkLabel(
+            frame,
+            text=self.t("unlink_account_dialog_title"),
+            font=ctk.CTkFont(size=16, weight="bold"),
+            text_color=COLORS["text_bright"],
+        ).pack(anchor="w", pady=(4, 6))
+        ctk.CTkLabel(
+            frame,
+            text=self.t("unlink_account_dialog_hint"),
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["text_dim"],
+            wraplength=360,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 10))
+
+        email_var = ctk.StringVar()
+        pass_var = ctk.StringVar()
+        status_var = ctk.StringVar(value="")
+        try:
+            from client_utils import get_linked_account_email
+            prev = get_linked_account_email()
+            if prev:
+                email_var.set(prev)
+        except Exception:
+            pass
+
+        ctk.CTkLabel(frame, text=self.t("link_account_email"), text_color=COLORS["text"]).pack(anchor="w")
+        email_entry = ctk.CTkEntry(frame, textvariable=email_var, width=360, height=32)
+        email_entry.pack(fill="x", pady=(2, 8))
+        ctk.CTkLabel(frame, text=self.t("link_account_password"), text_color=COLORS["text"]).pack(anchor="w")
+        pass_entry = ctk.CTkEntry(frame, textvariable=pass_var, show="*", width=360, height=32)
+        pass_entry.pack(fill="x", pady=(2, 8))
+        status_lbl = ctk.CTkLabel(
+            frame, textvariable=status_var, text_color=COLORS["orange"],
+            font=ctk.CTkFont(size=11), wraplength=360, justify="left",
+        )
+        status_lbl.pack(anchor="w", pady=(0, 8))
+        btn_row = ctk.CTkFrame(frame, fg_color="transparent")
+        btn_row.pack(fill="x", pady=(4, 0))
+
+        def _set_busy(busy: bool):
+            state = "disabled" if busy else "normal"
+            try:
+                unlink_btn.configure(state=state)
+                web_btn.configure(state=state)
+                email_entry.configure(state=state)
+                pass_entry.configure(state=state)
+            except Exception:
+                pass
+
+        def _do_unlink():
+            email = (email_var.get() or "").strip()
+            password = pass_var.get() or ""
+            if not email or not password:
+                status_var.set(self.t("link_account_need_fields"))
+                return
+            if not messagebox.askyesno(
+                self.t("btn_unlink_account"),
+                self.t("unlink_account_confirm"),
+            ):
+                return
+            _set_busy(True)
+            status_var.set(self.t("unlink_account_working"))
+
+            def _work():
+                from client_api import unlink_account_with_credentials
+                result = unlink_account_with_credentials(
+                    email, password, token, log_func=log,
+                )
+
+                def _done():
+                    _set_busy(False)
+                    if result.get("ok"):
+                        try:
+                            dlg.destroy()
+                        except Exception:
+                            pass
+                        messagebox.showinfo(
+                            self.t("info"), self.t("unlink_account_success")
+                        )
+                        self._render_account_link_controls(token)
+                        self._refresh_settings_account_section()
+                        return
+                    err = str(result.get("error") or "")
+                    if err == "invalid_credentials":
+                        status_var.set(self.t("link_account_bad_credentials"))
+                    elif err == "unlink_api_unavailable":
+                        status_var.set(self.t("unlink_account_use_web"))
+                        try:
+                            webbrowser.open(f"{self._account_base_url()}/servers")
+                        except Exception:
+                            pass
+                    else:
+                        status_var.set(
+                            self.t("unlink_account_failed").format(err=err or "?")
+                        )
+
+                self._gui_safe(_done)
+
+            threading.Thread(target=_work, daemon=True, name="AccountUnlink").start()
+
+        unlink_btn = ctk.CTkButton(
+            btn_row, text=self.t("btn_unlink_account"),
+            fg_color=COLORS["orange"], text_color=COLORS["text_bright"],
+            width=140, height=32, command=_do_unlink,
+        )
+        unlink_btn.pack(side="left", padx=(0, 8))
+        web_btn = ctk.CTkButton(
+            btn_row, text=self.t("menu_open_my_servers"),
+            fg_color="transparent", border_width=1, border_color=COLORS["border"],
+            text_color=COLORS["text"], width=120, height=32,
+            command=lambda: webbrowser.open(f"{self._account_base_url()}/servers"),
+        )
+        web_btn.pack(side="left")
+        try:
+            email_entry.focus_set()
+        except Exception:
+            pass
 
     def _build_settings_pin_section(self, parent):
         """Local GUI PIN: set / change / clear (not part of cloud threat-config)."""

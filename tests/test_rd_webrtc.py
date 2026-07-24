@@ -92,6 +92,8 @@ class TestCapabilities(unittest.TestCase):
         self.assertEqual(capabilities["codecs"], ["jpeg"])
         self.assertEqual(capabilities["fallback"], "jpeg-ws")
         self.assertTrue(capabilities["input_v2"])
+        self.assertTrue(capabilities["winlogon"])
+        self.assertTrue(capabilities["pre_logon"])
 
     def test_runtime_codecs_are_additive_and_truthful(self):
         media = FakeMedia(available=True, codecs=["h264", "vp8"])

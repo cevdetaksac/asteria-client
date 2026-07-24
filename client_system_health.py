@@ -569,18 +569,20 @@ class SystemHealthMonitor:
                     name_l = name.lower()
                     if sid_i == 0 or name_l in ("services",) or state_l in ("listen",):
                         continue
-                    if not username:
-                        continue  # bare console Conn with no user — not a logon
+                    # Bare console (no username) is pre-logon / lock — keep it;
+                    # synthesize_console_session below also adds an explicit row.
                     proto = "RDP" if name_l.startswith("rdp") else "Console"
                     status_norm = {
                         "active": "Active",
                         "disc": "Disconnected",
                         "conn": "Conn",
+                        "connected": "Connected",
                     }.get(state_l, state or "Unknown")
+                    pre = not bool(str(username or "").strip()) and proto == "Console"
                     sessions.append({
                         "username": username,
                         "session_id": sid_i,
-                        "session_name": name,
+                        "session_name": name if not pre else "Winlogon",
                         "status": status_norm,
                         "client_ip": remote_ips[0] if proto == "RDP" and remote_ips else "",
                         "protocol": proto,
@@ -589,9 +591,27 @@ class SystemHealthMonitor:
                         "duration_sec": None,
                         "idle_sec": None,
                         "client_name": "",
+                        "can_capture": True if pre else (
+                            sid_i > 0
+                            and status_norm == "Active"
+                            and proto not in ("Services",)
+                        ),
+                        "pre_logon": pre,
+                        "desktop": "winlogon" if pre else "",
+                        "label": "Logon / Lock screen" if pre else "",
                     })
             except Exception as e:
                 log(f"[HEALTH] query session fallback failed: {e}")
+
+        # Always offer Logon / Lock screen row for dashboard (C-WL-1), even when
+        # a console user is already Active — same session_id, pre_logon=true.
+        try:
+            from client_rd_winlogon import synthesize_console_session
+            synth = synthesize_console_session(sessions)
+            if synth:
+                sessions.append(synth)
+        except Exception as e:
+            log(f"[HEALTH] winlogon session synthesize failed: {e}")
 
         return sessions
 

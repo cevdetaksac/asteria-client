@@ -72,6 +72,10 @@ def attach_console_desktop(
 ) -> Tuple[bool, str, Optional[int]]:
     """Bind the calling thread to the console input desktop.
 
+    When ``prefer_winlogon`` is True, try the named ``Winlogon`` desktop first
+    (logon / lock UI). OpenInputDesktop is only a fallback — when a user is
+    logged on unlocked it returns ``Default`` and would skip the logon surface.
+
     Returns ``(ok, desktop_name_or_error, hdesk)``.
     Caller owns ``hdesk`` and should CloseDesktop when replacing.
     """
@@ -88,29 +92,13 @@ def attach_console_desktop(
     names = ("Winlogon", "Default") if prefer_winlogon else ("Default", "Winlogon")
     tried = []
 
-    try:
-        _kernel32.SetLastError(0)
-        hdesk = _user32.OpenInputDesktop(0, False, DESKTOP_GENERIC_ALL)
-        if hdesk:
-            if _user32.SetThreadDesktop(hdesk):
-                name = desktop_name(hdesk) or "Input"
-                log(f"[RD-WINLOGON] attached via OpenInputDesktop name={name}")
-                return True, name, int(hdesk)
-            tried.append(f"Input/SetThread err={_kernel32.GetLastError()}")
-            try:
-                _user32.CloseDesktop(hdesk)
-            except Exception:
-                pass
-        else:
-            tried.append(f"OpenInputDesktop err={_kernel32.GetLastError()}")
-    except Exception as exc:
-        tried.append(f"OpenInputDesktop: {exc}")
-
     OpenDesktopW = _user32.OpenDesktopW
     OpenDesktopW.argtypes = [
         wintypes.LPCWSTR, wintypes.DWORD, wintypes.BOOL, wintypes.DWORD
     ]
     OpenDesktopW.restype = wintypes.HDESK
+
+    # Named desktops first when targeting Winlogon (do not short-circuit on Default).
     for name in names:
         try:
             _kernel32.SetLastError(0)
@@ -129,6 +117,25 @@ def attach_console_desktop(
                 pass
         except Exception as exc:
             tried.append(f"OpenDesktop({name}): {exc}")
+
+    # Fallback: current input desktop (may be Winlogon at pre-logon / lock).
+    try:
+        _kernel32.SetLastError(0)
+        hdesk = _user32.OpenInputDesktop(0, False, DESKTOP_GENERIC_ALL)
+        if hdesk:
+            if _user32.SetThreadDesktop(hdesk):
+                name = desktop_name(hdesk) or "Input"
+                log(f"[RD-WINLOGON] attached via OpenInputDesktop name={name}")
+                return True, name, int(hdesk)
+            tried.append(f"Input/SetThread err={_kernel32.GetLastError()}")
+            try:
+                _user32.CloseDesktop(hdesk)
+            except Exception:
+                pass
+        else:
+            tried.append(f"OpenInputDesktop err={_kernel32.GetLastError()}")
+    except Exception as exc:
+        tried.append(f"OpenInputDesktop: {exc}")
 
     detail = "; ".join(tried)[:240] or "attach_failed"
     log(f"[RD-WINLOGON] attach failed: {detail}")
@@ -205,16 +212,32 @@ def probe_winlogon_capture(max_width: int = 1280) -> dict:
 
 
 def synthesize_console_session(existing: list) -> Optional[dict]:
-    """If query-user missed the console (no logged-on user), add a captureable row."""
+    """Ensure a captureable console/Winlogon row exists for dashboard.
+
+    - No interactive user: synthesize pre_logon console (query user empty).
+    - User already listed on console: still offer a sibling pre_logon row so the
+      dashboard can choose "Logon / Lock screen" via prefer=winlogon.
+    """
     sid = console_session_id()
     if sid <= 0:
         return None
+    has_pre = False
+    has_console_user = False
     for item in existing or []:
         try:
-            if int(item.get("session_id") or 0) == sid:
-                return None
+            item_sid = int(item.get("session_id") or 0)
         except (TypeError, ValueError):
             continue
+        if item_sid != sid:
+            continue
+        if item.get("pre_logon"):
+            has_pre = True
+        if str(item.get("username") or "").strip():
+            has_console_user = True
+    if has_pre:
+        return None
+    # If console user session already present, still add pre_logon option
+    # (same session_id — dashboard distinguishes via pre_logon / empty username).
     state = "Connected"
     try:
         from client_remote_desktop import RemoteDesktopStreamer
@@ -226,10 +249,12 @@ def synthesize_console_session(existing: list) -> Optional[dict]:
     return {
         "username": "",
         "session_id": sid,
-        "session_name": "Console",
+        "session_name": "Winlogon",
         "status": state if state not in ("unknown", "query_failed") else "Connected",
         "protocol": "Console",
         "desktop": "winlogon",
         "can_capture": True,
         "pre_logon": True,
+        "label": "Logon / Lock screen",
+        "alongside_user_session": bool(has_console_user),
     }

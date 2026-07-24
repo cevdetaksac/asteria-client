@@ -36,7 +36,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.25"  # Stop shipping client_*.py as plain datas in _internal
+VERSION = "4.9.26"  # Winlogon pre_logon row always offered to dashboard; prefer=winlogon start
 
 
 CLIENT_VERSION = VERSION  # Main version constant

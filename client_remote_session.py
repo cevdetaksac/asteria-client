@@ -88,12 +88,18 @@ def validate_windows_credentials(
 
 
 def list_local_users(*, include_disabled: bool = True) -> List[Dict[str, Any]]:
-    """Local SAM users via PowerShell; enriched with session info."""
+    """Local SAM users via PowerShell; enriched with session info.
+
+    Disabled accounts are included by default so Server Management / cloud
+    can show and toggle active ↔ disabled. Pass ``include_disabled=False``
+    only for legacy remote-desktop dropdowns that want enabled-only.
+    """
     users: List[Dict[str, Any]] = []
     try:
         rc, out, _ = run_ps(
             "Get-LocalUser | Select-Object Name, FullName, Enabled, LastLogon, "
-            "SID, PrincipalSource | ConvertTo-Json -Depth 3",
+            "SID, PrincipalSource, Description, PasswordRequired, "
+            "UserMayChangePassword, PasswordExpires | ConvertTo-Json -Depth 3",
             timeout=15,
         )
         if rc == 0 and (out or "").strip():
@@ -131,11 +137,17 @@ def list_local_users(*, include_disabled: bool = True) -> List[Dict[str, Any]]:
                     else:
                         last_iso = last
                 src = str(u.get("PrincipalSource") or "")
+                protected = _is_protected_local_account(name)
                 users.append({
                     "username": name,
                     "full_name": (u.get("FullName") or "") or "",
+                    "description": (u.get("Description") or "") or "",
                     "sid": sid,
                     "enabled": enabled,
+                    "status": "active" if enabled else "disabled",
+                    "protected": protected,
+                    "can_enable": (not enabled) and (not protected),
+                    "can_disable": enabled and (not protected),
                     "local": "ActiveDirectory" not in src,
                     "is_admin": False,
                     "groups": [],
@@ -187,6 +199,27 @@ def list_local_users(*, include_disabled: bool = True) -> List[Dict[str, Any]]:
             u["session_status"] = s.get("status")
 
     return users
+
+
+def _is_protected_local_account(username: str) -> bool:
+    try:
+        from client_auto_response import PROTECTED_ACCOUNTS
+        return str(username or "").strip().upper() in PROTECTED_ACCOUNTS
+    except Exception:
+        return str(username or "").strip().upper() in {
+            "SYSTEM", "LOCAL SERVICE", "NETWORK SERVICE", "WDAGUTILITYACCOUNT",
+        }
+
+
+def find_local_user(username: str, *, include_disabled: bool = True) -> Optional[Dict[str, Any]]:
+    """Return one enriched local-user row (or None)."""
+    want = str(username or "").strip().lower()
+    if not want:
+        return None
+    for u in list_local_users(include_disabled=include_disabled):
+        if str(u.get("username") or "").strip().lower() == want:
+            return u
+    return None
 
 
 def _can_capture(status: str, session_id: int, protocol: str, *, pre_logon: bool = False) -> bool:

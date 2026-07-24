@@ -17,7 +17,7 @@ import os
 import sys
 import time
 import threading
-from typing import Optional, Dict, Any, Callable
+from typing import Optional, Dict, Any, Callable, Tuple
 
 from client_constants import GITHUB_OWNER, GITHUB_REPO
 from client_helpers import log
@@ -673,83 +673,255 @@ def check_updates_and_apply_silent() -> bool:
     
     return True
 
-def download_installer_file(url: str, local_path: str, expected_sha256: str = "") -> bool:
-    """Download installer file from URL with optional SHA-256 verification."""
+# Download completion is size/stream based — never "timeout expired ⇒ done".
+# connect timeout: TCP/TLS only. stall timeout: max idle between chunks.
+_DOWNLOAD_CONNECT_TIMEOUT_SEC = 30
+_DOWNLOAD_STALL_TIMEOUT_SEC = 90
+_DOWNLOAD_MAX_ATTEMPTS = 5
+_DOWNLOAD_MIN_BYTES = 1_000_000  # reject HTML/error pages posing as installers
+_DOWNLOAD_RETRY_BACKOFF_SEC = (2, 4, 8, 16, 32)
+
+
+def _unlink_quiet(path: str) -> None:
     try:
-        import hashlib
-        import requests
-        from client_security_utils import resolve_tls_verify
-        from client_utils import get_from_config
+        if path and os.path.isfile(path):
+            os.remove(path)
+    except OSError:
+        pass
 
-        verify_checksum = bool(get_from_config("updates.verify_checksum", True))
-        log(f"[SILENT UPDATE] Downloading installer from: {url}")
 
-        response = requests.get(url, stream=True, timeout=60, verify=resolve_tls_verify())
-        response.raise_for_status()
+def _installer_looks_complete(
+    path: str,
+    *,
+    bytes_written: int,
+    content_length: Optional[int],
+    expected_size: Optional[int] = None,
+) -> Tuple[bool, str]:
+    """Return (ok, detail). Completion ≠ wall-clock timeout."""
+    if bytes_written <= 0 or not path or not os.path.isfile(path):
+        return False, "empty_download"
+    try:
+        on_disk = os.path.getsize(path)
+    except OSError:
+        return False, "stat_failed"
+    if on_disk != bytes_written:
+        return False, f"size_mismatch_disk={on_disk}_written={bytes_written}"
+    # Authoritative completeness: Content-Length when the server sends it.
+    if content_length is not None and content_length > 0:
+        if bytes_written != int(content_length):
+            return False, (
+                f"incomplete_content_length got={bytes_written} "
+                f"expected={content_length}"
+            )
+    # expected_size is only a cloud hint — never treat timeout/hint as success;
+    # do not reject a CL-verified PE solely because the dashboard size is stale.
+    if bytes_written < _DOWNLOAD_MIN_BYTES:
+        return False, f"too_small={bytes_written}"
+    try:
+        with open(path, "rb") as fh:
+            magic = fh.read(2)
+        if magic != b"MZ":
+            return False, "not_pe_mz"
+    except OSError as exc:
+        return False, f"magic_read:{exc}"
+    if (
+        expected_size is not None
+        and int(expected_size) > 0
+        and (content_length is None or content_length <= 0)
+    ):
+        exp = int(expected_size)
+        if abs(bytes_written - exp) > max(1024 * 64, int(exp * 0.02)):
+            return False, f"size_hint_mismatch got={bytes_written} hint={exp}"
+    return True, "complete"
 
-        sha = hashlib.sha256()
-        last_touch = time.time()
-        with open(local_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-                sha.update(chunk)
-                now = time.time()
-                if now - last_touch >= 15:
-                    last_touch = now
+
+def download_installer_complete(
+    url: str,
+    local_path: str,
+    *,
+    expected_size: Optional[int] = None,
+    expected_sha256: str = "",
+    progress_callback: Optional[Callable[[int], None]] = None,
+    max_attempts: int = _DOWNLOAD_MAX_ATTEMPTS,
+    log_func=None,
+) -> Tuple[bool, str]:
+    """Download installer until the transfer is complete, then verify.
+
+    Success criteria (all must hold):
+      - HTTP 2xx
+      - response body fully consumed (stream ended)
+      - bytes written == Content-Length (when header present)
+      - PE MZ header + minimum size
+      - optional SHA-256 when configured
+
+    ``timeout`` is only connect + per-chunk stall detection — never a total
+    download deadline. Incomplete / stalled attempts are deleted and retried
+    up to ``max_attempts`` (default 5).
+    """
+    import hashlib
+    import requests
+    from client_security_utils import resolve_tls_verify, ensure_ca_bundle
+    from client_utils import get_from_config
+
+    _log = log_func or log
+    verify_checksum = bool(get_from_config("updates.verify_checksum", True))
+    attempts = max(1, min(int(max_attempts or _DOWNLOAD_MAX_ATTEMPTS), 8))
+    last_detail = "download_not_started"
+    timeout = (_DOWNLOAD_CONNECT_TIMEOUT_SEC, _DOWNLOAD_STALL_TIMEOUT_SEC)
+
+    parent = os.path.dirname(local_path) or "."
+    try:
+        os.makedirs(parent, exist_ok=True)
+    except OSError:
+        pass
+
+    for attempt in range(1, attempts + 1):
+        _unlink_quiet(local_path)
+        partial = local_path + ".partial"
+        _unlink_quiet(partial)
+        try:
+            try:
+                ensure_ca_bundle()
+            except Exception:
+                pass
+            _log(
+                f"[UPDATE-DL] attempt {attempt}/{attempts} url={url[:120]} "
+                f"stall_timeout={_DOWNLOAD_STALL_TIMEOUT_SEC}s"
+            )
+            try:
+                response = requests.get(
+                    url, stream=True, timeout=timeout, verify=resolve_tls_verify()
+                )
+                response.raise_for_status()
+            except Exception as first_err:
+                err_l = str(first_err).lower()
+                if any(x in err_l for x in ("cacert", "ssl", "tls", "certificate", "cert")):
                     try:
-                        from client_utils import touch_update_lock
-                        touch_update_lock()
+                        ensure_ca_bundle()
                     except Exception:
                         pass
+                    response = requests.get(
+                        url, stream=True, timeout=timeout, verify=resolve_tls_verify()
+                    )
+                    response.raise_for_status()
+                else:
+                    raise
 
-        file_size = os.path.getsize(local_path)
-        digest = sha.hexdigest()
-        log(f"[SILENT UPDATE] Downloaded {file_size} bytes, sha256={digest[:16]}…")
-
-        if verify_checksum and expected_sha256:
-            if digest.lower() != expected_sha256.lower():
-                log("[SILENT UPDATE] Checksum mismatch — aborting install")
-                try:
-                    os.remove(local_path)
-                except OSError:
-                    pass
-                return False
-
-        # SUP-001b: WinVerifyTrust / publisher allowlist before execute.
-        # Soft-skip unless updates.require_authenticode or allowed_publishers.
-        try:
-            from client_authenticode import (
-                AuthenticodeError,
-                assert_update_authenticode,
+            cl_raw = response.headers.get("Content-Length") or response.headers.get(
+                "content-length"
             )
-            auth = assert_update_authenticode(local_path)
-            if auth.get("trusted"):
-                log(
-                    "[SILENT UPDATE] Authenticode OK "
-                    f"publisher={(auth.get('publisher') or '')[:80]}"
-                )
-            elif auth.get("skipped"):
-                log("[SILENT UPDATE] Authenticode soft-skip (not required)")
-            else:
-                log(
-                    "[SILENT UPDATE] Authenticode not trusted "
-                    f"err={(auth.get('error') or '')[:80]}"
-                )
-        except AuthenticodeError as exc:
-            log(f"[SILENT UPDATE] Authenticode rejected — aborting: {exc}")
+            content_length: Optional[int] = None
             try:
-                os.remove(local_path)
-            except OSError:
-                pass
-            return False
+                if cl_raw is not None and str(cl_raw).strip():
+                    content_length = int(cl_raw)
+            except (TypeError, ValueError):
+                content_length = None
+
+            sha = hashlib.sha256()
+            written = 0
+            last_touch = time.time()
+            with open(partial, "wb") as fh:
+                for chunk in response.iter_content(chunk_size=256 * 1024):
+                    if not chunk:
+                        continue
+                    fh.write(chunk)
+                    sha.update(chunk)
+                    written += len(chunk)
+                    now = time.time()
+                    if now - last_touch >= 15:
+                        last_touch = now
+                        try:
+                            from client_utils import touch_update_lock
+                            touch_update_lock()
+                        except Exception:
+                            pass
+                    if progress_callback and content_length and content_length > 0:
+                        pct = int(min(99, (written / float(content_length)) * 100))
+                        try:
+                            progress_callback(pct)
+                        except Exception:
+                            pass
+
+            ok_complete, detail = _installer_looks_complete(
+                partial,
+                bytes_written=written,
+                content_length=content_length,
+                expected_size=expected_size,
+            )
+            if not ok_complete:
+                last_detail = detail
+                _log(f"[UPDATE-DL] incomplete attempt={attempt}: {detail}")
+                _unlink_quiet(partial)
+                raise RuntimeError(detail)
+
+            digest = sha.hexdigest()
+            if verify_checksum and expected_sha256:
+                if digest.lower() != str(expected_sha256).lower():
+                    last_detail = "checksum_mismatch"
+                    _unlink_quiet(partial)
+                    raise RuntimeError(last_detail)
+
+            # Promote partial → final only after completion checks pass
+            _unlink_quiet(local_path)
+            os.replace(partial, local_path)
+
+            try:
+                from client_authenticode import (
+                    AuthenticodeError,
+                    assert_update_authenticode,
+                )
+                auth = assert_update_authenticode(local_path)
+                if auth.get("trusted"):
+                    _log(
+                        "[UPDATE-DL] Authenticode OK "
+                        f"publisher={(auth.get('publisher') or '')[:80]}"
+                    )
+                elif auth.get("skipped"):
+                    _log("[UPDATE-DL] Authenticode soft-skip (not required)")
+            except AuthenticodeError as exc:
+                last_detail = f"authenticode:{exc}"
+                _unlink_quiet(local_path)
+                raise RuntimeError(last_detail)
+            except Exception as exc:
+                _log(f"[UPDATE-DL] Authenticode check error: {exc}")
+
+            if progress_callback:
+                try:
+                    progress_callback(100)
+                except Exception:
+                    pass
+            _log(
+                f"[UPDATE-DL] complete bytes={written} "
+                f"sha256={digest[:16]}… attempts={attempt}"
+            )
+            return True, "complete"
+
         except Exception as exc:
-            log(f"[SILENT UPDATE] Authenticode check error: {exc}")
+            last_detail = str(exc)[:180] or "download_error"
+            _log(f"[UPDATE-DL] attempt {attempt}/{attempts} failed: {last_detail}")
+            _unlink_quiet(partial)
+            _unlink_quiet(local_path)
+            if attempt >= attempts:
+                break
+            delay = _DOWNLOAD_RETRY_BACKOFF_SEC[
+                min(attempt - 1, len(_DOWNLOAD_RETRY_BACKOFF_SEC) - 1)
+            ]
+            time.sleep(delay)
 
-        return True
+    return False, last_detail or "download_failed"
 
-    except Exception as e:
-        log(f"[SILENT UPDATE] Download error: {e}")
-        return False
+
+def download_installer_file(url: str, local_path: str, expected_sha256: str = "") -> bool:
+    """Download installer file from URL with optional SHA-256 verification."""
+    ok, detail = download_installer_complete(
+        url,
+        local_path,
+        expected_sha256=expected_sha256 or "",
+        max_attempts=_DOWNLOAD_MAX_ATTEMPTS,
+    )
+    if not ok:
+        log(f"[SILENT UPDATE] Download failed: {detail}")
+    return bool(ok)
 
 
 
@@ -1201,65 +1373,113 @@ def run_self_update_command(params: Optional[dict] = None, api_client=None) -> d
     except Exception:
         pass
 
-    temp_dir = tempfile.mkdtemp(prefix="honeypot_self_update_")
-    installer_path = os.path.join(temp_dir, installer_name or "cloud-client-installer.exe")
+    temp_dir = None
+    try:
+        from client_utils import _update_helper_staging_dir
+        staging_root = _update_helper_staging_dir()
+        installer_path = os.path.join(
+            staging_root,
+            f"cloud-client-installer-v{tag or 'pending'}.exe",
+        )
+    except Exception:
+        temp_dir = tempfile.mkdtemp(prefix="honeypot_self_update_")
+        installer_path = os.path.join(temp_dir, installer_name or "cloud-client-installer.exe")
     staged = None
 
     try:
-        from client_utils import create_update_manager
-        mgr = create_update_manager(GITHUB_OWNER, GITHUB_REPO, log)
-
-        def _prog(pct):
-            if pct % 10 == 0:
-                touch_update_lock()
-                log(f"[SELF-UPDATE] download {pct}%")
-            try:
-                from client_update_ui import set_update_ui_status
-                if pct % 5 == 0 or pct >= 99:
-                    set_update_ui_status(
-                        "downloading",
-                        from_version=from_version,
-                        to_version=tag,
-                        detail=f"download_{pct}",
-                        progress=pct,
-                    )
-            except Exception:
-                pass
+        urls_to_try = []
+        for u in (download_url, _default_installer_url(tag) if tag else ""):
+            u = (u or "").strip()
+            if not u or not _is_allowed_update_url(u):
+                continue
+            if u not in urls_to_try:
+                urls_to_try.append(u)
+        if not urls_to_try:
+            release_update_lock(resume_updaters=True)
+            _lifecycle_fail(api_client, "url_not_allowed", from_version, tag)
+            return {
+                "success": False,
+                "ok": False,
+                "error": "download_failed",
+                "detail": "url_not_allowed",
+                "from_version": from_version,
+                "to_version": tag,
+                "tag": f"v{tag}" if tag else "",
+            }
 
         downloaded = None
-        try:
-            downloaded = mgr.download_installer(download_url, _prog)
-        except Exception as e:
-            log(f"[SELF-UPDATE] download_installer: {e}")
-
-        if downloaded and os.path.isfile(downloaded):
+        last_dl_err = ""
+        # Up to 5 completion-verified attempts; rotate URLs between tries.
+        for attempt in range(1, _DOWNLOAD_MAX_ATTEMPTS + 1):
+            attempt_url = urls_to_try[(attempt - 1) % len(urls_to_try)]
+            log(
+                f"[SELF-UPDATE] download attempt {attempt}/{_DOWNLOAD_MAX_ATTEMPTS} "
+                f"→ {attempt_url[:100]}"
+            )
             try:
-                shutil.copy2(downloaded, installer_path)
+                from client_update_ui import set_update_ui_status as _set_ui
             except Exception:
-                installer_path = downloaded
-        else:
-            if not download_installer_file(download_url, installer_path):
-                release_update_lock(resume_updaters=True)
-                try:
-                    from client_update_ui import set_update_ui_status
-                    set_update_ui_status(
-                        "failed", from_version=from_version, to_version=tag,
-                        detail="installer_download_failed", error="download_failed",
-                    )
-                except Exception:
-                    pass
-                _lifecycle_fail(api_client, "download_failed", from_version, tag)
-                return {
-                    "success": False,
-                    "ok": False,
-                    "error": "download_failed",
-                    "detail": "installer_download_failed",
-                    "from_version": from_version,
-                    "to_version": tag,
-                    "tag": f"v{tag}" if tag else "",
-                    "download_url": download_url,
-                }
+                _set_ui = None
 
+            def _prog(pct, _attempt=attempt):
+                if pct % 10 == 0:
+                    touch_update_lock()
+                    log(f"[SELF-UPDATE] download {_attempt} {pct}%")
+                if _set_ui and (pct % 5 == 0 or pct >= 99):
+                    try:
+                        _set_ui(
+                            "downloading",
+                            from_version=from_version,
+                            to_version=tag,
+                            detail=f"download_{pct}",
+                            progress=pct,
+                        )
+                    except Exception:
+                        pass
+
+            ok, detail = download_installer_complete(
+                attempt_url,
+                installer_path,
+                expected_size=expected_size,
+                progress_callback=_prog,
+                max_attempts=1,  # outer loop owns retries
+                log_func=log,
+            )
+            if ok and os.path.isfile(installer_path):
+                downloaded = installer_path
+                download_url = attempt_url
+                break
+            last_dl_err = detail or "installer_download_failed"
+            log(f"[SELF-UPDATE] attempt {attempt} incomplete: {last_dl_err}")
+            if attempt < _DOWNLOAD_MAX_ATTEMPTS:
+                delay = _DOWNLOAD_RETRY_BACKOFF_SEC[
+                    min(attempt - 1, len(_DOWNLOAD_RETRY_BACKOFF_SEC) - 1)
+                ]
+                time.sleep(delay)
+
+        if not (downloaded and os.path.isfile(downloaded)):
+            release_update_lock(resume_updaters=True)
+            detail = (last_dl_err or "installer_download_failed")[:180]
+            try:
+                from client_update_ui import set_update_ui_status
+                set_update_ui_status(
+                    "failed", from_version=from_version, to_version=tag,
+                    detail=detail, error="download_failed",
+                )
+            except Exception:
+                pass
+            _lifecycle_fail(api_client, "download_failed", from_version, tag)
+            return {
+                "success": False,
+                "ok": False,
+                "error": "download_failed",
+                "detail": detail,
+                "from_version": from_version,
+                "to_version": tag,
+                "tag": f"v{tag}" if tag else "",
+                "download_url": download_url,
+            }
+        installer_path = downloaded
         touch_update_lock()
         actual_size = os.path.getsize(installer_path) if os.path.isfile(installer_path) else 0
         if expected_size and expected_size > 0 and actual_size > 0:

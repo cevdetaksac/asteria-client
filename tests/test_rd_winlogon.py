@@ -38,10 +38,25 @@ class TestSynthesizeConsole(unittest.TestCase):
         self.assertTrue(row["can_capture"])
         self.assertEqual(row["username"], "")
 
-    def test_skips_when_already_listed(self):
-        with mock.patch("client_rd_winlogon.console_session_id", return_value=1):
+    def test_adds_sibling_when_user_listed(self):
+        with mock.patch(
+            "client_rd_winlogon.console_session_id", return_value=1
+        ), mock.patch(
+            "client_remote_desktop.RemoteDesktopStreamer._session_connect_state",
+            return_value="Connected",
+        ):
             row = synthesize_console_session([
                 {"session_id": 1, "username": "alice", "protocol": "Console"},
+            ])
+        self.assertIsNotNone(row)
+        self.assertTrue(row["pre_logon"])
+        self.assertTrue(row["alongside_user_session"])
+        self.assertEqual(row["label"], "Logon / Lock screen")
+
+    def test_skips_when_pre_logon_already_present(self):
+        with mock.patch("client_rd_winlogon.console_session_id", return_value=1):
+            row = synthesize_console_session([
+                {"session_id": 1, "username": "", "pre_logon": True},
             ])
         self.assertIsNone(row)
 
@@ -96,6 +111,40 @@ class TestPrepareWinlogon(unittest.TestCase):
             )
         self.assertFalse(out["success"])
         self.assertEqual(out["error"], "UNSUPPORTED")
+
+
+class TestSelectSessionRow(unittest.TestCase):
+    def test_prefer_winlogon_picks_pre_logon_sibling(self):
+        from client_remote_desktop import RemoteDesktopStreamer
+        rows = [
+            {"session_id": 2, "username": "alice", "protocol": "Console"},
+            {
+                "session_id": 2,
+                "username": "",
+                "pre_logon": True,
+                "desktop": "winlogon",
+            },
+        ]
+        pick = RemoteDesktopStreamer._select_session_row(
+            rows, want_winlogon=True, username=""
+        )
+        self.assertTrue(pick["pre_logon"])
+
+    def test_default_prefers_user_row(self):
+        from client_remote_desktop import RemoteDesktopStreamer
+        rows = [
+            {
+                "session_id": 2,
+                "username": "",
+                "pre_logon": True,
+                "desktop": "winlogon",
+            },
+            {"session_id": 2, "username": "alice", "protocol": "Console"},
+        ]
+        pick = RemoteDesktopStreamer._select_session_row(
+            rows, want_winlogon=False, username=None
+        )
+        self.assertEqual(pick["username"], "alice")
 
 
 if __name__ == "__main__":

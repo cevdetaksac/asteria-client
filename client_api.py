@@ -1240,6 +1240,107 @@ def link_account_with_credentials(
         }
 
 
+def unlink_account_with_credentials(
+    email: str,
+    password: str,
+    agent_token: str,
+    *,
+    api_url: str = "",
+    log_func=None,
+) -> Dict[str, Any]:
+    """Unlink this agent token from a YesNext Account (email+password confirm).
+
+    Prefer JSON: POST /api/agent/unlink-account
+    Fallback: open-web instruction if endpoint missing (caller shows /servers).
+
+    Returns dict: ok, account_linked, error?, source
+    """
+    import requests
+    from client_constants import API_URL
+    from client_utils import apply_account_link_from_payload, set_account_linked
+
+    def _log(msg: str):
+        if log_func:
+            try:
+                log_func(msg)
+            except Exception:
+                pass
+
+    email = (email or "").strip()
+    password = password or ""
+    tok = (agent_token or "").strip()
+    if not email or not password:
+        return {"ok": False, "account_linked": True, "error": "missing_credentials"}
+    if not tok:
+        return {"ok": False, "account_linked": True, "error": "missing_token"}
+
+    api_base = (api_url or API_URL).rstrip("/")
+    verify = resolve_tls_verify()
+
+    for path in ("agent/unlink-account", "account/unlink-by-agent"):
+        try:
+            r = requests.post(
+                f"{api_base}/{path}",
+                json={
+                    "email": email,
+                    "password": password,
+                    "token": tok,
+                    "client_token": tok,
+                },
+                timeout=20,
+                verify=verify,
+                headers={"Accept": "application/json"},
+            )
+            if r.status_code == 404:
+                continue
+            if r.status_code == 401:
+                return {
+                    "ok": False,
+                    "account_linked": True,
+                    "error": "invalid_credentials",
+                    "source": "agent_api",
+                }
+            if 200 <= r.status_code < 300:
+                try:
+                    data = r.json() if r.content else {}
+                except Exception:
+                    data = {}
+                if not isinstance(data, dict):
+                    data = {}
+                data["account_linked"] = False
+                data["account"] = None
+                apply_account_link_from_payload(data, source="unlink_account")
+                set_account_linked(False, source="unlink_account")
+                _log(f"[ACCOUNT] Unlinked via {path}")
+                return {
+                    "ok": True,
+                    "account_linked": False,
+                    "source": "agent_api",
+                    "raw": data,
+                }
+            detail = ""
+            try:
+                detail = str((r.json() or {}).get("detail") or "")
+            except Exception:
+                detail = (r.text or "")[:120]
+            return {
+                "ok": False,
+                "account_linked": True,
+                "error": detail or f"http_{r.status_code}",
+                "source": "agent_api",
+            }
+        except Exception as e:
+            _log(f"[ACCOUNT] unlink {path}: {e}")
+            continue
+
+    return {
+        "ok": False,
+        "account_linked": True,
+        "error": "unlink_api_unavailable",
+        "source": "none",
+    }
+
+
 def register_client_api(
     api_url: str,
     server_name: str,
