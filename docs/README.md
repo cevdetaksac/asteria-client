@@ -1,18 +1,16 @@
 # Docs — Cloud Honeypot Client
 
-> **Canonical API/agent sözleşmesi:** [`../../honeypot-contract`](../../honeypot-contract) (`VERSION` + `INDEX.md` + `FLEET.md`)
-> Bu `docs/` klasörü changelog / operasyon + geçiş dönemi kopyaları içerebilir; **davranış SoT = honeypot-contract**.
+> **Canonical API / agent contract:** [honeypot-contract](https://github.com/cevdetaksac/honeypot-contract) (`VERSION` + `INDEX.md` + `FLEET.md`).  
+> This folder holds client changelog, ops, and security notes. **Behavior SoT = honeypot-contract.**
 
-## İndeks (yerel)
+| Doc | Purpose |
+|-----|---------|
+| [CHANGELOG.md](CHANGELOG.md) | Client release history |
+| [OPERATIONS.md](OPERATIONS.md) | Build / release / Defender notes |
+| [SECURITY.md](SECURITY.md) | Vulnerability reporting |
+| [../contract/README.md](../contract/README.md) | Contract pointer |
+| [../AGENTS.md](../AGENTS.md) | Agent reading order |
 
-| Konu | Dosya |
-|------|--------|
-| **Shared contract** | [`../../honeypot-contract/INDEX.md`](../../honeypot-contract/INDEX.md) |
-| **Contract pointer** | [`../contract/README.md`](../contract/README.md) |
-| **Changelog (client releases)** | [CHANGELOG.md](CHANGELOG.md) |
-| **Operasyon** | [OPERATIONS.md](OPERATIONS.md) |
-| **Güvenlik** | [SECURITY.md](SECURITY.md) |
-| **Security & Resilience yol haritası** | [SECURITY_RESILIENCE_ROADMAP.md](SECURITY_RESILIENCE_ROADMAP.md) |
-| **P1 client implementation record** | [P1_SECURITY_RESILIENCE_CLIENT.md](P1_SECURITY_RESILIENCE_CLIENT.md) |
+`docs/api/*` are redirects to honeypot-contract. Do not edit API behavior here.
 
-Eski `docs/api/*` dosyaları contract’a taşındı / oradan devam eder. Yeni API işi **contract** üzerinde başlar.
+Roadmap / P1 notes (`SECURITY_RESILIENCE_ROADMAP.md`, `P1_SECURITY_RESILIENCE_CLIENT.md`) are historical — prefer contract `SECURITY_RESILIENCE_VNEXT.md` and current `FLEET.md`.

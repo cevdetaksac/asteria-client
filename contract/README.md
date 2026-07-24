@@ -1,23 +1,21 @@
 # Contract pointer
 
-**CONTRACT_ROOT** for this workspace:
+**CONTRACT_ROOT** (this workspace):
 
 ```text
-c:\honeypot-cloud\honeypot-contract
+../honeypot-contract
 ```
 
-(relative from `cloud-client/`: `../honeypot-contract`)
+Remote: https://github.com/cevdetaksac/honeypot-contract · **VERSION ≥ 1.4.25** · production floor client ≥ **4.9.0** ([`FLEET.md`](https://github.com/cevdetaksac/honeypot-contract/blob/main/FLEET.md))
 
-Remote: https://github.com/cevdetaksac/honeypot-contract · tag ≥ **v1.2.0** · fleet hedef **4.6.0**
+Local `docs/api/*` are stubs — source of truth is **only** honeypot-contract.
 
-`docs/api/*` ve `docs/CLIENT.md` stub’dır — SoT yalnızca contract.
+## Agent / Cursor — read order
 
-## Agent / Cursor — zorunlu sıra
+1. `CONTRACT_ROOT/VERSION` + `INDEX.md` + `FLEET.md`
+2. Relevant `api/*`, `agent/*`, or `cloud/*`
+3. Do not write code that contradicts the contract; note Open questions when unsure
+4. API change → contract MD + CHANGELOG + VERSION → then client/cloud code
+5. Cloud operators: `git pull` + `publish_contract.sh`
 
-1. Oku `CONTRACT_ROOT/VERSION` + `INDEX.md` + `FLEET.md`
-2. İlgili `api/*` veya `agent/*` dosyasını aç
-3. Sözleşmeye aykırı kod yazma; belirsizse contract’a Open questions notu
-4. API değişikliği → önce contract MD + CHANGELOG + VERSION → sonra kod
-5. Cloud: `git pull` + `publish_contract.sh` — API bu MD’leri referans alır
-
-See Cursor rule: `.cursor/rules/honeypot-contract.mdc`
+Cursor rule: `.cursor/rules/honeypot-contract.mdc`

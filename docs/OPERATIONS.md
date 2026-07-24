@@ -2,50 +2,50 @@
 
 ## Shared contract
 
-API / agent davranış SoT: [`../../honeypot-contract`](../../honeypot-contract) (`VERSION` ≥ **1.1.6**, `FLEET.md`).
+API / agent behavior SoT: [honeypot-contract](https://github.com/cevdetaksac/honeypot-contract) (`VERSION` ≥ **1.4.25**, [`FLEET.md`](https://github.com/cevdetaksac/honeypot-contract/blob/main/FLEET.md)).
 
 ## Build & Release
 
 ```powershell
 cd cloud-client
-.\build.ps1
+.\build.ps1 -Clean -WebRTC   # production profile (~69 MB)
+# or: .\build.ps1 -Clean     # JPEG/WS only
 ```
 
-Artifact: `dist\cloud-client-installer.exe`
+Artifact: `cloud-client-installer.exe` (repo root, not `dist\`).
 
-Publish via GitHub Releases (`cevdetaksac/yesnext-cloud-honeypot-client`).
+```powershell
+gh release create vX.Y.Z cloud-client-installer.exe --title "vX.Y.Z" --notes-file release_notes_vX.Y.Z.md
+```
+
+Repo: `cevdetaksac/yesnext-cloud-honeypot-client`.
 
 ## Windows Defender / AV
 
 - Submit installer to [Microsoft Defender portal](https://www.microsoft.com/en-us/wdsi/filesubmission)
 - Reference `DEFENDER_MARKERS` in `client_constants.py`
-- Sign installer with Authenticode certificate for best results
+- Prefer Authenticode (`build.ps1 -Sign`) for production
 
-## SIEM Integration
+## SIEM / logs
 
-1. **Central API** — urgent/batch alerts (`POST /api/alerts/urgent` …) — contract `agent/threat-engine.md`
-2. **Optional local webhook** — `notifications.webhook_url` in `client_config.json`
-3. **Local logs** — `client-YYYY-MM-DD.log`, `threats-YYYY-MM-DD.log`,
-   `lifecycle-YYYY-MM-DD.log`; local calendar-day files, automatic 7-day retention
-4. Forward via Winlogbeat / NXLog as needed
+1. **Cloud API** — urgent/batch alerts — contract `agent/threat-engine.md`
+2. **Optional webhook** — `notifications.webhook_url` in `client_config.json`
+3. **Local logs** — `%ProgramData%\YesNext\CloudHoneypotClient\` (`client-*.log`, `threats-*.log`, `lifecycle-*.log`); ~7-day retention
 
-## Token Rotation
+## Token rotation
 
-If a `client-YYYY-MM-DD.log` file was exposed:
+If a log with a token was exposed:
 
-1. Revoke token in dashboard
-2. Delete ProgramData `token.dat` (`%ProgramData%\YesNext\CloudHoneypotClient\`)
-3. Restart client to re-register
+1. Revoke token in the dashboard
+2. Delete `%ProgramData%\YesNext\CloudHoneypotClient\token.dat`
+3. Restart the client to re-register
 
-## Backend / fleet defaults (current)
+## Fleet defaults
 
-Contract defaults (not “future work”):
+- `Authorization: Bearer` — agent must not rely on `?token=` query
+- Command HMAC — `security.command_signing` (default true) — `api/03-control-websocket.md`
+- Destructive IR — cloud dashboard confirmation
 
-- `Authorization: Bearer` — agent API’de `?token=` yok
-- `api.legacy_token_query: false`
-- Command HMAC — `security.command_signing` (default true); see contract `api/03-control-websocket.md`
-- Destructive IR — dashboard confirmation on cloud
+## Linux
 
-## Linux Notes
-
-`client_firewall.py` supports Linux (ipset/iptables). Honeypot decoys are Windows-focused; Linux agent is firewall-only today.
+`client_firewall.py` supports Linux (ipset/iptables). Honeypot decoys and full agent are Windows-focused; Linux path is firewall-oriented today.
