@@ -9,11 +9,11 @@ Token is the server's durable identity. It must:
     hardware rebind / clone split)
   - Never auto-re-register merely because load/decrypt failed
 
-Hardware binding (schema v2):
+Hardware binding (schema v2) + in-place rotate (contract 1.4.29):
   machine_id / hwid sent to /register is a SHA-256 over MachineGuid + NIC MACs
-  + SMBIOS UUID. VM clones that keep MachineGuid but get new MACs enroll as
-  distinct clients. token.dat CHP2 embeds the same fingerprint; mismatch →
-  quarantine + re-enroll (clone of a bound image).
+  + SMBIOS UUID. When regenerating token.dat (identity v2 / rekey), call
+  POST /api/agent/rotate-token BEFORE writing disk — never bare /register while
+  the old token is still known (ghost Client rows).
 
 Create (/register) only when NO token file exists after migration - or when
 hardware binding requires a controlled re-enroll.
@@ -31,7 +31,7 @@ from typing import Optional, List
 
 from client_helpers import ClientHelpers, log
 from client_utils import TokenStore, _programdata_client_dir
-from client_api import register_client_api
+from client_api import register_client_api, rotate_token_api
 
 CREATE_NO_WINDOW = 0x08000000
 IDENTITY_SCHEMA_VERSION = 2
@@ -449,17 +449,21 @@ class TokenManager:
             return tok
         return TokenStore.load(self.token_file_new)
 
-    def _persist_token(self, tok: str, fingerprint: str, *, overwrite: bool = False) -> None:
+    def _persist_token(self, tok: str, fingerprint: str, *, overwrite: bool = False, reason: str = "register") -> None:
         TokenStore.save(
             tok,
             self.token_file_new,
             overwrite=overwrite,
             fingerprint=fingerprint,
         )
-        _save_binding(fingerprint=fingerprint, token=tok, reason="register")
+        _save_binding(fingerprint=fingerprint, token=tok, reason=reason)
 
     def register_client(self, root_window=None, t_func=None) -> Optional[str]:
-        """Register ONLY when no durable token exists. Uses hardware fingerprint upsert."""
+        """Register ONLY when no durable token exists. Uses hardware fingerprint upsert.
+
+        Bare /register while an old token is still known creates ghost Clients —
+        use ``_rotate_in_place`` for rekey (contract 1.4.29).
+        """
         # Re-check under lock - another process may have just registered
         existing = self.get_token()
         if existing:
@@ -491,7 +495,7 @@ class TokenManager:
                     ip = ClientHelpers.get_public_ip()
 
                     def save_token(tok):
-                        self._persist_token(tok, machine_id, overwrite=False)
+                        self._persist_token(tok, machine_id, overwrite=False, reason="register")
 
                     token = register_client_api(
                         self.api_url,
@@ -538,18 +542,87 @@ class TokenManager:
         finally:
             _release_register_lock(lock_fd)
 
+    def _rotate_in_place(self, old_token: str, reason: str) -> Optional[str]:
+        """Contract 1.4.29: mint new uuid in memory, rotate on cloud, then write disk.
+
+        Returns new token on success; None if rotate failed (caller must not
+        discard old token.dat until quarantine is intentional).
+        """
+        import uuid as uuid_mod
+
+        old_token = (old_token or "").strip()
+        if not old_token:
+            return None
+
+        fp = get_device_fingerprint()
+        # Legacy cloud rows may still store MachineGuid as machine_id.
+        mid_candidates = [fp, "", get_windows_machine_guid()]
+
+        for _uuid_try in range(2):
+            new_token = str(uuid_mod.uuid4())
+            saw_409 = False
+            for mid in mid_candidates:
+                result = rotate_token_api(
+                    self.api_url,
+                    old_token,
+                    new_token,
+                    machine_id=mid,
+                    reason=reason,
+                    log_func=log,
+                )
+                if result.get("ok"):
+                    tok = (result.get("token") or new_token).strip()
+                    self._persist_token(tok, fp, overwrite=True, reason=reason)
+                    log(
+                        f"[TOKEN] In-place rotate saved "
+                        f"(reason={reason}, client_id={result.get('client_id')})"
+                    )
+                    return tok
+                code = int(result.get("status_code") or 0)
+                if code == 409:
+                    log("[TOKEN] rotate 409 new_token_in_use — retrying with fresh uuid")
+                    saw_409 = True
+                    break
+                if code == 403:
+                    continue
+                if code == 404:
+                    log("[TOKEN] rotate 404 old_token_not_found")
+                    return None
+                # Network / 5xx / unexpected — keep old token on disk
+                return None
+            if not saw_409:
+                log("[TOKEN] rotate failed for all machine_id candidates")
+                return None
+        return None
+
     def _reenroll(self, reason: str, root_window=None, t_func=None) -> Optional[str]:
-        """Quarantine local identity and mint a new hardware-bound token."""
+        """Rekey identity: prefer in-place rotate; bare register only if old token gone.
+
+        Contract 1.4.29 — never bare /register while old_token is still known
+        (creates ghost Client + orphaned attack history / Account link).
+        """
         log(f"[TOKEN] Re-enroll required ({reason})")
+        old = self.get_token()
+        if old:
+            rotated = self._rotate_in_place(old, reason=reason)
+            if rotated:
+                return rotated
+            # 404 / hard failure: forget local old token, then register reclaim
+            log(
+                f"[TOKEN] rotate failed for reason={reason} — "
+                "quarantine local then register (old no longer usable)"
+            )
+            quarantine_local_identity(reason=reason)
+            return self.register_client(root_window, t_func)
+
         quarantine_local_identity(reason=reason)
         return self.register_client(root_window, t_func)
 
     def ensure_hardware_binding(self, root_window=None, t_func=None) -> Optional[str]:
-        """Bind token to hardware fingerprint; split VM clones onto unique tokens.
+        """Bind token to hardware fingerprint; rekey via rotate-token (1.4.29).
 
         - CHP2 / binding fingerprint mismatch → clone or NIC change → re-enroll
-        - schema < 2 → one-time migrate: re-register under MAC-bound machine_id
-          so hosts that shared MachineGuid/token.dat each get a unique Client
+        - schema < 2 → one-time in-place rotate under MAC-bound machine_id
         """
         fp = get_device_fingerprint()
         tok, bound_fp = TokenStore.load_meta(self.token_file_new)
@@ -578,18 +651,16 @@ class TokenManager:
             return self._reenroll("binding_mismatch", root_window, t_func)
 
         if schema < IDENTITY_SCHEMA_VERSION:
-            # One-time: re-key cloud identity by hardware fingerprint.
-            # Clones sharing MachineGuid/token.dat enroll as distinct Clients.
             log(
-                "[TOKEN] Identity schema upgrade -> hardware fingerprint rebind "
-                "(one-time; re-link Account after upgrade)"
+                "[TOKEN] Identity schema upgrade -> in-place rotate-token "
+                "(contract 1.4.29; preserves client_id / Account link)"
             )
-            return self._reenroll("schema_v2", root_window, t_func)
+            return self._reenroll("identity_v2", root_window, t_func)
 
         # Already bound - refresh CHP2 envelope if still CHP1 on disk
         if not bound_fp:
             try:
-                self._persist_token(tok, fp, overwrite=True)
+                self._persist_token(tok, fp, overwrite=True, reason="chp2_upgrade")
             except Exception as e:
                 log(f"[TOKEN] CHP2 upgrade save failed: {e}")
         elif not binding:

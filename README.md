@@ -1,6 +1,6 @@
 # Cloud Honeypot Client
 
-**Current Version: 4.9.31**
+**Current Version: 4.9.32**
 
 Windows agent for [YesNext Cloud Honeypot](https://honeypot.yesnext.com.tr): honeypot tunnels, threat response, remote desktop, and firewall sync. Open-source client; cloud/dashboard features may require a license.
 

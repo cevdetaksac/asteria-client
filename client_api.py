@@ -1367,6 +1367,9 @@ def register_client_api(
 
     On success, persists ``protection.block_rules`` from the register body
     (honeypot-contract agent/register-protection.md) for ThreatEngine boot apply.
+
+    Do **not** call this while a known old token still exists — use
+    ``rotate_token_api`` (contract 1.4.29) to avoid ghost Client rows.
     """
     import requests
     
@@ -1414,3 +1417,110 @@ def register_client_api(
     except Exception as e:
         if log_func: log_func(f"Registration error: {e}")
         return None
+
+
+def rotate_token_api(
+    api_url: str,
+    old_token: str,
+    new_token: str,
+    *,
+    machine_id: str = "",
+    reason: str = "identity_v2",
+    log_func=None,
+) -> dict:
+    """In-place token rotate — same client_id (contract 1.4.29).
+
+    Returns a dict:
+      ok, status_code, token, client_id, detail, idempotent, rotated, raw
+    Never writes disk; caller persists only on ok=True.
+    """
+    import requests
+
+    _log = log_func or (lambda *_a, **_k: None)
+    old_token = (old_token or "").strip()
+    new_token = (new_token or "").strip()
+    out = {
+        "ok": False,
+        "status_code": 0,
+        "token": "",
+        "client_id": None,
+        "detail": "",
+        "idempotent": False,
+        "rotated": False,
+        "raw": None,
+    }
+    if not old_token or not new_token:
+        out["detail"] = "old_token and new_token required"
+        out["status_code"] = 422
+        return out
+    if old_token == new_token:
+        out["ok"] = True
+        out["status_code"] = 200
+        out["token"] = new_token
+        out["idempotent"] = True
+        out["detail"] = "same_token"
+        return out
+
+    base = (api_url or "").rstrip("/")
+    # Prefer /api/agent/... ; api_url is typically .../api
+    url = f"{base}/agent/rotate-token"
+    payload = {
+        "old_token": old_token,
+        "new_token": new_token,
+        "reason": (reason or "identity_v2").strip() or "identity_v2",
+    }
+    mid = (machine_id or "").strip()
+    if mid:
+        payload["machine_id"] = mid
+        payload["hwid"] = mid
+
+    headers = {
+        "Authorization": f"Bearer {old_token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+    try:
+        resp = requests.post(
+            url,
+            json=payload,
+            headers=headers,
+            timeout=20,
+            verify=resolve_tls_verify(),
+        )
+        out["status_code"] = int(resp.status_code)
+        try:
+            data = resp.json() if resp.content else {}
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        out["raw"] = data
+        detail = (
+            data.get("detail")
+            or data.get("error")
+            or data.get("message")
+            or (resp.text or "")[:200]
+        )
+        out["detail"] = str(detail or "")
+
+        if resp.status_code == 200:
+            tok = (data.get("token") or new_token or "").strip()
+            out["ok"] = True
+            out["token"] = tok
+            out["client_id"] = data.get("client_id")
+            out["rotated"] = bool(data.get("rotated", True))
+            out["idempotent"] = bool(data.get("idempotent", False))
+            _log(
+                f"[TOKEN] rotate-token ok client_id={out['client_id']} "
+                f"rotated={out['rotated']} idempotent={out['idempotent']}"
+            )
+            return out
+
+        _log(f"[TOKEN] rotate-token HTTP {resp.status_code}: {out['detail']}")
+        return out
+    except Exception as e:
+        out["detail"] = str(e)
+        out["status_code"] = 0
+        _log(f"[TOKEN] rotate-token error: {e}")
+        return out

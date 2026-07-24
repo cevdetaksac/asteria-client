@@ -2,7 +2,7 @@
 
 ## Shared contract
 
-API / agent behavior SoT: [honeypot-contract](https://github.com/cevdetaksac/honeypot-contract) (`VERSION` ≥ **1.4.26**, [`FLEET.md`](https://github.com/cevdetaksac/honeypot-contract/blob/main/FLEET.md)).
+API / agent behavior SoT: [honeypot-contract](https://github.com/cevdetaksac/honeypot-contract) (`VERSION` ≥ **1.4.29**, [`FLEET.md`](https://github.com/cevdetaksac/honeypot-contract/blob/main/FLEET.md)).
 
 ## Build & Release
 

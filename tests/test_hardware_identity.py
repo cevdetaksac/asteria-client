@@ -63,14 +63,23 @@ class TestHardwareBinding(unittest.TestCase):
         with mock.patch.object(tokens, "_programdata_client_dir", return_value=self.pd), \
                 mock.patch.object(tokens, "get_canonical_token_path", return_value=self.token_path), \
                 mock.patch.object(tokens, "get_device_fingerprint", return_value="fp-now"), \
+                mock.patch.object(tokens, "get_windows_machine_guid", return_value="G"), \
                 mock.patch.object(tokens, "get_legacy_token_paths", return_value=[]), \
                 mock.patch.object(tokens.TokenStore, "load_meta", return_value=("old-token-uuid", "fp-old")), \
-                mock.patch.object(tokens.TokenManager, "register_client", return_value="new-token-uuid") as reg:
+                mock.patch.object(
+                    tokens, "rotate_token_api",
+                    return_value={
+                        "ok": True, "status_code": 200, "token": "rotated-uuid",
+                        "client_id": 1, "rotated": True, "idempotent": False,
+                    },
+                ), \
+                mock.patch.object(tokens.TokenManager, "_persist_token") as persist, \
+                mock.patch.object(tokens.TokenManager, "register_client") as reg:
             tm = tokens.TokenManager("https://example", "HOST", self.token_path, "token.txt")
             out = tm.ensure_hardware_binding()
-        self.assertEqual(out, "new-token-uuid")
-        reg.assert_called_once()
-        self.assertFalse(os.path.isfile(self.token_path))  # quarantined
+        self.assertEqual(out, "rotated-uuid")
+        persist.assert_called_once()
+        reg.assert_not_called()
 
     def test_schema_v2_upgrade_reenrolls_once(self):
         bind = {
@@ -85,13 +94,23 @@ class TestHardwareBinding(unittest.TestCase):
         with mock.patch.object(tokens, "_programdata_client_dir", return_value=self.pd), \
                 mock.patch.object(tokens, "get_canonical_token_path", return_value=self.token_path), \
                 mock.patch.object(tokens, "get_device_fingerprint", return_value="fp-now"), \
+                mock.patch.object(tokens, "get_windows_machine_guid", return_value="G"), \
                 mock.patch.object(tokens, "get_legacy_token_paths", return_value=[]), \
                 mock.patch.object(tokens.TokenStore, "load_meta", return_value=("old-token-uuid", "fp-now")), \
-                mock.patch.object(tokens.TokenManager, "register_client", return_value="fresh-token") as reg:
+                mock.patch.object(
+                    tokens, "rotate_token_api",
+                    return_value={
+                        "ok": True, "status_code": 200, "token": "fresh-token",
+                        "client_id": 57, "rotated": True, "idempotent": False,
+                    },
+                ), \
+                mock.patch.object(tokens.TokenManager, "_persist_token") as persist, \
+                mock.patch.object(tokens.TokenManager, "register_client") as reg:
             tm = tokens.TokenManager("https://example", "HOST", self.token_path, "token.txt")
             out = tm.ensure_hardware_binding()
         self.assertEqual(out, "fresh-token")
-        reg.assert_called_once()
+        persist.assert_called_once()
+        reg.assert_not_called()
 
 
 if __name__ == "__main__":

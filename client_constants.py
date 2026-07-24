@@ -36,7 +36,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.31"  # Fix card/chip hover+click (Tk Leave on child labels)
+VERSION = "4.9.32"  # In-place rotate-token (contract 1.4.29); no ghost /register on rekey
 
 
 CLIENT_VERSION = VERSION  # Main version constant

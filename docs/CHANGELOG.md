@@ -1,3 +1,6 @@
+# v4.9.32
+- **In-place token rotate (contract 1.4.29):** Rekey/identity_v2 uses POST /api/agent/rotate-token before writing token.dat — no bare /register while old token known (ghost Client fix). Same client_id / Account link / attack history. 409 retry; 403 machine_id candidates; rotate-fail then quarantine+register.
+
 # v4.9.31
 - **GUI card hover/click:** Protection chips + stat cards ignore Leave when pointer stays on child labels; bind click/hover to full widget tree (Ransomware Shield / AKTIF text works).
 
