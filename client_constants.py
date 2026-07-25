@@ -40,7 +40,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.38"  # C-BRICK + durable token / legacy_supersede rotate-token
+VERSION = "4.9.39"  # tray brick fix + Control Center UX + presence WS harden
 
 CLIENT_VERSION = VERSION  # Main version constant
 __version__ = VERSION  # Export for compatibility

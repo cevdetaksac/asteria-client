@@ -16,11 +16,11 @@ type AsteriaApi = {
   ipc(cmd: string, args?: Record<string, unknown>): Promise<Record<string, unknown>>
   cloud(method: string, path: string, body?: Record<string, unknown>): Promise<Record<string, unknown>>
   pin(action: string, value?: string, current?: string): Promise<Record<string, unknown>>
-  shell(action: string): Promise<Record<string, unknown>>
+  shell(action: string, path?: string): Promise<Record<string, unknown>>
   account(action?: string, email?: string, password?: string, pin?: string): Promise<Record<string, unknown>>
   harden(action?: string, target?: string): Promise<Record<string, unknown>>
   rdp(action?: string, mode?: string): Promise<Record<string, unknown>>
-  ir(action: string, username?: string): Promise<Record<string, unknown>>
+  ir(action: string, username?: string, newPassword?: string): Promise<Record<string, unknown>>
   update_banner(action?: string): Promise<Record<string, unknown>>
   i18n(lang?: string): Promise<Record<string, unknown>>
 }
@@ -90,7 +90,30 @@ function statusPayload(): MotorStatus {
       baseline_version: 14,
     },
     rs_quarantine: { active: false, entries: 0, canary_files: 42, alerts_total: 1 },
-    resources: { cpu_percent: 12, ram_percent: 48 },
+    resources: {
+      host_cpu_percent: 18,
+      host_memory_percent: 52,
+      process_cpu_percent: 3,
+      process_rss_mb: 86,
+      net_recv_bps: 12000,
+      net_sent_bps: 4200,
+    },
+    api: {
+      ok: true,
+      heartbeat_ok: true,
+      last_ok_at: Date.now() / 1000 - 12,
+      last_check_at: Date.now() / 1000 - 12,
+      last_heartbeat_at: Date.now() / 1000 - 12,
+    },
+    commands_recent: [
+      {
+        command_type: 'status_ping',
+        ok: true,
+        executed_at: Date.now() / 1000 - 45,
+        source: 'cloud',
+        message: 'ok',
+      },
+    ],
   }
 }
 
@@ -141,6 +164,45 @@ export function installMockBridge(): void {
             last_seen: new Date().toISOString(),
             username: i === 0 ? 'attacker' : '',
           })),
+        }
+      }
+      if (name === 'IP_TABLE') {
+        const watch = [
+          {
+            ip: '198.51.100.44',
+            attempts: 12,
+            score: 64,
+            services: ['RDP'],
+            reason: 'failed×12 · failed_logon · RDP',
+            status: 'watching',
+            last_seen: Date.now() / 1000 - 30,
+          },
+          {
+            ip: '203.0.113.77',
+            attempts: 4,
+            score: 28,
+            services: ['SSH'],
+            reason: 'failed×4 · brute_force · SSH',
+            status: 'watching',
+            last_seen: Date.now() / 1000 - 90,
+          },
+        ]
+        const blockedRows = Array.from(blocked).map((ip) => ({
+          ip,
+          attempts: 0,
+          score: 0,
+          reason: 'firewall',
+          status: 'blocked',
+          last_seen: Date.now() / 1000 - 120,
+        }))
+        const wl = Array.isArray(config.whitelist_ips) ? config.whitelist_ips.map(String) : []
+        return {
+          ok: true,
+          engine: true,
+          watching: watch,
+          blocked: blockedRows,
+          whitelist: wl.map((ip) => ({ ip, reason: 'whitelist', status: 'whitelisted' })),
+          totals: { watching: watch.length, blocked: blockedRows.length, whitelist: wl.length },
         }
       }
       if (name === 'BLOCK_IP') {
@@ -197,8 +259,8 @@ export function installMockBridge(): void {
       }
       return { ok: false, reason: 'bad_pin' }
     },
-    async shell(action) {
-      console.info('[mock shell]', action)
+    async shell(action, path = '') {
+      console.info('[mock shell]', action, path || undefined)
       if (action === 'minimize' && pinEnabled) {
         locked = true
         window.dispatchEvent(new CustomEvent('asteria-session-gate'))
@@ -269,25 +331,116 @@ export function installMockBridge(): void {
           protected: rdpProtected,
           current_port: rdpProtected ? 53389 : 3389,
           secure_port: 53389,
+          standard_port: 3389,
           admin: true,
+          confirm_seconds: 60,
+          pending: false,
+          seconds_left: 0,
         }
       }
-      if (action === 'move') {
+      if (action === 'begin' || action === 'move') {
         const mv = mode || (rdpProtected ? 'rollback' : 'secure')
         rdpProtected = mv === 'secure'
         return {
           ok: true,
+          mode: mv,
+          pending: action === 'begin',
           protected: rdpProtected,
           current_port: rdpProtected ? 53389 : 3389,
           secure_port: 53389,
-          mode: mv,
+          from_port: mv === 'secure' ? 3389 : 53389,
+          to_port: rdpProtected ? 53389 : 3389,
+          seconds_left: action === 'begin' ? 60 : 0,
+          confirm_seconds: 60,
+        }
+      }
+      if (action === 'confirm') {
+        return {
+          ok: true,
+          confirmed: true,
+          protected: rdpProtected,
+          current_port: rdpProtected ? 53389 : 3389,
+          secure_port: 53389,
+        }
+      }
+      if (action === 'cancel') {
+        rdpProtected = !rdpProtected
+        return {
+          ok: true,
+          cancelled: true,
+          protected: rdpProtected,
+          current_port: rdpProtected ? 53389 : 3389,
+          secure_port: 53389,
         }
       }
       return { ok: false, error: 'rdp_unknown_action' }
     },
-    async ir(action, username = '') {
+    async ir(action, username = '', newPassword = '') {
       if (locked) return { ok: false, error: 'gui_locked' }
+      if (action === 'list') {
+        return {
+          ok: true,
+          action: 'list',
+          current_user: 'ops',
+          counts: { total: 3, active: 2, disabled: 1 },
+          users: [
+            {
+              username: 'ops',
+              enabled: true,
+              status: 'active',
+              is_admin: true,
+              is_self: true,
+              has_session: true,
+              session_status: 'Active',
+              groups: ['Administrators'],
+              last_logon: '2026-07-25T12:00:00Z',
+              can_enable: false,
+              can_disable: false,
+              can_logoff: false,
+              can_reset_password: true,
+              protected: false,
+            },
+            {
+              username: 'attacker',
+              enabled: true,
+              status: 'active',
+              is_admin: false,
+              is_self: false,
+              has_session: true,
+              session_status: 'Active',
+              groups: ['Users', 'Remote Desktop Users'],
+              last_logon: '2026-07-25T11:00:00Z',
+              can_enable: false,
+              can_disable: true,
+              can_logoff: true,
+              can_reset_password: true,
+              protected: false,
+            },
+            {
+              username: 'oldguest',
+              enabled: false,
+              status: 'disabled',
+              is_admin: false,
+              is_self: false,
+              has_session: false,
+              groups: ['Users'],
+              last_logon: null,
+              can_enable: true,
+              can_disable: false,
+              can_logoff: false,
+              can_reset_password: true,
+              protected: false,
+            },
+          ],
+        }
+      }
       if (!username) return { ok: false, error: 'username_required' }
+      if (action === 'reset_password' && String(newPassword || '').length < 8) {
+        return { ok: false, error: 'password_too_short' }
+      }
+      if (username === 'ops' && (action === 'logoff' || action === 'disable')) {
+        return { ok: false, error: 'self_account' }
+      }
       return { ok: true, action, username, mock: true }
     },
     async update_banner(action = 'status') {

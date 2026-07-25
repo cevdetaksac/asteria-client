@@ -42,3 +42,5 @@ certs/
 threats.log
 _probe.jpg
 hp-installer-*.exe
+
+cloud-client-installer.exe

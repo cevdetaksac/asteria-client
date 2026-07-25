@@ -38,11 +38,11 @@ type AsteriaApi = {
   ipc(cmd: string, args?: Record<string, unknown>): Promise<BridgeResult>
   cloud(method: string, path: string, body?: Record<string, unknown>): Promise<BridgeResult>
   pin(action: string, value?: string, current?: string): Promise<BridgeResult>
-  shell(action: string): Promise<BridgeResult>
+  shell(action: string, path?: string): Promise<BridgeResult>
   account(action?: string, email?: string, password?: string, pin?: string): Promise<BridgeResult>
   harden(action?: string, target?: string): Promise<BridgeResult>
   rdp(action?: string, mode?: string): Promise<BridgeResult>
-  ir(action: string, username?: string): Promise<BridgeResult>
+  ir(action: string, username?: string, newPassword?: string): Promise<BridgeResult>
   update_banner(action?: string): Promise<BridgeResult>
   i18n(lang?: string): Promise<BridgeResult>
 }
@@ -134,12 +134,13 @@ export const motorBridge = {
     withApi((api) => api.cloud(method, path, body)),
   pin: (action: string, value = '', current = '') =>
     withApi((api) => api.pin(action, value, current)),
-  shell: (action: string) => withApi((api) => api.shell(action)),
+  shell: (action: string, path = '') => withApi((api) => api.shell(action, path)),
   account: (action = 'status', email = '', password = '', pin = '') =>
     optional('account', (api) => api.account(action, email, password, pin)),
   harden: (action = 'status', target = '') => optional('harden', (api) => api.harden(action, target)),
   rdp: (action = 'status', mode = '') => optional('rdp', (api) => api.rdp(action, mode)),
-  ir: (action: string, username = '') => optional('ir', (api) => api.ir(action, username)),
+  ir: (action: string, username = '', newPassword = '') =>
+    optional('ir', (api) => api.ir(action, username, newPassword)),
   update_banner: (action = 'status') => optional('update_banner', (api) => api.update_banner(action)),
   i18n: (lang = '') => optional('i18n', (api) => api.i18n(lang)),
 }

@@ -71,21 +71,26 @@ export function LayersPage({ status, onRefresh, onToast }: Props) {
       </div>
 
       <div className="policy-grid">
-        {policies.map((policy) => (
-          <article key={policy.id} className={`policy-card ${current === policy.id ? 'active' : ''}`}>
-            <p className="eyebrow">{current === policy.id ? t('label_active') : t('label_select')}</p>
-            <h3>{policy.title}</h3>
-            <p className="muted">{policy.blurb}</p>
-            <button
-              type="button"
-              className="btn"
-              disabled={locked && policy.id !== 'observe'}
-              onClick={() => void setPolicy(policy.id)}
-            >
-              {t('btn_apply')}
-            </button>
-          </article>
-        ))}
+        {policies.map((policy) => {
+          const selected = current === policy.id
+          return (
+            <article key={policy.id} className={`policy-card ${selected ? 'selected' : ''}`}>
+              <div>
+                <p className="eyebrow">{selected ? t('label_active') : t('label_select')}</p>
+                <h3>{policy.title}</h3>
+                <p className="muted">{policy.blurb}</p>
+              </div>
+              <button
+                type="button"
+                className={`btn ${selected ? 'policy-selected' : ''}`}
+                disabled={selected || (locked && policy.id !== 'observe')}
+                onClick={() => void setPolicy(policy.id)}
+              >
+                {selected ? t('layers_policy_selected') : t('btn_apply')}
+              </button>
+            </article>
+          )
+        })}
       </div>
 
       <div className="btn-row" style={{ marginTop: 16 }}>

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { motorBridge } from '../bridge'
+import { RdpSecureMoveModal, type RdpMoveInfo } from '../components/RdpSecureMoveModal'
 import { t } from '../i18n'
 
 type Props = {
@@ -12,6 +13,32 @@ export function ServicesPage({ onToast }: Props) {
   const [catalog, setCatalog] = useState<CatalogService[]>([])
   const [running, setRunning] = useState<string[]>([])
   const [busy, setBusy] = useState<string>('')
+  const [rdp, setRdp] = useState<RdpMoveInfo | null>(null)
+  const [rdpModal, setRdpModal] = useState(false)
+  const [rdpBusy, setRdpBusy] = useState(false)
+  const [secondsLeft, setSecondsLeft] = useState(0)
+
+  const refreshRdp = useCallback(async () => {
+    const result = await motorBridge.rdp('status')
+    if (!result.ok) return null
+    const info: RdpMoveInfo = {
+      protected: Boolean(result.protected),
+      current_port: Number(result.current_port || 3389),
+      secure_port: Number(result.secure_port || 53389),
+      standard_port: Number(result.standard_port || 3389),
+      admin: result.admin !== false,
+      pending: Boolean(result.pending),
+      pending_mode: result.pending_mode ? String(result.pending_mode) : undefined,
+      pending_from: result.pending_from != null ? Number(result.pending_from) : undefined,
+      pending_to: result.pending_to != null ? Number(result.pending_to) : undefined,
+      seconds_left: Number(result.seconds_left || 0),
+      confirm_seconds: Number(result.confirm_seconds || 60),
+    }
+    setRdp(info)
+    setSecondsLeft(info.seconds_left || 0)
+    if (info.pending) setRdpModal(true)
+    return info
+  }, [])
 
   const refresh = useCallback(async () => {
     try {
@@ -35,16 +62,26 @@ export function ServicesPage({ onToast }: Props) {
         ? status.running_services.map((s) => String(s).toUpperCase())
         : []
       setRunning(Array.from(new Set([...names, ...fromStatus])))
+      await refreshRdp()
     } catch (reason) {
       onToast(reason instanceof Error ? reason.message : String(reason), 'err')
     }
-  }, [onToast])
+  }, [onToast, refreshRdp])
 
   useEffect(() => {
     void refresh()
     const timer = window.setInterval(() => void refresh(), 6000)
     return () => window.clearInterval(timer)
   }, [refresh])
+
+  useEffect(() => {
+    if (!rdp?.pending) return
+    const tick = window.setInterval(() => {
+      setSecondsLeft((n) => Math.max(0, n - 1))
+      void refreshRdp()
+    }, 1000)
+    return () => window.clearInterval(tick)
+  }, [rdp?.pending, refreshRdp])
 
   const toggle = async (svc: CatalogService, start: boolean) => {
     setBusy(svc.service)
@@ -66,6 +103,60 @@ export function ServicesPage({ onToast }: Props) {
     }
   }
 
+  const beginRdp = async () => {
+    setRdpBusy(true)
+    try {
+      const mode = rdp?.protected ? 'rollback' : 'secure'
+      const result = await motorBridge.rdp('begin', mode)
+      if (!result.ok) {
+        onToast(String(result.error || result.detail || t('toast_rdp_fail')), 'err')
+        return
+      }
+      onToast(t('toast_rdp_moved', { port: String(result.to_port || result.current_port || '') }), 'ok')
+      await refreshRdp()
+    } finally {
+      setRdpBusy(false)
+    }
+  }
+
+  const confirmRdp = async () => {
+    setRdpBusy(true)
+    try {
+      const result = await motorBridge.rdp('confirm')
+      if (!result.ok) {
+        onToast(String(result.error || t('toast_rdp_fail')), 'err')
+        return
+      }
+      onToast(t('toast_rdp_confirmed', { port: String(result.current_port || '') }), 'ok')
+      setRdpModal(false)
+      await refresh()
+    } finally {
+      setRdpBusy(false)
+    }
+  }
+
+  const cancelRdp = async () => {
+    setRdpBusy(true)
+    try {
+      const result = await motorBridge.rdp('cancel')
+      onToast(
+        result.ok
+          ? t('toast_rdp_reverted', { port: String(result.current_port || '') })
+          : String(result.error || t('toast_rdp_fail')),
+        result.ok ? 'ok' : 'err',
+      )
+      setRdpModal(false)
+      await refresh()
+    } finally {
+      setRdpBusy(false)
+    }
+  }
+
+  const openRdpModal = async () => {
+    const info = await refreshRdp()
+    if (info) setRdpModal(true)
+  }
+
   return (
     <section className="page">
       <div className="page-head">
@@ -81,25 +172,69 @@ export function ServicesPage({ onToast }: Props) {
         {catalog.length === 0 && <p className="muted">{t('services_empty')}</p>}
         {catalog.map((svc) => {
           const active = running.includes(svc.service.toUpperCase())
+          const isRdp = svc.service.toUpperCase() === 'RDP'
+          const listenPort = isRdp ? Number(svc.port || 3389) : Number(svc.port)
+          const realPort = isRdp && rdp ? rdp.current_port : listenPort
           return (
             <article key={`${svc.service}-${svc.port}`} className={`service-card ${active ? 'on' : ''}`}>
               <div>
                 <p className="eyebrow">{active ? t('label_active') : t('label_off')}</p>
                 <h3>{svc.service}</h3>
-                <p className="mono muted">:{svc.port}</p>
+                <p className="mono muted">
+                  {isRdp
+                    ? t('services_rdp_ports', {
+                        honeypot: listenPort,
+                        real: realPort,
+                      })
+                    : `:${svc.port}`}
+                </p>
+                {isRdp && rdp && (
+                  <p className="muted rdp-status">
+                    {rdp.protected
+                      ? t('services_rdp_protected', { port: rdp.current_port })
+                      : t('services_rdp_standard', { port: rdp.current_port })}
+                    {rdp.pending ? ` · ${t('services_rdp_pending', { sec: secondsLeft })}` : ''}
+                  </p>
+                )}
               </div>
-              <button
-                type="button"
-                className={`btn ${active ? 'danger' : ''}`}
-                disabled={busy === svc.service}
-                onClick={() => void toggle(svc, !active)}
-              >
-                {active ? t('btn_stop') : t('btn_start')}
-              </button>
+              <div className="service-actions">
+                {isRdp && (
+                  <button
+                    type="button"
+                    className="btn ghost"
+                    disabled={rdpBusy}
+                    onClick={() => void openRdpModal()}
+                  >
+                    {t('services_rdp_secure_btn')}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className={`btn ${active ? 'danger' : ''}`}
+                  disabled={busy === svc.service}
+                  onClick={() => void toggle(svc, !active)}
+                >
+                  {active ? t('btn_stop') : t('btn_start')}
+                </button>
+              </div>
             </article>
           )
         })}
       </div>
+
+      {rdpModal && rdp && (
+        <RdpSecureMoveModal
+          info={rdp}
+          busy={rdpBusy}
+          secondsLeft={secondsLeft}
+          onClose={() => {
+            if (!rdp.pending) setRdpModal(false)
+          }}
+          onBegin={beginRdp}
+          onConfirm={confirmRdp}
+          onCancel={cancelRdp}
+        />
+      )}
     </section>
   )
 }

@@ -76,6 +76,24 @@ class TestControlWsPresenceHelpers(unittest.TestCase):
             self.assertEqual(payload["t"], "goodbye")
             self.assertEqual(payload["reason"], "update")
 
+    def test_hello_ack_handled(self):
+        from client_control_ws import AgentControlWebSocket
+        ws = AgentControlWebSocket()
+        ws._on_message('{"t":"hello_ack","protocol":1,"server":{"presence":"online"}}')
+        # no raise — ack is accepted
+
+    def test_stale_rx_constant(self):
+        from client_control_ws import STALE_RX_SEC
+        self.assertGreaterEqual(STALE_RX_SEC, 60.0)
+        self.assertLessEqual(STALE_RX_SEC, 90.0)
+
+    def test_control_ws_url_no_token_query_by_default(self):
+        from client_control_ws import api_base_to_control_ws_url
+        with patch("client_security_utils.use_legacy_token_query", return_value=False):
+            url = api_base_to_control_ws_url("https://asteria.run/api", "secret-token")
+        self.assertEqual(url, "wss://asteria.run/ws/agent/control")
+        self.assertNotIn("token=", url)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -104,6 +104,19 @@ class MotorBridgeTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"], "shell_denied")
 
+    @mock.patch("asteria_gui.webbrowser.open")
+    def test_shell_open_dashboard_allowlisted_path(self, mocked_open):
+        result = self.bridge.shell("open_dashboard", "alerts")
+        self.assertTrue(result["ok"], result)
+        mocked_open.assert_called_once_with("https://asteria.run/dashboard?view=alerts")
+
+    @mock.patch("asteria_gui.webbrowser.open")
+    def test_shell_open_dashboard_denies_unknown_path(self, mocked_open):
+        result = self.bridge.shell("open_dashboard", "javascript:alert(1)")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "dashboard_path_denied")
+        mocked_open.assert_not_called()
+
     def test_cloud_allowlist_denies_unknown(self):
         result = self.bridge.cloud("DELETE", "agents/me")
         self.assertFalse(result["ok"])
@@ -200,6 +213,88 @@ class MotorBridgeTests(unittest.TestCase):
         result = self.bridge.ir("logoff", "")
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"], "username_required")
+
+    def test_ir_list_users_marks_self(self):
+        fake = [
+            {
+                "username": "ops",
+                "enabled": True,
+                "status": "active",
+                "protected": False,
+                "can_enable": False,
+                "can_disable": True,
+                "is_admin": True,
+                "groups": ["Administrators"],
+                "has_session": True,
+                "session_status": "Active",
+                "last_logon": None,
+            },
+            {
+                "username": "bob",
+                "enabled": True,
+                "status": "active",
+                "protected": False,
+                "can_enable": False,
+                "can_disable": True,
+                "is_admin": False,
+                "groups": ["Users"],
+                "has_session": False,
+                "session_status": None,
+                "last_logon": None,
+            },
+        ]
+        with mock.patch(
+            "client_remote_session.list_local_users", return_value=fake
+        ), mock.patch.object(self.bridge, "_ir_current_username", return_value="ops"):
+            result = self.bridge.ir("list")
+        self.assertTrue(result["ok"])
+        by_name = {u["username"]: u for u in result["users"]}
+        self.assertTrue(by_name["ops"]["is_self"])
+        self.assertFalse(by_name["ops"]["can_disable"])
+        self.assertFalse(by_name["ops"]["can_logoff"])
+        self.assertTrue(by_name["bob"]["can_disable"])
+
+    def test_ir_blocks_self_disable(self):
+        with mock.patch.object(self.bridge, "_ir_current_username", return_value="ops"):
+            result = self.bridge.ir("disable", "ops")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "self_account")
+
+    def test_rdp_begin_sets_pending_confirm_window(self):
+        store = {}
+
+        def _save(payload):
+            store.update(payload)
+
+        def _load():
+            return dict(store) if store.get("mode") else None
+
+        def _clear():
+            store.clear()
+
+        with mock.patch("client_utils.is_admin", return_value=True), mock.patch(
+            "client_utils.ServiceController.get_rdp_port", return_value=3389
+        ), mock.patch.object(self.bridge, "_rdp_transition", return_value=True), mock.patch.object(
+            self.bridge, "_rdp_save_pending", side_effect=_save
+        ), mock.patch.object(
+            self.bridge, "_rdp_load_pending", side_effect=_load
+        ), mock.patch.object(
+            self.bridge, "_rdp_clear_pending", side_effect=_clear
+        ), mock.patch.object(
+            self.bridge, "_rdp_arm_expire_timer"
+        ), mock.patch.object(
+            self.bridge, "_rdp_expire_pending_if_needed", return_value=False
+        ):
+            began = self.bridge.rdp("begin", "secure")
+            self.assertTrue(began["ok"])
+            self.assertTrue(began["pending"])
+            self.assertEqual(began["to_port"], 53389)
+            self.assertGreater(began["seconds_left"], 0)
+            self.assertEqual(store.get("mode"), "secure")
+            confirmed = self.bridge.rdp("confirm")
+            self.assertTrue(confirmed["ok"])
+            self.assertTrue(confirmed["confirmed"])
+            self.assertFalse(bool(store))
 
 
 if __name__ == "__main__":

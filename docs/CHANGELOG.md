@@ -1,3 +1,8 @@
+# v4.9.39
+- **Tray brick fix:** X-close no longer sync-hides inside pywebview `closing` (Win32 hang); supervised tray loop + revive; show/hide off tray callback thread.
+- **Presence/WS:** ping-fail reconnect, 75s stale RX, heartbeat backoff on 499/timeout, `hello_ack`.
+- **Control Center:** settings switches + help/dashboard links; top-bar live meters; status 3-col IP panels (`IP_TABLE`); Threat accounts IR; RDP secure-move; Layers selected styling.
+
 # v4.9.38
 - **C-BRICK-1:** Local critical auto (`disable_account` / auto logoff) requires fresh `account_linked` (cache ≤15 min, fail-closed). Skip + alert `skipped_unlinked`.
 - **C-BRICK-2:** Silent hours / time rules remain default OFF; cloud cannot force auto disable/logoff via silent-hours flags.

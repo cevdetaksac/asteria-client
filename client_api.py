@@ -184,6 +184,12 @@ class AsteriaAPIClient:
                         self.log(f"[API] Başarılı yanıt: {result}")
                     return result
 
+                # 499 = client closed before upstream answered (sleep/proxy kill).
+                # Never treat as fatal auth — caller/worker must keep retrying.
+                if response.status_code == 499:
+                    self.log(
+                        f"[API] HTTP 499 on {endpoint} (client closed / interrupted) — transient"
+                    )
                 if (
                     attempts == 1
                     and response.status_code in (500, 502, 503, 504)

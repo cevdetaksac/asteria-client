@@ -603,6 +603,10 @@ class CloudHoneypotClient:
             'health_check_interval': 60  # seconds
         }
         self._last_api_ok = False
+        self._last_api_ok_at = None
+        self._last_api_check_at = None
+        self._last_heartbeat_ok = None
+        self._last_heartbeat_at = None
         
         # Check initial RDP state (registry only — no netstat at startup)
         self.rdp_manager.check_initial_rdp_state()
@@ -1212,7 +1216,7 @@ class CloudHoneypotClient:
         
         while True:
             if not self.try_api_connection(show_error=(retry_count == 0)):
-                self._last_api_ok = False
+                self._note_api_ok(False)
                 retry_count += 1
                 
                 # For the first few failures, retry quickly
@@ -1229,12 +1233,12 @@ class CloudHoneypotClient:
             if retry_count > 0:
                 logging.info(f"API connection restored after {retry_count} retries")
             retry_count = 0
-            self._last_api_ok = True
+            self._note_api_ok(True)
             # Authenticated check (attack-count / tunnel-status)
             try:
                 tok = self.state.get("token", "")
                 if tok:
-                    self._last_api_ok = self.api_client.check_authenticated(tok)
+                    self._note_api_ok(self.api_client.check_authenticated(tok))
             except Exception:
                 pass
                 
@@ -1361,7 +1365,9 @@ class CloudHoneypotClient:
                 system_context=system_context
             )
             self._last_heartbeat_ok = ok
+            self._last_heartbeat_at = time.time()
             if ok:
+                self._note_api_ok(True)
                 try:
                     from client_offline_queue import drain_to_cloud, offline_queue_enabled
                     if offline_queue_enabled():
@@ -1379,35 +1385,55 @@ class CloudHoneypotClient:
                 pass
 
     def heartbeat_loop(self):
-        """Heartbeat loop — reports WAN IP changes via update-ip (cache ~60s)."""
+        """Heartbeat loop — reports WAN IP changes via update-ip (cache ~60s).
+
+        Contract agent/polling.md: ~60s cadence when healthy. Errors (timeout,
+        499, connection reset) must NOT kill this worker — retry with
+        exponential backoff, then settle back to API_HEARTBEAT_INTERVAL.
+        """
         last_ip = None
         last_gui_ip = None  # Track last GUI-updated IP to avoid redundant updates
-        
+        fail_backoff = 5.0
+        fail_backoff_max = 30.0
+
         while True:
+            ok = False
             try:
                 token = self.state.get("token")
                 if token:
                     # 60s cache in ClientHelpers — laptop network switches report quickly
                     ip = ClientHelpers.get_public_ip()
-                    
+
                     # Only update API if IP changed
                     if ip and ip != last_ip and ip != "0.0.0.0":
                         self.update_client_ip(ip)
                         last_ip = ip
                         log(f"[IP] Public IP changed → API update-ip: {ip}")
-                        
+
                     self.state["public_ip"] = ip
-                    
+
                     # GUI update only if IP actually changed (performance optimization)
                     if ip != last_gui_ip and self.gui:
                         last_gui_ip = ip
                         self._gui_safe(lambda i=ip: self._update_identity_ip(i))
-                    
+
                     # Akıllı heartbeat gönder (online/idle/offline)
                     self.send_heartbeat_once()
+                    ok = bool(getattr(self, "_last_heartbeat_ok", False))
+                    if not ok:
+                        log("[HEARTBEAT] send failed — will retry with backoff (worker stays alive)")
             except Exception as e:
                 log(f"heartbeat error: {e}")
-            time.sleep(API_HEARTBEAT_INTERVAL)
+                ok = False
+
+            if ok:
+                fail_backoff = 5.0
+                time.sleep(API_HEARTBEAT_INTERVAL)
+            else:
+                # Faster recovery after 499/timeout/transport blips; never exit.
+                sleep_for = min(fail_backoff, fail_backoff_max)
+                time.sleep(sleep_for)
+                fail_backoff = min(fail_backoff_max, fail_backoff * 2.0)
 
     # ---------- Attack Count ---------- #
     def fetch_attack_count_sync(self, token):
@@ -1497,7 +1523,7 @@ class CloudHoneypotClient:
         def worker():
             try:
                 ok = self.api_client.check_authenticated(token)
-                self._last_api_ok = ok
+                self._note_api_ok(ok)
                 if not ok:
                     return
                 cnt = self.fetch_attack_count_sync(token)
@@ -1506,7 +1532,7 @@ class CloudHoneypotClient:
                         return
                     self._last_attack_count = cnt
             except Exception:
-                self._last_api_ok = False
+                self._note_api_ok(False)
                 
         if async_thread:
             # PERFORMANCE: Reuse existing thread if already running
@@ -1589,6 +1615,8 @@ class CloudHoneypotClient:
             "resilience": self._ipc_resilience_summary(),
             "resources": self._ipc_resources_summary(),
             "defense_policy": self._ipc_defense_policy_summary(),
+            "api": self._ipc_api_health_summary(),
+            "commands_recent": self._ipc_commands_recent(limit=5),
         }
 
     def _ipc_rs_running(self) -> bool:
@@ -1661,6 +1689,214 @@ class CloudHoneypotClient:
             return collect_resources(getattr(self, "health_monitor", None))
         except Exception:
             return {}
+
+    def _note_api_ok(self, ok: bool) -> None:
+        """Track last API contact for GUI live meters."""
+        self._last_api_ok = bool(ok)
+        self._last_api_check_at = time.time()
+        if ok:
+            self._last_api_ok_at = self._last_api_check_at
+
+    def _ipc_api_health_summary(self) -> dict:
+        hb = getattr(self, "_last_heartbeat_ok", None)
+        return {
+            "ok": bool(getattr(self, "_last_api_ok", False)),
+            "heartbeat_ok": None if hb is None else bool(hb),
+            "last_ok_at": getattr(self, "_last_api_ok_at", None),
+            "last_check_at": getattr(self, "_last_api_check_at", None),
+            "last_heartbeat_at": getattr(self, "_last_heartbeat_at", None),
+        }
+
+    def _ipc_commands_recent(self, limit: int = 5) -> list:
+        rc = getattr(self, "remote_commands", None)
+        if rc is None or not hasattr(rc, "get_history"):
+            return []
+        try:
+            hist = list(rc.get_history() or [])
+        except Exception:
+            return []
+        rows = []
+        for item in reversed(hist[-max(1, int(limit)):]):
+            if not isinstance(item, dict):
+                continue
+            result = item.get("result") if isinstance(item.get("result"), dict) else {}
+            rows.append({
+                "command_type": str(item.get("command_type") or ""),
+                "command_id": str(item.get("command_id") or ""),
+                "ok": bool(result.get("success")),
+                "executed_at": item.get("executed_at"),
+                "source": str(item.get("source") or ""),
+                "message": str(result.get("message") or result.get("error") or "")[:120],
+            })
+        return rows
+
+    @staticmethod
+    def _ipc_ip_reason(ctx) -> str:
+        """Short human summary: attack counts + recent event types / services."""
+        parts = []
+        try:
+            fails = int(getattr(ctx, "failed_attempts", 0) or 0)
+            ok_logins = int(getattr(ctx, "successful_logins", 0) or 0)
+            if fails:
+                parts.append(f"failed×{fails}")
+            if ok_logins:
+                parts.append(f"success×{ok_logins}")
+            events = list(getattr(ctx, "events", []) or [])
+            seen_types = []
+            for ev in events[-12:]:
+                et = str((ev or {}).get("event_type") or "").strip()
+                if et and et not in seen_types:
+                    seen_types.append(et)
+            if seen_types:
+                parts.append(", ".join(seen_types[:3]))
+            services = list(getattr(ctx, "services_targeted", []) or [])
+            if services:
+                parts.append("/".join(str(s) for s in services[:2]))
+        except Exception:
+            pass
+        return " · ".join(parts) if parts else "—"
+
+    def _ipc_ip_table_payload(self, limit: int = 40) -> dict:
+        """Watching / blocked / whitelist rows for GUI (frontend has no engine)."""
+        te = getattr(self, "threat_engine", None)
+        auto_response = getattr(self, "auto_response", None)
+        contexts = {}
+        blocked_ips: set = set()
+        whitelist_ips: set = set()
+        store_meta: dict = {}
+
+        if te:
+            try:
+                contexts = te.get_all_contexts() or {}
+            except Exception:
+                contexts = {}
+            try:
+                blocked_ips = set(getattr(te, "_rule_blocked_ips", set()) or set())
+            except Exception:
+                blocked_ips = set()
+            try:
+                whitelist_ips = set(getattr(te, "_whitelist_ips", set()) or set())
+            except Exception:
+                whitelist_ips = set()
+
+        try:
+            from client_block_store import refresh_from_live_firewall, load_blocked_map
+
+            store_meta = refresh_from_live_firewall(min_interval_sec=20.0, force=False) or {}
+            if not store_meta:
+                store_meta = load_blocked_map(force=True) or {}
+            blocked_ips |= set(store_meta.keys())
+        except Exception:
+            try:
+                from client_block_store import load_blocked_map
+
+                store_meta = load_blocked_map(force=True) or {}
+                blocked_ips |= set(store_meta.keys())
+            except Exception:
+                store_meta = {}
+
+        ar_blocked: set = set()
+        if auto_response:
+            try:
+                ar_blocked = set(getattr(auto_response, "_blocks", {}).keys())
+            except Exception:
+                ar_blocked = set()
+            try:
+                whitelist_ips |= set(getattr(auto_response, "whitelist_ips", set()) or set())
+            except Exception:
+                pass
+
+        ew = getattr(self, "event_watcher", None)
+        if ew and hasattr(ew, "whitelist_ips"):
+            try:
+                whitelist_ips |= set(ew.whitelist_ips or set())
+            except Exception:
+                pass
+
+        skip = {"local", "", "127.0.0.1", "::1"}
+        watching, blocked, whitelist = [], [], []
+        seen: set = set()
+        lim = max(1, int(limit))
+
+        for ip, ctx in (contexts or {}).items():
+            if ip in skip:
+                continue
+            try:
+                score = int(getattr(ctx, "threat_score", 0) or 0)
+                attempts = int(getattr(ctx, "failed_attempts", 0) or 0)
+            except Exception:
+                score, attempts = 0, 0
+            if score < 1 and attempts < 1:
+                if ip not in blocked_ips and ip not in ar_blocked and ip not in whitelist_ips:
+                    continue
+            services = list(getattr(ctx, "services_targeted", []) or [])
+            if ip in whitelist_ips:
+                status = "whitelisted"
+            elif ip in blocked_ips or ip in ar_blocked or bool(getattr(ctx, "is_blocked", False)):
+                status = "blocked"
+            else:
+                status = "watching"
+            row = {
+                "ip": ip,
+                "services": services[:4],
+                "attempts": attempts,
+                "score": score,
+                "last_seen": float(getattr(ctx, "last_seen", 0) or 0),
+                "reason": self._ipc_ip_reason(ctx),
+                "status": status,
+            }
+            if status == "watching":
+                watching.append(row)
+            elif status == "blocked":
+                blocked.append(row)
+            else:
+                whitelist.append(row)
+            seen.add(ip)
+
+        for ip in (blocked_ips | ar_blocked):
+            if ip in skip or ip in seen or ip in whitelist_ips:
+                continue
+            meta = store_meta.get(ip) or {}
+            reason = str(meta.get("reason") or meta.get("source") or "firewall")
+            blocked.append({
+                "ip": ip,
+                "services": [],
+                "attempts": 0,
+                "score": 0,
+                "last_seen": float(meta.get("blocked_at") or 0),
+                "reason": reason,
+                "status": "blocked",
+            })
+            seen.add(ip)
+
+        for ip in whitelist_ips:
+            if ip in skip or ip in seen:
+                continue
+            whitelist.append({
+                "ip": ip,
+                "services": [],
+                "attempts": 0,
+                "score": 0,
+                "last_seen": 0,
+                "reason": "whitelist",
+                "status": "whitelisted",
+            })
+            seen.add(ip)
+
+        watching.sort(key=lambda r: (r.get("score") or 0, r.get("attempts") or 0), reverse=True)
+        blocked.sort(key=lambda r: float(r.get("last_seen") or 0), reverse=True)
+        return {
+            "ok": True,
+            "engine": te is not None,
+            "watching": watching[:lim],
+            "blocked": blocked[:lim],
+            "whitelist": whitelist[:lim],
+            "totals": {
+                "watching": len(watching),
+                "blocked": len(blocked),
+                "whitelist": len(whitelist),
+            },
+        }
 
     def _ipc_threat_top_payload(self, limit: int = 25) -> dict:
         """Top attacker contexts for GUI frontends that hold no local engine."""
@@ -1851,6 +2087,14 @@ class CloudHoneypotClient:
                         _send(json.dumps(self._ipc_threat_top_payload(), ensure_ascii=False))
                     except Exception as e:
                         log(f"[CTRL] THREAT_TOP error: {e}")
+                        _send(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
+                    continue
+
+                if cmd_u == "IP_TABLE":
+                    try:
+                        _send(json.dumps(self._ipc_ip_table_payload(), ensure_ascii=False))
+                    except Exception as e:
+                        log(f"[CTRL] IP_TABLE error: {e}")
                         _send(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
                     continue
 

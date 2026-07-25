@@ -28,6 +28,8 @@ PING_INTERVAL_SEC = 25.0
 RECV_TIMEOUT_SEC = 0.5
 RECONNECT_MIN = 1.0
 RECONNECT_MAX = 30.0
+# Cloud idle_timeout ≈ 90s — force reconnect before dashboard goes gray on a zombie TCP.
+STALE_RX_SEC = 75.0
 
 
 def api_base_to_control_ws_url(api_base: str, token: str = "") -> str:
@@ -249,8 +251,11 @@ class AgentControlWebSocket:
             try:
                 import websocket
             except ImportError:
-                log("[CONTROL-WS] websocket-client missing — HTTP poll only")
-                return
+                # Never exit the worker permanently — HTTP poll remains primary
+                # until the package is available again (contract: reconnect forever).
+                log("[CONTROL-WS] websocket-client missing — HTTP poll only; retry in 60s")
+                time.sleep(60.0)
+                continue
 
             url = api_base_to_control_ws_url(api_base, token)
             log(f"[CONTROL-WS] connecting… {url.split('?')[0]}")
@@ -299,9 +304,9 @@ class AgentControlWebSocket:
                     from client_command_envelope import capability as _env_cap
                     hello["caps"] = {"command_envelope_v2": _env_cap()}
                 except Exception:
-                    pass
+                    hello["caps"] = {"command_envelope_v2": "off"}
                 ws.send(json.dumps(hello))
-                log("[CONTROL-WS] connected")
+                log("[CONTROL-WS] connected + hello sent")
                 # OOB-501 (contract 1.4.7): drain after control WS, same as heartbeat.
                 try:
                     if callable(self.on_connected):
@@ -318,12 +323,24 @@ class AgentControlWebSocket:
                 last_ping = time.time()
                 while self._running and self._connected:
                     now = time.time()
+                    if self._last_rx and (now - self._last_rx) >= STALE_RX_SEC:
+                        log(
+                            f"[CONTROL-WS] stale RX {now - self._last_rx:.0f}s "
+                            f"(>{STALE_RX_SEC:.0f}s) — forcing reconnect"
+                        )
+                        self._stats["stale_reconnects"] = int(
+                            self._stats.get("stale_reconnects") or 0
+                        ) + 1
+                        break
                     if now - last_ping >= PING_INTERVAL_SEC:
-                        self.send_json({
+                        ping_ok = self.send_json({
                             "v": PROTOCOL_V,
                             "t": "ping",
                             "ts": datetime.now(timezone.utc).isoformat(),
                         })
+                        if not ping_ok:
+                            log("[CONTROL-WS] ping send failed — reconnecting")
+                            break
                         last_ping = now
                     try:
                         msg = ws.recv()
@@ -379,6 +396,8 @@ class AgentControlWebSocket:
             })
             return
         if t == "pong":
+            # Successful cloud pong refreshes last_seen — count for diagnostics.
+            self._stats["pongs"] = int(self._stats.get("pongs") or 0) + 1
             return
         if t == "presence_ack":
             log(
@@ -386,8 +405,12 @@ class AgentControlWebSocket:
                 f"presence={data.get('presence')}"
             )
             return
-        if t == "hello":
-            log(f"[CONTROL-WS] server hello protocol={data.get('protocol')}")
+        if t in ("hello", "hello_ack"):
+            # Contract accepts hello_ack or hello as session confirm.
+            log(
+                f"[CONTROL-WS] {t} protocol={data.get('protocol')} "
+                f"presence={((data.get('server') or {}) if isinstance(data.get('server'), dict) else {}).get('presence')}"
+            )
             return
         if t == "config_hint":
             try:

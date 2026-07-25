@@ -7,26 +7,34 @@ type Props = {
   onToast: (msg: string, kind?: 'ok' | 'err') => void
 }
 
+type IpRow = {
+  ip: string
+  reason?: string
+  attempts?: number
+  score?: number
+  status?: string
+}
+
 export function IpListPage({ onToast }: Props) {
   const [ip, setIp] = useState('')
-  const [blocked, setBlocked] = useState<string[]>([])
+  const [watching, setWatching] = useState<IpRow[]>([])
+  const [blocked, setBlocked] = useState<IpRow[]>([])
   const [whitelist, setWhitelist] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
 
   const refresh = async () => {
-    const [threat, cloud] = await Promise.all([
-      motorBridge.ipc('THREAT_TOP'),
+    const [table, cloud] = await Promise.all([
+      motorBridge.ipc('IP_TABLE'),
       motorBridge.cloud('GET', 'threats/config'),
     ])
-    const attackers = Array.isArray(threat.attackers) ? threat.attackers : []
-    const ips = attackers
-      .map((row) => pick(asRecord(row), 'ip', 'src_ip'))
-      .filter((value) => value !== '—')
-    setBlocked(Array.from(new Set(ips)))
+    setWatching(Array.isArray(table.watching) ? (table.watching as IpRow[]) : [])
+    setBlocked(Array.isArray(table.blocked) ? (table.blocked as IpRow[]) : [])
     if (cloud.ok && cloud.data && typeof cloud.data === 'object') {
       const data = cloud.data as Record<string, unknown>
       const wl = data.whitelist_ips
       setWhitelist(Array.isArray(wl) ? wl.map(String) : [])
+    } else if (Array.isArray(table.whitelist)) {
+      setWhitelist((table.whitelist as IpRow[]).map((r) => String(r.ip || '')).filter(Boolean))
     }
   }
 
@@ -116,26 +124,55 @@ export function IpListPage({ onToast }: Props) {
         </button>
       </form>
 
-      <div className="split">
+      <div className="ip-cols" style={{ marginTop: 18 }}>
         <div className="table-wrap">
           <table>
             <thead>
               <tr>
-                <th>{t('iplist_threat_ip')}</th>
+                <th>{t('status_ip_watching')}</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {watching.length === 0 && (
+                <tr><td colSpan={2} className="empty">{t('status_ip_empty_watch')}</td></tr>
+              )}
+              {watching.map((row) => (
+                <tr key={`w-${row.ip}`}>
+                  <td>
+                    <div className="mono">{row.ip}</div>
+                    <small className="muted">{row.reason || pick(asRecord(row), 'reason')}</small>
+                  </td>
+                  <td>
+                    <button type="button" className="btn danger sm" disabled={busy} onClick={() => void mutate('BLOCK_IP', row.ip)}>{t('btn_block')}</button>
+                    <button type="button" className="btn ghost sm" disabled={busy} onClick={() => void setWhitelistIps(Array.from(new Set([...whitelist, row.ip])))}>{t('iplist_wl_short')}</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>{t('iplist_blocked')}</th>
                 <th />
               </tr>
             </thead>
             <tbody>
               {blocked.length === 0 && (
-                <tr><td colSpan={2} className="empty">{t('iplist_empty_threat')}</td></tr>
+                <tr><td colSpan={2} className="empty">{t('iplist_empty_blocked')}</td></tr>
               )}
-              {blocked.map((entry) => (
-                <tr key={entry}>
-                  <td className="mono">{entry}</td>
+              {blocked.map((row) => (
+                <tr key={`b-${row.ip}`}>
                   <td>
-                    <button type="button" className="btn danger sm" disabled={busy} onClick={() => void mutate('BLOCK_IP', entry)}>{t('btn_block')}</button>
-                    <button type="button" className="btn ghost sm" disabled={busy} onClick={() => void mutate('UNBLOCK_IP', entry)}>{t('btn_remove')}</button>
-                    <button type="button" className="btn ghost sm" disabled={busy} onClick={() => void setWhitelistIps(Array.from(new Set([...whitelist, entry])))}>{t('iplist_wl_short')}</button>
+                    <div className="mono">{row.ip}</div>
+                    <small className="muted">{row.reason || '—'}</small>
+                  </td>
+                  <td>
+                    <button type="button" className="btn ghost sm" disabled={busy} onClick={() => void mutate('UNBLOCK_IP', row.ip)}>{t('btn_unblock')}</button>
+                    <button type="button" className="btn ghost sm" disabled={busy} onClick={() => void setWhitelistIps(Array.from(new Set([...whitelist, row.ip])))}>{t('iplist_wl_short')}</button>
                   </td>
                 </tr>
               ))}

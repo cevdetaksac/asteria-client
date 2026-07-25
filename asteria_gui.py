@@ -13,6 +13,7 @@ import os
 import socket
 import sys
 import threading
+import time
 import webbrowser
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -29,6 +30,7 @@ from client_daemon_ipc import (
     honeypot_list,
     honeypot_start,
     honeypot_stop,
+    ip_table,
     network_accept_surface,
     network_maintenance_end,
     network_maintenance_start,
@@ -44,12 +46,23 @@ _MUTEX_NAME = "Local\\AsteriaGuiWebView"
 _SHOW_EVENT_NAME = "Local\\AsteriaGuiWebViewShow"
 _kernel_handles: list[int] = []
 _quitting = False
+_tray_state: Dict[str, Any] = {
+    "icon": None,
+    "thread": None,
+    "stop": False,
+    "window": None,
+    "bridge": None,
+    "logger": None,
+}
+_hide_lock = threading.Lock()
+_hide_pending = False
 
 # Explicit IPC ops the WebView may request (maps to client_daemon_ipc helpers).
 _IPC_ALLOWLIST = frozenset(
     {
         "STATUS",
         "THREAT_TOP",
+        "IP_TABLE",
         "CLEAR_FIREWALL",
         "BLOCK_IP",
         "UNBLOCK_IP",
@@ -88,10 +101,22 @@ _SHELL_ALLOWLIST = frozenset(
     }
 )
 
+# Deep-link targets for settings help links (allowlisted only — no free-form URLs).
+_DASHBOARD_OPEN_TARGETS = {
+    "": "https://asteria.run/dashboard",
+    "dashboard": "https://asteria.run/dashboard",
+    "alerts": "https://asteria.run/dashboard?view=alerts",
+    "blocking": "https://asteria.run/dashboard?view=blocking",
+    "webhooks": "https://asteria.run/dashboard?view=webhooks",
+    "settings": "https://asteria.run/dashboard?view=settings",
+}
+
 _ACCOUNT_ACTIONS = frozenset({"status", "link", "unlink"})
 _HARDEN_FIX_TARGETS = frozenset({"winrm", "nla", "antivirus"})
 _RDP_MOVE_MODES = frozenset({"secure", "rollback"})
-_IR_ACTIONS = frozenset({"logoff", "disable"})
+_RDP_ACTIONS = frozenset({"status", "move", "begin", "confirm", "cancel"})
+_RDP_CONFIRM_SECONDS = 60
+_IR_ACTIONS = frozenset({"list", "logoff", "disable", "enable", "reset_password"})
 _UPDATE_ACTIONS = frozenset({"status", "dismiss"})
 _I18N_LANGS = frozenset({"tr", "en"})
 
@@ -127,6 +152,66 @@ def _pulse_session_gate(window: Any) -> None:
         pass
 
 
+def _schedule_webview(fn, *, delay: float = 0.0) -> None:
+    """Run WebView ops off the pystray / closing callback thread.
+
+    Hiding inside events.closing (or blocking show from tray) can hang Win32
+    message dispatch — icon stays visible but clicks/menus die (pywebview bug).
+    """
+
+    def _run() -> None:
+        if delay > 0:
+            time.sleep(delay)
+        try:
+            fn()
+        except Exception:
+            pass
+
+    threading.Thread(target=_run, name="AsteriaGuiUiOp", daemon=True).start()
+
+
+def _hide_to_tray(window: Any, bridge: Optional["MotorBridge"] = None) -> None:
+    """Async hide + re-lock PIN (safe from closing callback / shell minimize)."""
+    global _hide_pending
+    with _hide_lock:
+        if _hide_pending or _quitting:
+            return
+        _hide_pending = True
+
+    def _do() -> None:
+        global _hide_pending
+        try:
+            try:
+                window.hide()
+            except Exception:
+                pass
+            try:
+                lock = getattr(bridge, "_gui_lock", None) if bridge is not None else None
+                if lock is not None:
+                    lock.lock_session()
+            except Exception:
+                pass
+            _pulse_session_gate(window)
+        finally:
+            with _hide_lock:
+                _hide_pending = False
+
+    # Small delay so closing callback can return False before hide().
+    _schedule_webview(_do, delay=0.05)
+
+
+def _show_from_tray(window: Any) -> None:
+    def _do() -> None:
+        try:
+            window.show()
+            window.restore()
+            _pulse_session_gate(window)
+        except Exception:
+            pass
+
+    _schedule_webview(_do)
+
+
 def _start_show_watcher(window: Any) -> None:
     if os.name != "nt":
         return
@@ -142,12 +227,10 @@ def _start_show_watcher(window: Any) -> None:
         while True:
             if kernel32.WaitForSingleObject(event, 0xFFFFFFFF) != 0:
                 return
-            try:
-                window.show()
-                window.restore()
-                _pulse_session_gate(window)
-            except Exception:
+            if _quitting:
                 return
+            _ensure_tray_alive()
+            _show_from_tray(window)
 
     threading.Thread(
         target=_watch, name="AsteriaGuiShow", daemon=True
@@ -182,35 +265,42 @@ def _load_tray_image(status: str = "online"):
     return image
 
 
-def _start_tray(window: Any, bridge: "MotorBridge", logger: logging.Logger):
-    """Own the interactive tray outside the SYSTEM motor."""
+def _run_tray_icon_once(window: Any, bridge: "MotorBridge", logger: logging.Logger):
+    """Create one pystray Icon and block until stop/crash (supervised by _tray_loop)."""
     import pystray
 
     image = _load_tray_image("online")
 
     def show_gui(_icon=None, _item=None):
-        try:
-            window.show()
-            window.restore()
-            _pulse_session_gate(window)
-        except Exception as exc:
-            logger.info("Tray show failed: %s", exc)
+        _show_from_tray(window)
 
     def open_dashboard(_icon=None, _item=None):
-        bridge.shell("open_dashboard")
+        try:
+            bridge.shell("open_dashboard")
+        except Exception as exc:
+            logger.info("Tray dashboard failed: %s", exc)
 
     def copy_token(_icon=None, _item=None):
-        bridge.shell("copy_token")
+        try:
+            bridge.shell("copy_token")
+        except Exception as exc:
+            logger.info("Tray copy token failed: %s", exc)
 
     def quit_gui(icon=None, _item=None):
         global _quitting
         _quitting = True
+        _tray_state["stop"] = True
         try:
             if icon:
                 icon.stop()
-            window.destroy()
         except Exception:
             pass
+        def _destroy():
+            try:
+                window.destroy()
+            except Exception:
+                pass
+        _schedule_webview(_destroy)
 
     icon = pystray.Icon(
         "asteria-gui",
@@ -223,29 +313,95 @@ def _start_tray(window: Any, bridge: "MotorBridge", logger: logging.Logger):
             pystray.MenuItem("Arayüzden Çık", quit_gui),
         ),
     )
-    icon.run_detached()
+    _tray_state["icon"] = icon
+    try:
+        icon.run()  # blocking — owns Win32 message pump for this icon
+    finally:
+        if _tray_state.get("icon") is icon:
+            _tray_state["icon"] = None
+
+
+def _tray_loop(window: Any, bridge: "MotorBridge", logger: logging.Logger) -> None:
+    """Supervised tray loop — recreate icon after crash / explorer TaskbarCreated."""
+    while not _tray_state.get("stop") and not _quitting:
+        try:
+            _run_tray_icon_once(window, bridge, logger)
+        except Exception as exc:
+            logger.info("Tray icon loop error: %s", exc)
+        _tray_state["icon"] = None
+        if _tray_state.get("stop") or _quitting:
+            break
+        logger.info("Tray icon ended — restarting in 1.5s")
+        time.sleep(1.5)
+
+
+def _ensure_tray_alive() -> bool:
+    """Restart supervised tray thread if it died while GUI process still runs."""
+    if _quitting or _tray_state.get("stop"):
+        return False
+    thread = _tray_state.get("thread")
+    window = _tray_state.get("window")
+    bridge = _tray_state.get("bridge")
+    logger = _tray_state.get("logger")
+    if thread is not None and thread.is_alive():
+        icon = _tray_state.get("icon")
+        if icon is not None:
+            try:
+                icon.visible = True
+            except Exception:
+                pass
+        return True
+    if window is None or bridge is None or logger is None:
+        return False
+    logger.info("Tray thread dead while GUI alive — restarting")
+    t = threading.Thread(
+        target=_tray_loop,
+        args=(window, bridge, logger),
+        name="AsteriaGuiTray",
+        daemon=True,
+    )
+    _tray_state["thread"] = t
+    t.start()
+    return True
+
+
+def _start_tray(window: Any, bridge: "MotorBridge", logger: logging.Logger):
+    """Own the interactive tray outside the SYSTEM motor (supervised + revive)."""
+    _tray_state["stop"] = False
+    _tray_state["window"] = window
+    _tray_state["bridge"] = bridge
+    _tray_state["logger"] = logger
+
+    t = threading.Thread(
+        target=_tray_loop,
+        args=(window, bridge, logger),
+        name="AsteriaGuiTray",
+        daemon=True,
+    )
+    _tray_state["thread"] = t
+    t.start()
 
     def _sync_tray_status() -> None:
-        while True:
+        while not _quitting and not _tray_state.get("stop"):
             try:
-                import time
-
                 time.sleep(8)
-                if _quitting:
+                if _quitting or _tray_state.get("stop"):
                     return
+                _ensure_tray_alive()
+                icon = _tray_state.get("icon")
+                if icon is None:
+                    continue
                 pong = bridge.ping()
                 next_key = "online" if pong.get("ok") else "offline"
                 icon.icon = _load_tray_image(next_key)
             except Exception:
                 try:
-                    import time
-
                     time.sleep(8)
                 except Exception:
                     return
 
     threading.Thread(target=_sync_tray_status, name="AsteriaTrayStatus", daemon=True).start()
-    return icon
+    return _tray_state
 
 
 def _resource_path(*parts: str) -> Path:
@@ -478,6 +634,8 @@ class MotorBridge:
             return get_status(timeout=3.0)
         if name == "THREAT_TOP":
             return threat_top(timeout=4.0)
+        if name == "IP_TABLE":
+            return ip_table(timeout=6.0)
         if name == "CLEAR_FIREWALL":
             return clear_firewall(timeout=180.0)
         if name == "BLOCK_IP":
@@ -621,25 +779,89 @@ class MotorBridge:
         return {"ok": False, "error": "harden_unknown_action"}
 
     def rdp(self, action: str = "status", mode: str = "") -> Dict[str, Any]:
-        """RDP port protection status / move (admin required for move)."""
+        """RDP port protection: status / begin (60s confirm) / confirm / cancel / move."""
         if not self._authorized():
             return self._deny_locked()
         act = str(action or "status").strip().lower()
+        if act not in _RDP_ACTIONS:
+            return {"ok": False, "error": "rdp_unknown_action"}
         try:
             from client_constants import RDP_SECURE_PORT
             from client_utils import ServiceController, is_admin
 
+            # Expire pending before answering status
+            if act in ("status", "begin", "confirm", "cancel", "move"):
+                self._rdp_expire_pending_if_needed()
+
             current = ServiceController.get_rdp_port() or 3389
             protected = int(current) == int(RDP_SECURE_PORT)
+            pending = self._rdp_load_pending()
+            seconds_left = 0
+            if pending:
+                try:
+                    seconds_left = max(
+                        0, int(float(pending.get("deadline") or 0) - time.time())
+                    )
+                except Exception:
+                    seconds_left = 0
+
             if act == "status":
                 return {
                     "ok": True,
                     "protected": protected,
                     "current_port": int(current),
                     "secure_port": int(RDP_SECURE_PORT),
+                    "standard_port": 3389,
                     "admin": bool(is_admin()),
+                    "confirm_seconds": _RDP_CONFIRM_SECONDS,
+                    "pending": bool(pending),
+                    "pending_mode": (pending or {}).get("mode"),
+                    "pending_from": (pending or {}).get("from_port"),
+                    "pending_to": (pending or {}).get("to_port"),
+                    "seconds_left": seconds_left,
                 }
-            if act == "move":
+
+            if act == "confirm":
+                if not pending:
+                    return {"ok": False, "error": "rdp_no_pending"}
+                self._rdp_clear_pending()
+                final = ServiceController.get_rdp_port() or current
+                return {
+                    "ok": True,
+                    "confirmed": True,
+                    "protected": int(final) == int(RDP_SECURE_PORT),
+                    "current_port": int(final),
+                    "secure_port": int(RDP_SECURE_PORT),
+                }
+
+            if act == "cancel":
+                # Explicit abort: roll back to from_port if still pending
+                if not pending:
+                    return {"ok": False, "error": "rdp_no_pending"}
+                revert_mode = (
+                    "rollback" if str(pending.get("mode")) == "secure" else "secure"
+                )
+                # Prefer restoring exact from_port
+                ok = self._rdp_transition(revert_mode)
+                self._rdp_clear_pending()
+                final = ServiceController.get_rdp_port() or current
+                return {
+                    "ok": bool(ok),
+                    "cancelled": True,
+                    "protected": int(final) == int(RDP_SECURE_PORT),
+                    "current_port": int(final),
+                    "secure_port": int(RDP_SECURE_PORT),
+                }
+
+            # begin or legacy move
+            if act in ("begin", "move"):
+                if pending:
+                    return {
+                        "ok": False,
+                        "error": "rdp_already_pending",
+                        "seconds_left": seconds_left,
+                        "pending_to": pending.get("to_port"),
+                    }
                 mv = str(mode or "").strip().lower()
                 if not mv:
                     mv = "rollback" if protected else "secure"
@@ -651,40 +873,262 @@ class MotorBridge:
                         "error": "admin_required",
                         "detail": "RDP taşıma için yükseltilmiş süreç gerekir",
                     }
+                from_port = int(current)
+                to_port = int(RDP_SECURE_PORT) if mv == "secure" else 3389
                 ok = self._rdp_transition(mv)
-                final = ServiceController.get_rdp_port() or current
+                if not ok:
+                    return {
+                        "ok": False,
+                        "error": "rdp_transition_failed",
+                        "current_port": int(ServiceController.get_rdp_port() or current),
+                    }
+                if act == "begin":
+                    self._rdp_save_pending(
+                        {
+                            "mode": mv,
+                            "from_port": from_port,
+                            "to_port": to_port,
+                            "deadline": time.time() + _RDP_CONFIRM_SECONDS,
+                            "started_at": time.time(),
+                        }
+                    )
+                    self._rdp_arm_expire_timer()
+                final = ServiceController.get_rdp_port() or to_port
                 return {
-                    "ok": bool(ok),
+                    "ok": True,
+                    "mode": mv,
+                    "pending": act == "begin",
                     "protected": int(final) == int(RDP_SECURE_PORT),
                     "current_port": int(final),
                     "secure_port": int(RDP_SECURE_PORT),
-                    "mode": mv,
+                    "from_port": from_port,
+                    "to_port": to_port,
+                    "seconds_left": _RDP_CONFIRM_SECONDS if act == "begin" else 0,
+                    "confirm_seconds": _RDP_CONFIRM_SECONDS,
                 }
+
             return {"ok": False, "error": "rdp_unknown_action"}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 
-    def ir(self, action: str, username: str = "") -> Dict[str, Any]:
-        """Incident response: logoff / disable local account."""
+    def _rdp_pending_path(self) -> Path:
+        from client_utils import _programdata_client_dir
+
+        return Path(_programdata_client_dir()) / "rdp_secure_move.json"
+
+    def _rdp_load_pending(self) -> Optional[Dict[str, Any]]:
+        try:
+            path = self._rdp_pending_path()
+            if not path.is_file():
+                return None
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) and data.get("mode") else None
+        except Exception:
+            return None
+
+    def _rdp_save_pending(self, payload: Dict[str, Any]) -> None:
+        try:
+            path = self._rdp_pending_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        except Exception as exc:
+            self.log.info("rdp pending save failed: %s", exc)
+
+    def _rdp_clear_pending(self) -> None:
+        try:
+            path = self._rdp_pending_path()
+            if path.is_file():
+                path.unlink()
+        except Exception:
+            pass
+
+    def _rdp_expire_pending_if_needed(self) -> bool:
+        """If confirm window elapsed, auto-revert port. Returns True if expired."""
+        pending = self._rdp_load_pending()
+        if not pending:
+            return False
+        try:
+            deadline = float(pending.get("deadline") or 0)
+        except Exception:
+            deadline = 0
+        if deadline and time.time() < deadline:
+            return False
+        mode = str(pending.get("mode") or "secure")
+        revert = "rollback" if mode == "secure" else "secure"
+        self.log.info("RDP secure-move confirm expired — reverting (%s)", revert)
+        try:
+            self._rdp_transition(revert)
+        except Exception as exc:
+            self.log.info("RDP auto-revert failed: %s", exc)
+        self._rdp_clear_pending()
+        return True
+
+    def _rdp_arm_expire_timer(self) -> None:
+        """Daemon timer so rollback happens even if UI disconnects."""
+
+        def _watch() -> None:
+            try:
+                pending = self._rdp_load_pending()
+                if not pending:
+                    return
+                deadline = float(pending.get("deadline") or 0)
+                delay = max(1.0, deadline - time.time() + 0.5)
+                time.sleep(delay)
+                self._rdp_expire_pending_if_needed()
+            except Exception:
+                pass
+
+        threading.Thread(
+            target=_watch, name="AsteriaRdpConfirm", daemon=True
+        ).start()
+
+    def ir(
+        self,
+        action: str,
+        username: str = "",
+        new_password: str = "",
+    ) -> Dict[str, Any]:
+        """Incident response: list local users / logoff / enable / disable / reset password."""
         if not self._authorized():
             return self._deny_locked()
         act = str(action or "").strip().lower()
         user = str(username or "").strip()
         if act not in _IR_ACTIONS:
             return {"ok": False, "error": "ir_unknown_action"}
+
+        if act == "list":
+            return self._ir_list_users()
+
         if not user:
             return {"ok": False, "error": "username_required"}
+
+        # Never let the interactive operator disable/logoff themselves.
+        if act in ("logoff", "disable") and self._is_self_account(user):
+            return {
+                "ok": False,
+                "error": "self_account",
+                "detail": "Cannot logoff/disable the signed-in operator account",
+                "username": user,
+            }
+
         try:
             from client_auto_response import AutoResponse
+            from client_winproc import run_hidden
 
             ar = AutoResponse()
+            ar.alert_pipeline = None
             if act == "logoff":
                 ok = bool(ar.logoff_user(user))
                 return {"ok": ok, "action": "logoff", "username": user}
-            ok = bool(ar.disable_account(user, allow_privileged=True))
-            return {"ok": ok, "action": "disable", "username": user}
+            if act == "enable":
+                ok = bool(ar.enable_account(user))
+                return {"ok": ok, "action": "enable", "username": user}
+            if act == "disable":
+                ok = bool(ar.disable_account(user, allow_privileged=True))
+                err = getattr(ar, "_last_disable_error", None)
+                out: Dict[str, Any] = {
+                    "ok": ok,
+                    "action": "disable",
+                    "username": user,
+                }
+                if not ok and err:
+                    out["error"] = err
+                return out
+            if act == "reset_password":
+                pw = str(new_password or "")
+                if len(pw) < 8:
+                    return {
+                        "ok": False,
+                        "error": "password_too_short",
+                        "username": user,
+                    }
+                rc, _out, err = run_hidden(["net", "user", user, pw], timeout=12)
+                ok = rc == 0
+                return {
+                    "ok": ok,
+                    "action": "reset_password",
+                    "username": user,
+                    "error": None if ok else (err or "password_reset_failed"),
+                }
+            return {"ok": False, "error": "ir_unknown_action"}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
+
+    def _ir_current_username(self) -> str:
+        try:
+            import getpass
+
+            return (getpass.getuser() or "").strip()
+        except Exception:
+            return (os.environ.get("USERNAME") or "").strip()
+
+    def _is_self_account(self, username: str) -> bool:
+        want = (username or "").strip().lower()
+        if not want:
+            return False
+        me = self._ir_current_username().lower()
+        if me and want == me:
+            return True
+        # DOMAIN\user → compare short SAM
+        if "\\" in want:
+            want = want.rsplit("\\", 1)[-1]
+        if me and "\\" in me:
+            me = me.rsplit("\\", 1)[-1]
+        return bool(me) and want == me
+
+    def _ir_list_users(self) -> Dict[str, Any]:
+        try:
+            from client_remote_session import list_local_users
+
+            rows = list_local_users(include_disabled=True)
+            me = self._ir_current_username()
+            me_l = me.lower()
+            users = []
+            for u in rows or []:
+                if not isinstance(u, dict):
+                    continue
+                name = str(u.get("username") or "").strip()
+                if not name:
+                    continue
+                is_self = bool(me_l) and name.lower() == me_l
+                enabled = bool(u.get("enabled"))
+                protected = bool(u.get("protected"))
+                can_disable = bool(u.get("can_disable")) and (not is_self)
+                can_logoff = bool(u.get("has_session")) and (not is_self)
+                can_enable = bool(u.get("can_enable"))
+                # Password reset OK for operator (including self); refuse OS protected accounts
+                can_reset = not protected
+                users.append({
+                    "username": name,
+                    "full_name": u.get("full_name") or "",
+                    "enabled": enabled,
+                    "status": u.get("status") or ("active" if enabled else "disabled"),
+                    "protected": protected,
+                    "is_admin": bool(u.get("is_admin")),
+                    "is_self": is_self,
+                    "groups": u.get("groups") or [],
+                    "last_logon": u.get("last_logon"),
+                    "has_session": bool(u.get("has_session")),
+                    "session_status": u.get("session_status"),
+                    "can_enable": can_enable,
+                    "can_disable": can_disable,
+                    "can_logoff": can_logoff,
+                    "can_reset_password": can_reset,
+                })
+            active = sum(1 for x in users if x.get("enabled"))
+            return {
+                "ok": True,
+                "action": "list",
+                "users": users,
+                "counts": {
+                    "total": len(users),
+                    "active": active,
+                    "disabled": len(users) - active,
+                },
+                "current_user": me,
+            }
+        except Exception as exc:
+            return {"ok": False, "error": str(exc), "users": []}
 
     def update_banner(self, action: str = "status") -> Dict[str, Any]:
         """Cross-process update UI status (ProgramData update_ui_status.json)."""
@@ -765,15 +1209,19 @@ class MotorBridge:
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 
-    def shell(self, action: str) -> Dict[str, Any]:
+    def shell(self, action: str, path: str = "") -> Dict[str, Any]:
         act = str(action or "").strip().lower()
         if act not in _SHELL_ALLOWLIST:
             return {"ok": False, "error": "shell_denied"}
         # Most open_* / about / check_updates do not require PIN (tray parity).
         try:
             if act == "open_dashboard":
-                webbrowser.open("https://asteria.run")
-                return {"ok": True}
+                target_key = str(path or "").strip().lower()
+                url = _DASHBOARD_OPEN_TARGETS.get(target_key)
+                if url is None:
+                    return {"ok": False, "error": "dashboard_path_denied"}
+                webbrowser.open(url)
+                return {"ok": True, "url": url}
             if act == "open_website":
                 webbrowser.open("https://asteria.run")
                 return {"ok": True}
@@ -850,16 +1298,18 @@ class MotorBridge:
                 }
             if act == "minimize":
                 if self._window is not None:
-                    self._window.hide()
-                    try:
-                        self._gui_lock.lock_session()
-                    except Exception:
-                        pass
-                    _pulse_session_gate(self._window)
+                    _hide_to_tray(self._window, self)
                 return {"ok": True}
             if act == "quit":
                 global _quitting
                 _quitting = True
+                _tray_state["stop"] = True
+                try:
+                    icon = _tray_state.get("icon")
+                    if icon is not None:
+                        icon.stop()
+                except Exception:
+                    pass
                 if self._window is not None:
                     self._window.destroy()
                 return {"ok": True}
@@ -1127,6 +1577,7 @@ def _warn_missing_webview2(logger: logging.Logger) -> None:
 
 
 def main() -> int:
+    global _quitting
     logger = _setup_logging()
     if webview is None:
         logger.error("pywebview is not installed")
@@ -1157,17 +1608,14 @@ def main() -> int:
     )
     bridge.bind_window(window)
     _start_show_watcher(window)
-    tray_icon = _start_tray(window, bridge, logger)
+    _start_tray(window, bridge, logger)
 
     def _on_closing():
+        # Never call window.hide() synchronously here — pywebview/Win32 can hang
+        # and brick the tray icon (visible but dead clicks/menus).
         if _quitting:
             return True
-        window.hide()
-        try:
-            bridge._gui_lock.lock_session()
-        except Exception:
-            pass
-        _pulse_session_gate(window)
+        _hide_to_tray(window, bridge)
         return False
 
     window.events.closing += _on_closing
@@ -1177,8 +1625,12 @@ def main() -> int:
         logger.exception("WebView start failed: %s", exc)
         _warn_missing_webview2(logger)
         return 4
+    _quitting = True
+    _tray_state["stop"] = True
     try:
-        tray_icon.stop()
+        icon = _tray_state.get("icon")
+        if icon is not None:
+            icon.stop()
     except Exception:
         pass
     return 0

@@ -128,6 +128,21 @@ def threat_top(timeout: float = 4.0) -> Dict[str, Any]:
         return {"ok": False, "error": str(e), "attackers": [], "total": 0}
 
 
+def ip_table(timeout: float = 6.0) -> Dict[str, Any]:
+    """Watching / blocked / whitelist inventory for GUI homepage panels."""
+    try:
+        return request_json("IP_TABLE", timeout=timeout)
+    except Exception as e:
+        return {
+            "ok": False,
+            "error": str(e),
+            "watching": [],
+            "blocked": [],
+            "whitelist": [],
+            "totals": {"watching": 0, "blocked": 0, "whitelist": 0},
+        }
+
+
 def ransomware_status(timeout: float = 8.0) -> Dict[str, Any]:
     """Ask SYSTEM motor for ransomware shield stats + quarantine."""
     try:

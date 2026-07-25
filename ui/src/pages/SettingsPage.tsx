@@ -1,6 +1,7 @@
 import { type FormEvent, useEffect, useState } from 'react'
 import { motorBridge } from '../bridge'
 import { PasswordInput } from '../components/PasswordInput'
+import { Switch } from '../components/Switch'
 import { t } from '../i18n'
 import { asRecord } from '../lib'
 
@@ -9,6 +10,8 @@ type Props = {
   onToast: (msg: string, kind?: 'ok' | 'err') => void
   onSession: () => void
 }
+
+type DashPath = 'alerts' | 'blocking' | 'webhooks'
 
 type FieldKey =
   | 'alert_email_enabled'
@@ -20,17 +23,76 @@ type FieldKey =
   | 'webhook_enabled'
   | 'webhook_url'
 
-type Field = { key: FieldKey; kind: 'bool' | 'int' | 'str'; labelKey: string }
+type Field = {
+  key: FieldKey
+  kind: 'bool' | 'int' | 'str'
+  labelKey: string
+  helpKey: string
+  dash: DashPath
+  min?: number
+  max?: number
+}
 
 const FIELDS: Field[] = [
-  { key: 'alert_email_enabled', kind: 'bool', labelKey: 'settings_field_email' },
-  { key: 'instant_email_for_critical', kind: 'bool', labelKey: 'settings_field_critical' },
-  { key: 'daily_digest_enabled', kind: 'bool', labelKey: 'settings_field_digest' },
-  { key: 'auto_block_enabled', kind: 'bool', labelKey: 'settings_field_autoblock' },
-  { key: 'auto_block_threshold', kind: 'int', labelKey: 'settings_field_threshold' },
-  { key: 'auto_block_duration_hours', kind: 'int', labelKey: 'settings_field_duration' },
-  { key: 'webhook_enabled', kind: 'bool', labelKey: 'settings_field_webhook' },
-  { key: 'webhook_url', kind: 'str', labelKey: 'settings_field_webhook_url' },
+  {
+    key: 'alert_email_enabled',
+    kind: 'bool',
+    labelKey: 'settings_field_email',
+    helpKey: 'settings_help_email',
+    dash: 'alerts',
+  },
+  {
+    key: 'instant_email_for_critical',
+    kind: 'bool',
+    labelKey: 'settings_field_critical',
+    helpKey: 'settings_help_critical',
+    dash: 'alerts',
+  },
+  {
+    key: 'daily_digest_enabled',
+    kind: 'bool',
+    labelKey: 'settings_field_digest',
+    helpKey: 'settings_help_digest',
+    dash: 'alerts',
+  },
+  {
+    key: 'auto_block_enabled',
+    kind: 'bool',
+    labelKey: 'settings_field_autoblock',
+    helpKey: 'settings_help_autoblock',
+    dash: 'blocking',
+  },
+  {
+    key: 'auto_block_threshold',
+    kind: 'int',
+    labelKey: 'settings_field_threshold',
+    helpKey: 'settings_help_threshold',
+    dash: 'blocking',
+    min: 0,
+    max: 100,
+  },
+  {
+    key: 'auto_block_duration_hours',
+    kind: 'int',
+    labelKey: 'settings_field_duration',
+    helpKey: 'settings_help_duration',
+    dash: 'blocking',
+    min: 0,
+  },
+  {
+    key: 'webhook_enabled',
+    kind: 'bool',
+    labelKey: 'settings_field_webhook',
+    helpKey: 'settings_help_webhook',
+    dash: 'webhooks',
+  },
+  {
+    key: 'webhook_url',
+    kind: 'str',
+    labelKey: 'settings_field_webhook_url',
+    helpKey: 'settings_help_webhook_url',
+    dash: 'webhooks',
+  },
 ]
 
 function nestedGet(obj: Record<string, unknown>, path: string): unknown {
@@ -52,6 +114,10 @@ function nestedSet(obj: Record<string, unknown>, path: string, value: unknown): 
   }
   cursor[parts[parts.length - 1]] = value
   return root
+}
+
+function openDash(path: DashPath) {
+  void motorBridge.shell('open_dashboard', path)
 }
 
 export function SettingsPage({ pinEnabled, onToast, onSession }: Props) {
@@ -204,31 +270,44 @@ export function SettingsPage({ pinEnabled, onToast, onSession }: Props) {
       <form className="settings-form" onSubmit={(e) => void save(e)} style={{ marginTop: 24 }}>
         {FIELDS.map((field) => {
           const value = nestedGet(draft, field.key)
+          const label = t(field.labelKey)
           return (
-            <label key={field.key} className="field">
-              <span>{t(field.labelKey)}</span>
-              {field.kind === 'bool' ? (
-                <input
-                  type="checkbox"
-                  checked={Boolean(value)}
-                  onChange={(e) => setDraft((prev) => nestedSet(prev, field.key, e.target.checked))}
-                />
-              ) : (
-                <input
-                  type={field.kind === 'int' ? 'number' : 'text'}
-                  value={value == null ? '' : String(value)}
-                  onChange={(e) =>
-                    setDraft((prev) =>
-                      nestedSet(
-                        prev,
-                        field.key,
-                        field.kind === 'int' ? Number(e.target.value) : e.target.value,
-                      ),
-                    )
-                  }
-                />
-              )}
-            </label>
+            <div key={field.key} className="field field-stack">
+              <div className="field-main">
+                <div className="field-copy">
+                  <span className="field-label">{label}</span>
+                  <p className="field-help">
+                    {t(field.helpKey)}{' '}
+                    <button type="button" className="field-dash-link" onClick={() => openDash(field.dash)}>
+                      {t('settings_dash_link')}
+                    </button>
+                  </p>
+                </div>
+                {field.kind === 'bool' ? (
+                  <Switch
+                    checked={Boolean(value)}
+                    label={label}
+                    onChange={(next) => setDraft((prev) => nestedSet(prev, field.key, next))}
+                  />
+                ) : (
+                  <input
+                    type={field.kind === 'int' ? 'number' : 'text'}
+                    min={field.min}
+                    max={field.max}
+                    value={value == null ? '' : String(value)}
+                    onChange={(e) =>
+                      setDraft((prev) =>
+                        nestedSet(
+                          prev,
+                          field.key,
+                          field.kind === 'int' ? Number(e.target.value) : e.target.value,
+                        ),
+                      )
+                    }
+                  />
+                )}
+              </div>
+            </div>
           )
         })}
         <button type="submit" className="btn" disabled={busy}>{t('btn_save')}</button>

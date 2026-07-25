@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { motorBridge, type MotorStatus } from '../bridge'
 import { t } from '../i18n'
-import { asRecord, boolLabel, pick } from '../lib'
+import { asRecord, boolLabel, formatBps, pick } from '../lib'
 
 type Props = {
   status: MotorStatus | null
@@ -9,7 +9,7 @@ type Props = {
   updatedAt: string
   onRefresh: () => void
   onToast: (msg: string, kind?: 'ok' | 'err') => void
-  onNavigate: (page: 'services' | 'layers' | 'threat') => void
+  onNavigate: (page: 'services' | 'layers' | 'threat' | 'iplist') => void
 }
 
 type HardenCheck = {
@@ -20,6 +20,18 @@ type HardenCheck = {
   fixable?: boolean
 }
 
+type IpRow = {
+  ip: string
+  services?: string[]
+  attempts?: number
+  score?: number
+  reason?: string
+  last_seen?: number
+  status?: string
+}
+
+const IP_PREVIEW = 8
+
 export function StatusPage({ status, online, updatedAt, onRefresh, onToast, onNavigate }: Props) {
   const running = Array.isArray(status?.running_services) ? status.running_services : []
   const defense = asRecord(status?.defense_policy)
@@ -27,19 +39,60 @@ export function StatusPage({ status, online, updatedAt, onRefresh, onToast, onNa
   const rs = asRecord(status?.rs_quarantine)
   const resources = asRecord(status?.resources)
   const [checks, setChecks] = useState<HardenCheck[]>([])
-  const [rdp, setRdp] = useState<{ protected?: boolean; current_port?: number; secure_port?: number }>({})
   const [busy, setBusy] = useState(false)
+  const [watching, setWatching] = useState<IpRow[]>([])
+  const [blocked, setBlocked] = useState<IpRow[]>([])
+  const [whitelist, setWhitelist] = useState<IpRow[]>([])
+  const [ipTotals, setIpTotals] = useState({ watching: 0, blocked: 0, whitelist: 0 })
 
   const loadExtras = async () => {
-    const [h, r] = await Promise.all([motorBridge.harden('status'), motorBridge.rdp('status')])
+    const [h, table, cloud] = await Promise.all([
+      motorBridge.harden('status'),
+      motorBridge.ipc('IP_TABLE'),
+      motorBridge.cloud('GET', 'threats/config'),
+    ])
     if (h.ok && Array.isArray(h.checks)) setChecks(h.checks as HardenCheck[])
-    if (r.ok) {
-      setRdp({
-        protected: Boolean(r.protected),
-        current_port: Number(r.current_port || 0) || undefined,
-        secure_port: Number(r.secure_port || 0) || undefined,
+
+    const watchRows = Array.isArray(table.watching) ? (table.watching as IpRow[]) : []
+    const blockRows = Array.isArray(table.blocked) ? (table.blocked as IpRow[]) : []
+    let wlRows = Array.isArray(table.whitelist) ? (table.whitelist as IpRow[]) : []
+    const totals = asRecord(table.totals)
+
+    // Cloud whitelist is SoT when motor local set is thin (frontend-only edge).
+    if (cloud.ok && cloud.data && typeof cloud.data === 'object') {
+      const wl = (cloud.data as Record<string, unknown>).whitelist_ips
+      if (Array.isArray(wl)) {
+        const fromCloud = wl.map(String).filter(Boolean)
+        const seen = new Set(wlRows.map((r) => r.ip))
+        for (const ip of fromCloud) {
+          if (!seen.has(ip)) {
+            wlRows.push({ ip, reason: 'whitelist', status: 'whitelisted' })
+            seen.add(ip)
+          }
+        }
+        setIpTotals({
+          watching: Number(totals.watching ?? watchRows.length) || watchRows.length,
+          blocked: Number(totals.blocked ?? blockRows.length) || blockRows.length,
+          whitelist: Math.max(Number(totals.whitelist ?? 0) || 0, fromCloud.length),
+        })
+      } else {
+        setIpTotals({
+          watching: Number(totals.watching ?? watchRows.length) || watchRows.length,
+          blocked: Number(totals.blocked ?? blockRows.length) || blockRows.length,
+          whitelist: Number(totals.whitelist ?? wlRows.length) || wlRows.length,
+        })
+      }
+    } else {
+      setIpTotals({
+        watching: Number(totals.watching ?? watchRows.length) || watchRows.length,
+        blocked: Number(totals.blocked ?? blockRows.length) || blockRows.length,
+        whitelist: Number(totals.whitelist ?? wlRows.length) || wlRows.length,
       })
     }
+
+    setWatching(watchRows)
+    setBlocked(blockRows)
+    setWhitelist(wlRows)
   }
 
   useEffect(() => {
@@ -81,15 +134,16 @@ export function StatusPage({ status, online, updatedAt, onRefresh, onToast, onNa
     }
   }
 
-  const moveRdp = async () => {
-    if (!window.confirm(t('status_rdp_confirm'))) return
+  const mutateIp = async (cmd: 'BLOCK_IP' | 'UNBLOCK_IP', ip: string) => {
     setBusy(true)
     try {
-      const result = await motorBridge.rdp('move')
+      const result = await motorBridge.ipc(cmd, { ip, reason: 'status' })
       onToast(
         result.ok
-          ? t('toast_rdp_ok', { port: String(result.current_port ?? '') })
-          : String(result.error || result.detail || t('toast_rdp_fail')),
+          ? cmd === 'BLOCK_IP'
+            ? t('toast_blocked', { ip })
+            : t('toast_unblocked', { ip })
+          : String(result.error || 'IPC'),
         result.ok ? 'ok' : 'err',
       )
       await loadExtras()
@@ -99,7 +153,95 @@ export function StatusPage({ status, online, updatedAt, onRefresh, onToast, onNa
     }
   }
 
-  const rdpTarget = rdp.protected ? 3389 : rdp.secure_port || 53389
+  const addWhitelist = async (ip: string) => {
+    setBusy(true)
+    try {
+      const cloud = await motorBridge.cloud('GET', 'threats/config')
+      const data = cloud.ok && cloud.data && typeof cloud.data === 'object'
+        ? (cloud.data as Record<string, unknown>)
+        : {}
+      const current = Array.isArray(data.whitelist_ips) ? data.whitelist_ips.map(String) : []
+      const next = Array.from(new Set([...current, ip]))
+      const result = await motorBridge.cloud('POST', 'threats/config', { whitelist_ips: next })
+      onToast(result.ok ? t('toast_wl_ok') : String(result.error || 'Whitelist'), result.ok ? 'ok' : 'err')
+      await loadExtras()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const hostCpu = pick(resources, 'host_cpu_percent', 'cpu_percent', 'cpu')
+  const hostRam = pick(resources, 'host_memory_percent', 'ram_percent', 'memory_percent')
+  const procCpu = pick(resources, 'process_cpu_percent')
+  const procRam = pick(resources, 'process_rss_mb')
+  const netDown = formatBps(resources.net_recv_bps)
+  const netUp = formatBps(resources.net_sent_bps)
+
+  const renderIpCol = (
+    title: string,
+    rows: IpRow[],
+    total: number,
+    emptyKey: string,
+    kind: 'watching' | 'blocked' | 'whitelist',
+  ) => (
+    <article className="panel ip-col">
+      <div className="ip-col-head">
+        <div>
+          <p className="eyebrow">{title}</p>
+          <h3>{total}</h3>
+        </div>
+        <button type="button" className="btn ghost sm" onClick={() => onNavigate('iplist')}>
+          {t('status_ip_all')}
+        </button>
+      </div>
+      <div className="ip-col-list">
+        {rows.length === 0 && <p className="muted empty-ip">{t(emptyKey)}</p>}
+        {rows.slice(0, IP_PREVIEW).map((row) => (
+          <div key={`${kind}-${row.ip}`} className="ip-row">
+            <div className="ip-row-main">
+              <strong className="mono">{row.ip}</strong>
+              {kind === 'watching' && (
+                <span className="ip-meta">
+                  {t('status_ip_watch_meta', {
+                    attempts: row.attempts ?? 0,
+                    score: row.score ?? 0,
+                  })}
+                </span>
+              )}
+              <p className="ip-reason">{row.reason || '—'}</p>
+            </div>
+            <div className="ip-row-actions">
+              {kind === 'watching' && (
+                <>
+                  <button type="button" className="btn danger sm" disabled={busy} onClick={() => void mutateIp('BLOCK_IP', row.ip)}>
+                    {t('btn_block')}
+                  </button>
+                  <button type="button" className="btn ghost sm" disabled={busy} onClick={() => void addWhitelist(row.ip)}>
+                    {t('iplist_wl_short')}
+                  </button>
+                </>
+              )}
+              {kind === 'blocked' && (
+                <>
+                  <button type="button" className="btn ghost sm" disabled={busy} onClick={() => void mutateIp('UNBLOCK_IP', row.ip)}>
+                    {t('btn_unblock')}
+                  </button>
+                  <button type="button" className="btn ghost sm" disabled={busy} onClick={() => void addWhitelist(row.ip)}>
+                    {t('iplist_wl_short')}
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        ))}
+        {total > IP_PREVIEW && (
+          <button type="button" className="btn ghost sm" onClick={() => onNavigate('iplist')}>
+            {t('status_ip_more', { count: total - IP_PREVIEW })}
+          </button>
+        )}
+      </div>
+    </article>
+  )
 
   return (
     <section className="page">
@@ -148,12 +290,24 @@ export function StatusPage({ status, online, updatedAt, onRefresh, onToast, onNa
         </article>
         <article className="clickable" onClick={() => onNavigate('threat')}>
           <p>{t('status_card_resources')}</p>
-          <strong>{pick(resources, 'cpu_percent', 'cpu')}%</strong>
-          <small>{t('status_ram', { ram: pick(resources, 'ram_percent', 'memory_percent'), updated: updatedAt || '—' })}</small>
+          <strong>{hostCpu}%</strong>
+          <small>
+            {t('status_ram', { ram: hostRam, updated: updatedAt || '—' })}
+            {' · '}
+            {t('status_proc_res', { cpu: procCpu, ram: procRam })}
+            {' · '}
+            ↓{netDown} ↑{netUp}
+          </small>
         </article>
       </div>
 
-      <div className="split">
+      <div className="ip-cols" style={{ marginTop: 18 }}>
+        {renderIpCol(t('status_ip_watching'), watching, ipTotals.watching, 'status_ip_empty_watch', 'watching')}
+        {renderIpCol(t('status_ip_blocked'), blocked, ipTotals.blocked, 'status_ip_empty_blocked', 'blocked')}
+        {renderIpCol(t('status_ip_whitelist'), whitelist, ipTotals.whitelist, 'status_ip_empty_wl', 'whitelist')}
+      </div>
+
+      <div className="split" style={{ marginTop: 18 }}>
         <article className="panel">
           <p className="eyebrow">{t('status_ng_eyebrow')}</p>
           <h3>{ng.maintenance ? t('status_ng_maint') : ng.drift ? t('status_ng_drift') : t('status_ng_stable')}</h3>
@@ -176,7 +330,12 @@ export function StatusPage({ status, online, updatedAt, onRefresh, onToast, onNa
             {t('status_rs_meta', { canary: pick(rs, 'canary_files'), alerts: pick(rs, 'alerts_total') })}
           </p>
           <div className="btn-row">
-            <button type="button" className="btn danger" disabled={!rs.active && Number(rs.entries || 0) === 0} onClick={() => void unlockRs()}>
+            <button
+              type="button"
+              className="btn danger"
+              disabled={!rs.active && Number(rs.entries || 0) === 0}
+              onClick={() => void unlockRs()}
+            >
               {t('status_rs_unlock')}
             </button>
           </div>
@@ -184,9 +343,12 @@ export function StatusPage({ status, online, updatedAt, onRefresh, onToast, onNa
       </div>
 
       <div className="split" style={{ marginTop: 18 }}>
-        <article className="panel">
+        <article className="panel" style={{ gridColumn: '1 / -1' }}>
           <p className="eyebrow">{t('status_harden_eyebrow')}</p>
           <h3>{t('status_harden_title')}</h3>
+          <p className="muted" style={{ marginBottom: 10 }}>
+            {t('status_rdp_moved_hint')}
+          </p>
           <div className="check-list">
             {checks.length === 0 && <p className="muted">{t('status_harden_loading')}</p>}
             {checks.map((c) => (
@@ -202,20 +364,6 @@ export function StatusPage({ status, online, updatedAt, onRefresh, onToast, onNa
                 )}
               </div>
             ))}
-          </div>
-        </article>
-        <article className="panel">
-          <p className="eyebrow">{t('status_rdp_eyebrow')}</p>
-          <h3>
-            {rdp.protected
-              ? t('status_rdp_protected', { port: String(rdp.current_port ?? '') })
-              : t('status_rdp_standard', { port: String(rdp.current_port || 3389) })}
-          </h3>
-          <p className="muted">{t('status_rdp_blurb', { target: String(rdpTarget) })}</p>
-          <div className="btn-row">
-            <button type="button" className="btn" disabled={busy} onClick={() => void moveRdp()}>
-              {t('status_rdp_btn', { target: String(rdpTarget) })}
-            </button>
           </div>
         </article>
       </div>

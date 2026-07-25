@@ -5,6 +5,7 @@ import { AboutModal, type AboutInfo } from './components/AboutModal'
 import { BrandMark, BrandWordmark } from './components/Brand'
 import { HeaderMenu, type MenuAction } from './components/HeaderMenu'
 import { IdentityStrip } from './components/IdentityStrip'
+import { LiveMeters } from './components/LiveMeters'
 import { LockScreen } from './components/LockScreen'
 import { currentLang, loadI18n, subscribeI18n, t } from './i18n'
 import type { PageId } from './lib'
@@ -433,6 +434,7 @@ export default function App() {
             clientId={clientId}
             onCopyToken={() => void runShell('copy_token', t('toast_token'))}
           />
+          <LiveMeters status={status} />
           <div className="btn-row">
             {accountLinked && (
               <button
