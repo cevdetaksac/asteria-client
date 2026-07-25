@@ -41,7 +41,13 @@ let accountEmail = accountLinked ? 'ops@asteria.run' : ''
 let rdpProtected = false
 let lang: Lang = detectBrowserLang()
 const running = new Set<string>(['SSH'])
-const blocked = new Set<string>(['203.0.113.10'])
+const blocked = new Set<string>([
+  '34.204.119.63',
+  '50.16.16.211',
+  '162.243.103.246',
+  '185.220.101.45',
+  '203.0.113.10',
+])
 let updateStatus: Record<string, unknown> | null = {
   phase: 'downloading',
   to_version: '4.9.35',
@@ -58,7 +64,7 @@ let config: Record<string, unknown> = {
   auto_block_duration_hours: 24,
   webhook_enabled: false,
   webhook_url: '',
-  whitelist_ips: ['192.168.1.1'],
+  whitelist_ips: ['1.1.1.1'],
   ransomware_protection_enabled: true,
   canary_files_enabled: true,
   protection: { defense_policy: 'observe', defense_policy_locked: false, network_guard: { enabled: true } },

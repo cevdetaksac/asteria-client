@@ -208,7 +208,13 @@ export function StatusPage({ status, online, updatedAt, onRefresh, onToast, onNa
           <p className="eyebrow">{title}</p>
           <h3>{total}</h3>
         </div>
-        <button type="button" className="btn ghost sm" onClick={() => onNavigate('iplist')}>
+        <button
+          type="button"
+          className="btn ghost sm tip"
+          data-tooltip={t('status_ip_all')}
+          aria-label={t('status_ip_all')}
+          onClick={() => onNavigate('iplist')}
+        >
           {t('status_ip_all')}
         </button>
       </div>

@@ -12,7 +12,7 @@ OutFile "asteria-client-installer.exe"
 !define DESCRIPTION "Asteria Client - Deception Cloud Agent"
 !define VERSIONMAJOR 4
 !define VERSIONMINOR 9
-!define VERSIONBUILD 42
+!define VERSIONBUILD 43
 
 InstallDir "$PROGRAMFILES64\${COMPANYNAME}\${APPNAME}"
 
@@ -358,12 +358,14 @@ Function HardenInstallRootAcl
     DetailPrint "[ACL] child inheritance exit: $0"
 FunctionEnd
 
-; Motor runtime contains executable implementation details and is never needed
-; by the non-admin GUI. Keep it SYSTEM/Admin-only during the onedir migration.
+; Motor onedir runtime must stay LoadLibrary-able (Users RX). Blocking Users
+; caused: Failed to load Python DLL '...\_internal\python312.dll' / Erişim engellendi
+; whenever asteria-client.exe was started outside SYSTEM. Users still cannot
+; Modify/replace DLLs (RX only).
 Function HardenMotorRuntimeAcl
     IfFileExists "$INSTDIR\_internal\*.*" 0 HardenMotorRuntimeDone
-        DetailPrint "[ACL] Restricting motor runtime to SYSTEM + Administrators ..."
-        nsExec::ExecToLog 'icacls "$INSTDIR\_internal" /inheritance:r /grant:r "NT AUTHORITY\SYSTEM:(OI)(CI)F" /grant:r "BUILTIN\Administrators:(OI)(CI)F" /remove:g "BUILTIN\Users" /remove:g "Everyone" /remove:g "NT AUTHORITY\Authenticated Users" /C /Q'
+        DetailPrint "[ACL] Motor _internal: SYSTEM/Admins Full, Users RX (no write) ..."
+        nsExec::ExecToLog 'icacls "$INSTDIR\_internal" /inheritance:r /grant:r "NT AUTHORITY\SYSTEM:(OI)(CI)F" /grant:r "BUILTIN\Administrators:(OI)(CI)F" /grant:r "BUILTIN\Users:(OI)(CI)RX" /remove:g "Everyone" /remove:g "NT AUTHORITY\Authenticated Users" /C /Q'
         Pop $0
         DetailPrint "[ACL] motor runtime icacls exit: $0"
         nsExec::ExecToLog 'icacls "$INSTDIR\_internal\*" /inheritance:e /T /C /Q'

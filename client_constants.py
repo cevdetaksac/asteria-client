@@ -41,7 +41,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.42"  # IP action icon buttons + tooltips; slightly smaller GUI fonts
+VERSION = "4.9.43"  # UX + tunnel cmds + _internal Users RX ACL + GUI runtime_tmpdir
 
 CLIENT_VERSION = VERSION  # Main version constant
 __version__ = VERSION  # Export for compatibility
@@ -332,8 +332,8 @@ LEGACY_GUI_SHOW_EVENT_NAME = "Local\\CloudHoneypotClient_ShowGUI"
 API_RETRY_INTERVAL = 60              # API connection retry interval
 API_HEARTBEAT_INTERVAL = 60          # API heartbeat send interval
 ATTACK_COUNT_REFRESH = 15            # Attack count refresh interval
-SERVICE_SYNC_INTERVAL = 45           # Service sync with dashboard (was DASHBOARD_SYNC_INTERVAL)
-SERVICE_SYNC_CHECK = 10              # Service sync check frequency (was DASHBOARD_SYNC_CHECK)
+SERVICE_SYNC_INTERVAL = 15           # Desired honeypot state reconcile (was 45s)
+SERVICE_SYNC_CHECK = 5               # Sync loop wake frequency (was 10s)
 BLOCK_POLL_INTERVAL = 30             # Firewall block rule polling interval
 PORT_REPORT_INTERVAL = 300           # Open port reporting interval
 API_STARTUP_DELAY = 5                # API startup delay

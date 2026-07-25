@@ -82,4 +82,7 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=["certs\\asteria_256.ico"],
+    # Unpack beside a durable user-writable tree — never Windows\TEMP\_MEI*
+    # (AV / execute-from-TEMP policies → Failed to load Python DLL).
+    runtime_tmpdir="%LOCALAPPDATA%\\Asteria\\runtime\\gui",
 )

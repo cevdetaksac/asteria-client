@@ -24,20 +24,20 @@ export function IdentityStrip({
     : t('identity_token_missing')
 
   return (
-    <div className="identity-strip" title={clientId ? `client_id ${clientId}` : undefined}>
+    <div className="identity-strip">
       {clientId ? (
         <>
-          <span className="identity-cid mono" title={t('identity_id')}>
+          <span className="identity-cid mono tip" data-tooltip={t('identity_id')} tabIndex={0}>
             #{clientId}
           </span>
           <span className="identity-sep" aria-hidden="true" />
         </>
       ) : null}
-      <span className="identity-host" title={t('identity_device')}>
+      <span className="identity-host tip" data-tooltip={t('identity_device')} tabIndex={0}>
         {host}
       </span>
       <span className="identity-sep" aria-hidden="true" />
-      <span className="identity-ip mono" title={t('identity_ip')}>
+      <span className="identity-ip mono tip" data-tooltip={t('identity_ip')} tabIndex={0}>
         {ip}
       </span>
       <span className="identity-sep" aria-hidden="true" />
@@ -46,10 +46,10 @@ export function IdentityStrip({
       </span>
       <button
         type="button"
-        className="btn ghost sm identity-copy"
+        className="btn ghost sm identity-copy tip"
         disabled={!tokenPresent}
         onClick={onCopyToken}
-        title={t('btn_copy_token')}
+        data-tooltip={t('btn_copy_token')}
         aria-label={t('btn_copy_token')}
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">

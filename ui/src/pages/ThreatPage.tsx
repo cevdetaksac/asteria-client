@@ -1,5 +1,7 @@
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { useCallback, useEffect, useState } from 'react'
 import { motorBridge } from '../bridge'
+import { IconBtn, icons } from '../components/IconBtn'
 import { t } from '../i18n'
 import { asRecord, pick } from '../lib'
 
@@ -217,7 +219,7 @@ export function ThreatPage({ onToast }: Props) {
                 <th>{t('threat_col_groups')}</th>
                 <th>{t('threat_col_session')}</th>
                 <th>{t('threat_col_last_logon')}</th>
-                <th>{t('threat_col_actions')}</th>
+                <th className="actions-head">{t('threat_col_actions')}</th>
               </tr>
             </thead>
             <tbody>
@@ -251,53 +253,53 @@ export function ThreatPage({ onToast }: Props) {
                         : t('threat_session_no')}
                     </td>
                     <td className="muted mono">{formatLogon(u.last_logon)}</td>
-                    <td>
-                      <div className="btn-row wrap">
+                    <td className="actions-cell">
+                      <div className="ip-row-actions">
                         {u.can_logoff && (
-                          <button
-                            type="button"
-                            className="btn ghost sm"
+                          <IconBtn
+                            icon={icons.logoff}
+                            title={t('threat_logoff')}
                             disabled={busy}
                             onClick={() => void runIr('logoff', u.username)}
-                          >
-                            {t('threat_logoff')}
-                          </button>
+                          />
                         )}
                         {u.can_disable && (
-                          <button
-                            type="button"
-                            className="btn danger sm"
+                          <IconBtn
+                            icon={icons.disable}
+                            title={t('threat_disable')}
+                            danger
                             disabled={busy}
                             onClick={() => void runIr('disable', u.username)}
-                          >
-                            {t('threat_disable')}
-                          </button>
+                          />
                         )}
                         {u.can_enable && (
-                          <button
-                            type="button"
-                            className="btn sm"
+                          <IconBtn
+                            icon={icons.ok}
+                            title={t('threat_enable')}
                             disabled={busy}
                             onClick={() => void runIr('enable', u.username)}
-                          >
-                            {t('threat_enable')}
-                          </button>
+                          />
                         )}
                         {u.can_reset_password && (
-                          <button
-                            type="button"
-                            className="btn ghost sm"
+                          <IconBtn
+                            icon={icons.password}
+                            title={t('threat_password')}
                             disabled={busy}
                             onClick={() => {
                               setPwdUser(u.username)
                               setPwdValue('')
                             }}
-                          >
-                            {t('threat_password')}
-                          </button>
+                          />
                         )}
                         {u.is_self && !u.can_disable && !u.can_logoff && (
-                          <span className="muted sm-hint">{t('threat_self_hint')}</span>
+                          <span
+                            className="icon-btn tip tip-info"
+                            tabIndex={0}
+                            data-tooltip={t('threat_self_hint')}
+                            aria-label={t('threat_self_hint')}
+                          >
+                            <FontAwesomeIcon icon={icons.info} fixedWidth />
+                          </span>
                         )}
                       </div>
                       {pwdUser === u.username && (
@@ -373,19 +375,30 @@ export function ThreatPage({ onToast }: Props) {
                   <td>{pick(r, 'score', 'threat_score')}</td>
                   <td>{pick(r, 'events', 'event_count', 'count')}</td>
                   <td>{pick(r, 'last_seen', 'updated_at')}</td>
-                  <td>
-                    <div className="btn-row">
-                      <button type="button" className="btn danger sm" disabled={busy || ip === '—'} onClick={() => void block(ip)}>
-                        {t('btn_block')}
-                      </button>
+                  <td className="actions-cell">
+                    <div className="ip-row-actions">
+                      <IconBtn
+                        icon={icons.block}
+                        title={t('btn_block')}
+                        danger
+                        disabled={busy || ip === '—'}
+                        onClick={() => void block(ip)}
+                      />
                       {user !== '—' && user.toLowerCase() !== currentUser.toLowerCase() && (
                         <>
-                          <button type="button" className="btn ghost sm" disabled={busy} onClick={() => void runIr('logoff', user)}>
-                            {t('threat_logoff')}
-                          </button>
-                          <button type="button" className="btn ghost sm" disabled={busy} onClick={() => void runIr('disable', user)}>
-                            {t('threat_disable')}
-                          </button>
+                          <IconBtn
+                            icon={icons.logoff}
+                            title={t('threat_logoff')}
+                            disabled={busy}
+                            onClick={() => void runIr('logoff', user)}
+                          />
+                          <IconBtn
+                            icon={icons.disable}
+                            title={t('threat_disable')}
+                            danger
+                            disabled={busy}
+                            onClick={() => void runIr('disable', user)}
+                          />
                         </>
                       )}
                     </div>

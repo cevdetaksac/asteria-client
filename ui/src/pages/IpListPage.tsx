@@ -144,20 +144,22 @@ export function IpListPage({ onToast }: Props) {
                     <div className="mono">{row.ip}</div>
                     <small className="muted">{row.reason || pick(asRecord(row), 'reason')}</small>
                   </td>
-                  <td className="ip-row-actions">
-                    <IconBtn
-                      icon={icons.block}
-                      title={t('btn_block')}
-                      danger
-                      disabled={busy}
-                      onClick={() => void mutate('BLOCK_IP', row.ip)}
-                    />
-                    <IconBtn
-                      icon={icons.whitelist}
-                      title={t('btn_whitelist_add')}
-                      disabled={busy}
-                      onClick={() => void setWhitelistIps(Array.from(new Set([...whitelist, row.ip])))}
-                    />
+                  <td className="actions-cell">
+                    <div className="ip-row-actions">
+                      <IconBtn
+                        icon={icons.block}
+                        title={t('btn_block')}
+                        danger
+                        disabled={busy}
+                        onClick={() => void mutate('BLOCK_IP', row.ip)}
+                      />
+                      <IconBtn
+                        icon={icons.whitelist}
+                        title={t('btn_whitelist_add')}
+                        disabled={busy}
+                        onClick={() => void setWhitelistIps(Array.from(new Set([...whitelist, row.ip])))}
+                      />
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -182,19 +184,21 @@ export function IpListPage({ onToast }: Props) {
                     <div className="mono">{row.ip}</div>
                     <small className="muted">{row.reason || '—'}</small>
                   </td>
-                  <td className="ip-row-actions">
-                    <IconBtn
-                      icon={icons.unblock}
-                      title={t('btn_unblock')}
-                      disabled={busy}
-                      onClick={() => void mutate('UNBLOCK_IP', row.ip)}
-                    />
-                    <IconBtn
-                      icon={icons.whitelist}
-                      title={t('btn_whitelist_add')}
-                      disabled={busy}
-                      onClick={() => void setWhitelistIps(Array.from(new Set([...whitelist, row.ip])))}
-                    />
+                  <td className="actions-cell">
+                    <div className="ip-row-actions">
+                      <IconBtn
+                        icon={icons.unblock}
+                        title={t('btn_unblock')}
+                        disabled={busy}
+                        onClick={() => void mutate('UNBLOCK_IP', row.ip)}
+                      />
+                      <IconBtn
+                        icon={icons.whitelist}
+                        title={t('btn_whitelist_add')}
+                        disabled={busy}
+                        onClick={() => void setWhitelistIps(Array.from(new Set([...whitelist, row.ip])))}
+                      />
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -216,13 +220,15 @@ export function IpListPage({ onToast }: Props) {
               {whitelist.map((entry) => (
                 <tr key={entry}>
                   <td className="mono">{entry}</td>
-                  <td className="ip-row-actions">
-                    <IconBtn
-                      icon={icons.removeWhitelist}
-                      title={t('iplist_exclude')}
-                      disabled={busy}
-                      onClick={() => void setWhitelistIps(whitelist.filter((x) => x !== entry))}
-                    />
+                  <td className="actions-cell">
+                    <div className="ip-row-actions">
+                      <IconBtn
+                        icon={icons.removeWhitelist}
+                        title={t('iplist_exclude')}
+                        disabled={busy}
+                        onClick={() => void setWhitelistIps(whitelist.filter((x) => x !== entry))}
+                      />
+                    </div>
                   </td>
                 </tr>
               ))}

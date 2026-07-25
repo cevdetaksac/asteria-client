@@ -3,9 +3,15 @@ import type { IconDefinition } from '@fortawesome/fontawesome-svg-core'
 import {
   faBan,
   faCheck,
+  faCircleInfo,
   faLockOpen,
+  faRotateRight,
   faUserCheck,
   faUserMinus,
+  faKey,
+  faPowerOff,
+  faUserSlash,
+  faArrowUpRightFromSquare,
 } from '@fortawesome/free-solid-svg-icons'
 
 export const icons = {
@@ -14,6 +20,12 @@ export const icons = {
   whitelist: faUserCheck,
   removeWhitelist: faUserMinus,
   ok: faCheck,
+  refresh: faRotateRight,
+  password: faKey,
+  logoff: faPowerOff,
+  disable: faUserSlash,
+  open: faArrowUpRightFromSquare,
+  info: faCircleInfo,
 } as const
 
 type Props = {
@@ -25,19 +37,18 @@ type Props = {
   className?: string
 }
 
-/** Compact icon action with native title + CSS tooltip on hover. */
+/** Compact icon action with CSS tooltip centered above (no native title delay). */
 export function IconBtn({ icon, title, onClick, disabled, danger, className = '' }: Props) {
   return (
     <button
       type="button"
       className={`icon-btn ${danger ? 'danger' : ''} ${className}`.trim()}
-      title={title}
       aria-label={title}
       data-tooltip={title}
       disabled={disabled}
       onClick={onClick}
     >
-      <FontAwesomeIcon icon={icon} />
+      <FontAwesomeIcon icon={icon} fixedWidth />
     </button>
   )
 }

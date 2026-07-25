@@ -100,6 +100,8 @@ ALLOWED_COMMANDS: Set[str] = {
     "system_recovery_diff", "system_recovery_restore",
     # GUI PIN management from dashboard (contract ≥4.8.3)
     "set_gui_pin", "clear_gui_pin",
+    # Honeypot bait start/stop (contract attacks-and-services — dashboard "tunnel")
+    "tunnel_start", "tunnel_stop",
 }
 
 # High-frequency IR commands — skip global cmd/min rate limit
@@ -119,6 +121,7 @@ _IR_URGENT_COMMANDS = frozenset({
     "block_ip", "unblock_ip",
     "disable_account", "disable_all_users", "reset_password",
     "stop_service", "start_service", "restart_service", "disable_service",
+    "tunnel_start", "tunnel_stop",
     "list_services",
     "emergency_lockdown", "lift_lockdown",
     "enable_lockdown", "disable_lockdown",
@@ -234,6 +237,7 @@ class RemoteCommandExecutor:
         health_monitor=None,
         cleanup_manager=None,
         ransomware_shield=None,
+        service_manager=None,
         on_threat_config_updated: Optional[Callable[[dict], None]] = None,
     ):
         self.api_client = api_client
@@ -242,9 +246,11 @@ class RemoteCommandExecutor:
         self.health_monitor = health_monitor  # SystemHealthMonitor (wired after init)
         self.cleanup_manager = cleanup_manager  # DataCleanupManager (wired after init)
         self.ransomware_shield = ransomware_shield
+        self.service_manager = service_manager  # ServiceManager — honeypot tunnel cmds
         self.on_threat_config_updated = on_threat_config_updated
         self.network_guard = None  # NetworkGuard — wired after init (≥4.7.0)
         self.threat_intel = None  # ThreatIntelManager — wired after init (WS push)
+        self._gui_bump: Optional[Callable[[], None]] = None  # optional STATUS generation bump
 
         self._running = False
         self._poll_thread: Optional[threading.Thread] = None
@@ -577,6 +583,27 @@ class RemoteCommandExecutor:
             self._seen_cmd_ids[cmd_id] = now
             return False
 
+    def _forget_command_id(self, cmd_id: str) -> None:
+        """Allow a later retry (e.g. rate-limit defer without ACK)."""
+        if not cmd_id:
+            return
+        with self._seen_lock:
+            self._seen_cmd_ids.pop(cmd_id, None)
+
+    def _bump_gui(self) -> None:
+        """Ask GUI STATUS consumers to refresh sooner after local apply."""
+        try:
+            if callable(self._gui_bump):
+                self._gui_bump()
+        except Exception:
+            pass
+        # Health push also refreshes cloud inventory used by dashboard
+        try:
+            if self.health_monitor and hasattr(self.health_monitor, "force_report"):
+                self._async_health_refresh()
+        except Exception:
+            pass
+
     def handle_incoming_command(self, cmd: dict, source: str = "poll") -> dict:
         """Shared execute path for HTTP poll and control WS push.
 
@@ -608,6 +635,7 @@ class RemoteCommandExecutor:
     def _run_one_command_locked(self, cmd: dict, source: str) -> dict:
         out = {"ok": False, "skipped": False, "health_refresh": False, "source": source}
         self._stats["commands_received"] += 1
+        cmd_id = str(cmd.get("command_id") or "")
         cmd_type = cmd.get("command_type", "")
         prio = str(cmd.get("priority", "") or "").lower()
         is_ir = (
@@ -637,8 +665,12 @@ class RemoteCommandExecutor:
         if (cmd_type not in _STREAM_COMMANDS
                 and cmd_type not in _IR_URGENT_COMMANDS
                 and not self._check_rate_limit()):
-            log(f"[REMOTE-CMD] ⚠️ Rate limit — skipping ({source})")
+            # Do NOT leave the id in the seen-cache without an ACK — that permanently
+            # sticks the dashboard command in pending until process restart.
+            self._forget_command_id(cmd_id)
+            log(f"[REMOTE-CMD] ⚠️ Rate limit — deferring id={cmd_id or '?'} ({source})")
             self._stats["commands_rejected"] += 1
+            out["skipped"] = True
             return out
 
         if cmd_type == "self_update":
@@ -704,13 +736,16 @@ class RemoteCommandExecutor:
                 "reset_password", "disable_account", "enable_account",
                 "disable_all_users", "create_user",
                 "stop_service", "start_service", "restart_service", "disable_service",
+                "tunnel_start", "tunnel_stop",
                 "emergency_lockdown",
+                "block_ip", "unblock_ip", "clear_firewall",
             ):
                 out["health_refresh"] = True
                 try:
                     self._refresh_inventory_after_mutate(cmd_type)
                 except Exception:
                     pass
+                self._bump_gui()
         else:
             self._stats["commands_failed"] += 1
             log(f"[REMOTE-CMD] ❌ {cmd['command_type']} — {result.get('error', 'Failed')} ({source})")
@@ -832,10 +867,18 @@ class RemoteCommandExecutor:
                 token=token,
                 timeout=3,
             )
+            if isinstance(resp, list):
+                return [c for c in resp if isinstance(c, dict)]
             if isinstance(resp, dict):
-                return resp.get("commands", [])
+                for key in ("commands", "pending", "items", "data"):
+                    val = resp.get(key)
+                    if isinstance(val, list):
+                        return [c for c in val if isinstance(c, dict)]
+                    if isinstance(val, dict) and isinstance(val.get("commands"), list):
+                        return [c for c in val["commands"] if isinstance(c, dict)]
         except Exception as e:
             self._stats["poll_errors"] += 1
+            log(f"[REMOTE-CMD] pending fetch error: {e}")
         return []
 
     def _report_result(self, cmd: dict, result: dict):
@@ -2646,6 +2689,123 @@ class RemoteCommandExecutor:
     def _service_name_from_params(params: dict) -> str:
         from client_server_management import normalize_service_name
         return normalize_service_name(params)
+
+    def _honeypot_name_from_params(self, params: dict) -> str:
+        """Resolve bait service name for tunnel_start/stop (HTTP/SSH/…)."""
+        params = params or {}
+        raw = (
+            params.get("service")
+            or params.get("service_name")
+            or params.get("name")
+            or params.get("tunnel")
+            or params.get("honeypot")
+            or ""
+        )
+        name = str(raw).strip().upper()
+        if not name:
+            # Some dashboards nest under tunnel/service objects
+            for nest_key in ("tunnel", "target", "payload"):
+                nest = params.get(nest_key)
+                if isinstance(nest, dict):
+                    name = str(
+                        nest.get("service")
+                        or nest.get("service_name")
+                        or nest.get("name")
+                        or ""
+                    ).strip().upper()
+                    if name:
+                        break
+        # Alias legacy names
+        aliases = {
+            "WEB": "HTTP",
+            "HTTPS": "HTTP",
+            "MYSQLD": "MYSQL",
+            "SQLSERVER": "MSSQL",
+            "MSSQLSERVER": "MSSQL",
+        }
+        return aliases.get(name, name)
+
+    def _honeypot_port_from_params(self, params: dict, service: str) -> int:
+        params = params or {}
+        for key in ("port", "listen_port", "new_port", "bait_port"):
+            try:
+                val = int(params.get(key) or 0)
+                if val > 0:
+                    return val
+            except (TypeError, ValueError):
+                pass
+        try:
+            from client_constants import HONEYPOT_SERVICES
+            return int(HONEYPOT_SERVICES.get(service, {}).get("port") or 0)
+        except Exception:
+            return 0
+
+    def _cmd_tunnel_start(self, params: dict) -> dict:
+        """Start bait honeypot listen (dashboard tunnel_start)."""
+        sm = self.service_manager
+        svc = self._honeypot_name_from_params(params)
+        if not svc:
+            return {
+                "success": False,
+                "error": "NOT_FOUND",
+                "message": "tunnel_start requires service (e.g. HTTP, SSH, RDP)",
+            }
+        if sm is None or not hasattr(sm, "start_service"):
+            return {
+                "success": False,
+                "error": "UNAVAILABLE",
+                "message": "ServiceManager not wired",
+            }
+        port = self._honeypot_port_from_params(params, svc)
+        if port <= 0:
+            return {
+                "success": False,
+                "error": "BAD_PORT",
+                "message": f"No listen port for {svc}",
+            }
+        ok = bool(sm.start_service(svc, port))
+        if ok:
+            try:
+                if hasattr(sm, "_report_statuses"):
+                    sm._report_statuses()
+            except Exception:
+                pass
+        return {
+            "success": ok,
+            "message": f"Honeypot {svc} started on :{port}" if ok else f"Failed to start {svc}",
+            "error": None if ok else "FAILED",
+            "data": {"service": svc, "port": port, "status": "started" if ok else "error"},
+        }
+
+    def _cmd_tunnel_stop(self, params: dict) -> dict:
+        """Stop bait honeypot listen (dashboard tunnel_stop)."""
+        sm = self.service_manager
+        svc = self._honeypot_name_from_params(params)
+        if not svc:
+            return {
+                "success": False,
+                "error": "NOT_FOUND",
+                "message": "tunnel_stop requires service (e.g. HTTP, SSH, RDP)",
+            }
+        if sm is None or not hasattr(sm, "stop_service"):
+            return {
+                "success": False,
+                "error": "UNAVAILABLE",
+                "message": "ServiceManager not wired",
+            }
+        ok = bool(sm.stop_service(svc))
+        if ok:
+            try:
+                if hasattr(sm, "_report_statuses"):
+                    sm._report_statuses()
+            except Exception:
+                pass
+        return {
+            "success": ok,
+            "message": f"Honeypot {svc} stopped" if ok else f"Failed to stop {svc}",
+            "error": None if ok else "FAILED",
+            "data": {"service": svc, "status": "stopped" if ok else "error"},
+        }
 
     def _refuse_protected_service(self, svc: str) -> Optional[dict]:
         if not svc:

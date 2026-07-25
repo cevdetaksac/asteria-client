@@ -239,6 +239,44 @@ export default function App() {
     }
   }, [enterLockScreen, refreshBanner, refreshSession])
 
+  // When motor bumps status_generation (remote cmd applied), refresh ASAP.
+  const statusGeneration = Number((status as { status_generation?: number } | null)?.status_generation || 0)
+
+  useEffect(() => {
+    const syncGate = () => {
+      void refreshSession()
+    }
+    const ready = async () => {
+      try {
+        await loadI18n()
+        setLang(currentLang())
+        setI18nTick((n) => n + 1)
+        const session = await refreshSession()
+        if (!session.locked) void refresh()
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : String(reason))
+      }
+    }
+    window.addEventListener('pywebviewready', ready)
+    window.addEventListener('asteria-session-gate', syncGate)
+    window.addEventListener('focus', syncGate)
+    document.addEventListener('visibilitychange', syncGate)
+    void ready()
+    // Fast poll so dashboard remote actions show up in GUI quickly.
+    const ms = locked === false ? (statusGeneration > 0 ? 1500 : 2000) : 4000
+    const timer = window.setInterval(() => {
+      if (locked === false) void refresh()
+      else void refreshSession()
+    }, ms)
+    return () => {
+      window.removeEventListener('pywebviewready', ready)
+      window.removeEventListener('asteria-session-gate', syncGate)
+      window.removeEventListener('focus', syncGate)
+      document.removeEventListener('visibilitychange', syncGate)
+      window.clearInterval(timer)
+    }
+  }, [locked, refresh, refreshSession, statusGeneration])
+
   const onMenuAction = useCallback(
     (action: MenuAction) => {
       if (action === 'refresh') {
@@ -278,39 +316,6 @@ export default function App() {
     },
     [checkUpdates, openAbout, refresh, runShell],
   )
-
-  useEffect(() => {
-    const syncGate = () => {
-      void refreshSession()
-    }
-    const ready = async () => {
-      try {
-        await loadI18n()
-        setLang(currentLang())
-        setI18nTick((n) => n + 1)
-        const session = await refreshSession()
-        if (!session.locked) void refresh()
-      } catch (reason) {
-        setError(reason instanceof Error ? reason.message : String(reason))
-      }
-    }
-    window.addEventListener('pywebviewready', ready)
-    window.addEventListener('asteria-session-gate', syncGate)
-    window.addEventListener('focus', syncGate)
-    document.addEventListener('visibilitychange', syncGate)
-    void ready()
-    const timer = window.setInterval(() => {
-      if (locked === false) void refresh()
-      else void refreshSession()
-    }, 4000)
-    return () => {
-      window.removeEventListener('pywebviewready', ready)
-      window.removeEventListener('asteria-session-gate', syncGate)
-      window.removeEventListener('focus', syncGate)
-      document.removeEventListener('visibilitychange', syncGate)
-      window.clearInterval(timer)
-    }
-  }, [locked, refresh, refreshSession])
 
   const submitPin = async (event: FormEvent) => {
     event.preventDefault()
@@ -448,7 +453,8 @@ export default function App() {
               <button
                 type="button"
                 className="account-chip"
-                title={t('account_chip_dashboard')}
+                data-tooltip={t('account_chip_dashboard')}
+                aria-label={t('account_chip_dashboard')}
                 onClick={() => void runShell('open_dashboard', t('toast_dashboard'))}
               >
                 <span className="account-chip-icon" aria-hidden="true">

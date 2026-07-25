@@ -1,3 +1,19 @@
+# v4.9.43
+
+## Remote commands (dashboard pending stuck)
+- **`tunnel_start` / `tunnel_stop`:** contract bait honeypot commands were rejected as unknown — now applied via ServiceManager and ACKed with `commands/result`
+- Rate-limit defer no longer leaves command_id in dedup cache without ACK (pending forever)
+- Pending fetch logs errors; accepts alternate list shapes
+- Control-WS healthy HTTP safety poll default 5s (was 30s); service reconcile 15s (was 45s)
+- GUI STATUS poll ~1.5–2s; `status_generation` bump after remote apply
+
+## GUI UX polish
+- IP / hesap satır ayırıcıları `tr` border ile tam genişlik; aksiyon hücreleri sağa hizalı
+- Tooltip’ler ikonun üstünde ve ortada (`left: 50%` + `translateX(-50%)`); native `title` kaldırıldı
+- Threat IR: sıkışık self-hint metni → info ikonu + tooltip
+- Whitelist / tablo yatay scroll: `overflow-x: clip`
+- Identity strip + parola göster/gizle: CSS tooltip
+
 # v4.9.42
 - **Status / IP list actions:** cramped text buttons replaced with Font Awesome icon buttons (block / unblock / whitelist / remove) plus hover tooltip (`title` + CSS).
 - **Typography:** slightly smaller base UI fonts (nav, page titles, cards, panels, buttons) for a less dense Control Center.

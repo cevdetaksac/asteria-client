@@ -84,7 +84,7 @@ class AgentControlWebSocket:
         self._connected_since = 0.0
         self._last_rx = 0.0
         self._backoff = RECONNECT_MIN
-        self._poll_fallback_sec = 30.0
+        self._poll_fallback_sec = 5.0
         self._stats = {
             "connects": 0,
             "disconnects": 0,

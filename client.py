@@ -353,6 +353,7 @@ class CloudHoneypotClient:
                     api_client=self.api_client,
                     token_getter=lambda: self.state.get("token", ""),
                     auto_response=self.auto_response,
+                    service_manager=getattr(self, "service_manager", None),
                     on_threat_config_updated=lambda _data: self._sync_threat_config(),
                 )
                 self.silent_hours_guard = SilentHoursGuard(
@@ -401,9 +402,15 @@ class CloudHoneypotClient:
             log(f"⚠️ Cleanup manager init failed: {e}")
             self.cleanup_manager = None
 
-        # Wire cleanup into remote commands (clear_firewall dashboard cmd)
+        # Wire cleanup + honeypot manager into remote commands
         if self.remote_commands is not None and self.cleanup_manager is not None:
             self.remote_commands.cleanup_manager = self.cleanup_manager
+        if self.remote_commands is not None and getattr(self, "service_manager", None) is not None:
+            self.remote_commands.service_manager = self.service_manager
+            try:
+                self.remote_commands._gui_bump = lambda: self._bump_status_generation()
+            except Exception:
+                pass
 
         # Initialize Faz 3 modules (v4.0) — Ransomware Shield, System Health, Self-Protection
         self.ransomware_shield = None
@@ -1611,6 +1618,7 @@ class CloudHoneypotClient:
             "frontend_only": frontend_only,
             "remote_commands_running": rc_running,
             "motor_ok": bool(is_motor and rc_running),
+            "status_generation": int(getattr(self, "_status_generation", 0) or 0),
             "rs_quarantine": self._ipc_rs_quarantine_summary(),
             "persistence": self._ipc_persistence_summary(),
             "network_guard": self._ipc_network_guard_summary(),
@@ -1623,6 +1631,13 @@ class CloudHoneypotClient:
             "commands_recent": self._ipc_commands_recent(limit=5),
             "public_ip": str(self.state.get("public_ip") or "") or None,
         }
+
+    def _bump_status_generation(self) -> None:
+        """Bump so GUI STATUS poll can refresh immediately after remote apply."""
+        try:
+            self._status_generation = int(getattr(self, "_status_generation", 0) or 0) + 1
+        except Exception:
+            self._status_generation = 1
 
     def _ipc_rs_running(self) -> bool:
         rs = getattr(self, "ransomware_shield", None)
@@ -1989,6 +2004,17 @@ class CloudHoneypotClient:
                         _send(json.dumps(self._ipc_status_payload(), ensure_ascii=False))
                     except Exception as e:
                         _send(json.dumps({"ok": False, "error": str(e)}))
+                    continue
+
+                if cmd_u == "ACL_HEAL":
+                    # Unelevated GUI → SYSTEM motor restores Users RX on _internal
+                    try:
+                        from client_install_acl import ensure_motor_runtime_user_rx
+                        ok = bool(ensure_motor_runtime_user_rx(log=log))
+                        _send(json.dumps({"ok": ok}, ensure_ascii=False))
+                    except Exception as e:
+                        log(f"[CTRL] ACL_HEAL error: {e}")
+                        _send(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
                     continue
 
                 if cmd_u == "CLEAR_FIREWALL":
@@ -3234,6 +3260,7 @@ class CloudHoneypotClient:
                     api_client=self.api_client,
                     token_getter=lambda: self.state.get("token", ""),
                     auto_response=self.auto_response,
+                    service_manager=getattr(self, "service_manager", None),
                     on_threat_config_updated=lambda _data: self._sync_threat_config(),
                 )
                 if getattr(self, "cleanup_manager", None) is not None:
@@ -3249,6 +3276,14 @@ class CloudHoneypotClient:
                 if getattr(self, "ransomware_shield", None) is not None:
                     self.remote_commands.ransomware_shield = self.ransomware_shield
                 log("[MOTOR] RemoteCommandExecutor constructed (daemon ensure)")
+            # Always keep honeypot manager wired (executor may already exist)
+            if self.remote_commands is not None:
+                if getattr(self, "service_manager", None) is not None:
+                    self.remote_commands.service_manager = self.service_manager
+                try:
+                    self.remote_commands._gui_bump = lambda: self._bump_status_generation()
+                except Exception:
+                    pass
         except Exception as e:
             log(f"[MOTOR] ensure construct failed: {e}")
             ok = False
@@ -3394,6 +3429,13 @@ class CloudHoneypotClient:
         self.frontend_only = False
         self.state["token"] = self.token_manager.load_token()
         self.state["public_ip"] = ClientHelpers.get_public_ip()
+
+        # Self-heal over-locked onedir ACL (Users must RX python312.dll).
+        try:
+            from client_install_acl import ensure_motor_runtime_user_rx
+            ensure_motor_runtime_user_rx(log=log)
+        except Exception as e:
+            log(f"[ACL] motor runtime heal skipped: {e}")
 
         # RES-101: ABOVE_NORMAL (never REALTIME) so commands stay responsive under host load
         try:

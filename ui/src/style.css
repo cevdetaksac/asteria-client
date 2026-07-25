@@ -310,6 +310,7 @@ h1, h2, h3, p { margin: 0; }
   color: var(--text);
   font-weight: 600;
   letter-spacing: 0.02em;
+  position: relative;
 }
 .identity-sep {
   width: 1px;
@@ -322,6 +323,7 @@ h1, h2, h3, p { margin: 0; }
   color: rgba(180, 210, 230, 0.92);
   font-size: 12px;
   letter-spacing: 0.01em;
+  position: relative;
 }
 .identity-token {
   min-width: 0;
@@ -340,8 +342,10 @@ h1, h2, h3, p { margin: 0; }
   font-weight: 600;
   font-size: 12px;
   opacity: 0.9;
+  position: relative;
 }
 .identity-copy {
+  position: relative;
   flex: 0 0 auto;
   width: 32px;
   height: 28px;
@@ -434,14 +438,17 @@ h1, h2, h3, p { margin: 0; }
   color: #ffabb2;
 }
 
-.ip-cols {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
+.ip-cols th,
+.ip-cols td {
+  padding: 9px 8px;
+}
+.ip-cols td.actions-cell {
+  padding-right: 8px;
+  padding-left: 4px;
 }
 .ip-col-head {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 10px;
@@ -454,7 +461,11 @@ h1, h2, h3, p { margin: 0; }
   display: grid;
   gap: 8px;
   max-height: 320px;
-  overflow: auto;
+  overflow-x: clip;
+  overflow-y: auto;
+  padding-top: 4px;
+  /* room for tooltips on first row without clipping into panel edge */
+  scroll-padding-top: 36px;
 }
 .ip-row {
   display: flex;
@@ -492,11 +503,14 @@ h1, h2, h3, p { margin: 0; }
   display: flex;
   flex-direction: row;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   flex-shrink: 0;
 }
 
-/* Compact FA action buttons + hover tooltip */
+/* Compact FA action buttons + hover tooltip (centered above) */
+.tip {
+  position: relative;
+}
 .icon-btn {
   position: relative;
   display: inline-flex;
@@ -511,12 +525,14 @@ h1, h2, h3, p { margin: 0; }
   color: var(--text);
   font-size: 12px;
   line-height: 1;
+  overflow: visible;
   transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
 }
 .icon-btn:hover:not(:disabled) {
   border-color: rgba(46, 168, 209, 0.55);
   background: var(--accent-dim);
   color: var(--cyan);
+  z-index: 5;
 }
 .icon-btn.danger:hover:not(:disabled) {
   border-color: rgba(227, 93, 106, 0.55);
@@ -527,12 +543,38 @@ h1, h2, h3, p { margin: 0; }
   opacity: 0.45;
   cursor: not-allowed;
 }
-.icon-btn[data-tooltip]::after {
-  content: attr(data-tooltip);
+.icon-btn.tip-info {
+  cursor: help;
+  color: var(--muted);
+  background: transparent;
+  border-color: transparent;
+}
+.icon-btn.tip-info:hover,
+.icon-btn.tip-info:focus {
+  color: var(--cyan);
+  border-color: rgba(46, 168, 209, 0.35);
+  background: var(--accent-dim);
+}
+.icon-btn[data-tooltip]::before,
+.icon-btn[data-tooltip]::after,
+.tip[data-tooltip]::before,
+.tip[data-tooltip]::after,
+.account-chip[data-tooltip]::before,
+.account-chip[data-tooltip]::after {
   position: absolute;
-  right: 0;
-  bottom: calc(100% + 6px);
-  z-index: 20;
+  left: 50%;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.12s ease, transform 0.12s ease, visibility 0.12s ease;
+  z-index: 40;
+}
+.icon-btn[data-tooltip]::after,
+.tip[data-tooltip]::after,
+.account-chip[data-tooltip]::after {
+  content: attr(data-tooltip);
+  bottom: calc(100% + 8px);
+  transform: translate(-50%, 4px);
   padding: 5px 8px;
   border-radius: 6px;
   border: 1px solid var(--line);
@@ -541,27 +583,50 @@ h1, h2, h3, p { margin: 0; }
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.01em;
-  white-space: nowrap;
-  pointer-events: none;
-  opacity: 0;
-  transform: translateY(2px);
-  transition: opacity 0.12s ease, transform 0.12s ease;
+  line-height: 1.25;
+  white-space: normal;
+  max-width: min(240px, 70vw);
+  text-align: center;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+.icon-btn[data-tooltip]::before,
+.tip[data-tooltip]::before,
+.account-chip[data-tooltip]::before {
+  content: "";
+  bottom: calc(100% + 2px);
+  transform: translate(-50%, 4px);
+  border: 5px solid transparent;
+  border-top-color: #0a111a;
 }
 .icon-btn:hover:not(:disabled)[data-tooltip]::after,
-.icon-btn:focus-visible:not(:disabled)[data-tooltip]::after {
+.icon-btn:focus:not(:disabled)[data-tooltip]::after,
+.icon-btn:focus-visible:not(:disabled)[data-tooltip]::after,
+.tip:hover[data-tooltip]::after,
+.tip:focus[data-tooltip]::after,
+.tip:focus-visible[data-tooltip]::after,
+.account-chip:hover[data-tooltip]::after,
+.account-chip:focus[data-tooltip]::after,
+.account-chip:focus-visible[data-tooltip]::after {
   opacity: 1;
-  transform: translateY(0);
+  visibility: visible;
+  transform: translate(-50%, 0);
+}
+.icon-btn:hover:not(:disabled)[data-tooltip]::before,
+.icon-btn:focus:not(:disabled)[data-tooltip]::before,
+.icon-btn:focus-visible:not(:disabled)[data-tooltip]::before,
+.tip:hover[data-tooltip]::before,
+.tip:focus[data-tooltip]::before,
+.tip:focus-visible[data-tooltip]::before,
+.account-chip:hover[data-tooltip]::before,
+.account-chip:focus[data-tooltip]::before,
+.account-chip:focus-visible[data-tooltip]::before {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, 0);
 }
 
 .empty-ip {
   margin: 8px 0;
-}
-
-/* Table action cells: keep icons in a single horizontal row */
-td.ip-row-actions {
-  width: 1%;
-  white-space: nowrap;
-  vertical-align: middle;
 }
 
 @media (max-width: 1100px) {
@@ -571,6 +636,7 @@ td.ip-row-actions {
 }
 
 .account-chip {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -887,8 +953,11 @@ tr.row-self td {
 .pwd-row {
   margin-top: 8px;
 }
-.sm-hint {
-  font-size: 11px;
+.accounts-table td:nth-child(3),
+.accounts-table td:nth-child(5) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .btn.danger {
@@ -953,31 +1022,63 @@ tr.row-self td {
   grid-template-columns: 1fr 1fr;
   gap: 14px;
 }
+.panel {
+  overflow: visible;
+}
+.ip-col {
+  overflow: visible;
+}
 .panel h3 { margin: 6px 0 4px; font-size: 18px; }
 .panel .eyebrow { color: var(--cyan); font-family: var(--font-brand); letter-spacing: 0.18em; }
 
 .table-wrap {
-  overflow: auto;
+  /* clip stray horizontal scroll; tooltips use absolute + high z-index */
+  overflow-x: clip;
+  overflow-y: visible;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: rgba(10, 15, 24, 0.7);
 }
-table { width: 100%; border-collapse: collapse; }
+table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.ip-cols .table-wrap table {
+  table-layout: auto;
+}
 th, td {
-  padding: 12px 14px;
-  border-bottom: 1px solid rgba(36, 49, 66, 0.8);
+  padding: 11px 12px;
+  border-bottom: none;
   text-align: left;
-  font-size: 14px;
+  font-size: 12.5px;
+  vertical-align: middle;
+}
+thead tr,
+tbody tr {
+  border-bottom: 1px solid rgba(36, 49, 66, 0.8);
+}
+tbody tr:last-child {
+  border-bottom: none;
 }
 th {
   color: var(--steel-gray);
-  font-size: 11px;
+  font-size: 10.5px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
   background: rgba(8, 13, 20, 0.85);
 }
 td.empty { color: var(--muted); text-align: center; padding: 28px; }
-td .btn { margin-left: 6px; }
+td .btn + .btn { margin-left: 6px; }
+td.actions-cell,
+th.actions-head {
+  width: 1%;
+  white-space: nowrap;
+  vertical-align: middle;
+  text-align: right;
+}
+td.actions-cell .ip-row-actions {
+  display: inline-flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
+}
 
 .inline-form {
   display: flex;

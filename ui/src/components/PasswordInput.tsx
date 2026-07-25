@@ -46,10 +46,10 @@ export function PasswordInput({
       />
       <button
         type="button"
-        className="pw-toggle"
+        className="pw-toggle tip"
         onClick={() => setShown((prev) => !prev)}
         aria-label={shown ? t('hide') : t('show')}
-        title={shown ? t('hide') : t('show')}
+        data-tooltip={shown ? t('hide') : t('show')}
         tabIndex={-1}
       >
         <EyeIcon off={shown} />
