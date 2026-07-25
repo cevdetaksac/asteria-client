@@ -1,21 +1,26 @@
 # GUI Modernization Roadmap — WebView2 + Dashboard-aligned UI
 
-> Tarih: 2026-07-24  
+> Tarih: 2026-07-24 (güncelleme: 2026-07-25)  
 > Başlangıç: client **4.9.32**, contract `agent/gui-control-center.md`  
-> Hedef: CustomTkinter shell → **WebView2 host + React (Vite) UI**, dashboard ile
-> görsel/UX uyumu; isteğe bağlı **WebGL** ile canlı görselleştirme  
-> Durum: planlama (uygulama başlamadı)
+> Hedef: CustomTkinter shell → **ayrı `asteria-gui.exe`** (WebView2 host + React/Vite UI);
+> dashboard ile görsel/UX uyumu; isteğe bağlı **WebGL** ile canlı görselleştirme  
+> Durum: planlama (uygulama başlamadı)  
+> **Üst plan (motor + GUI birlikte):** [`ASTERIA_DUAL_TRACK_ROADMAP.md`](ASTERIA_DUAL_TRACK_ROADMAP.md)
 
-Bu belge yol haritasıdır; kod değişikliği değildir. Amaç: motor/tray/IPC
-mimarisini bozmadan masaüstü arayüzünü modern, profesyonel ve cloud dashboard
-ile tutarlı hale getirmek.
+Bu belge **GUI detay / parity** yol haritasıdır. Motor hardening, tek-exe ve
+imza/attestation **dual-track** belgesindedir. Kod değişikliği değildir.
+
+**Paketleme kararı (2026-07-25):** UI, motor exe içine gömülü host olmak zorunda
+değil. Tercih: sistem motoru `asteria-client.exe` + kullanıcı oturumunda
+**`asteria-gui.exe`** (hafif WebView2 + React; WebGL seçici). Tray motordan veya
+ince yardımcıdan Show ile GUI’yi açar.
 
 ---
 
 ## 1. Vizyon (tek cümle)
 
-**Daemon motor kalır, tray kalır; pencere içeriği dashboard dilinde bir web UI
-olur** — Windows’ta WebView2 ile gömülü, yerel IPC üzerinden canlı.
+**Daemon motor kalır, tray kalır; arayüz ayrı `asteria-gui.exe` olur** —
+WebView2 + React (dashboard dili), localhost IPC ile canlı; motor CTk/WebView taşımaz.
 
 ---
 
@@ -67,27 +72,22 @@ olur** — Windows’ta WebView2 ile gömülü, yerel IPC üzerinden canlı.
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  Interactive session                                        │
-│  ┌──────────────┐   postMessage    ┌─────────────────────┐  │
-│  │ pystray      │◄────────────────►│ WebView2 Host       │  │
-│  │ (lifecycle)  │   Show / Quit    │ (Python / thin)     │  │
-│  └──────────────┘                  │  - window chrome    │  │
-│                                    │  - PIN gate         │  │
+│  ┌──────────────┐   Show/Quit      ┌─────────────────────┐  │
+│  │ Tray         │◄────────────────►│ asteria-gui.exe     │  │
+│  │ (lifecycle)  │                  │ WebView2 + React    │  │
+│  └──────────────┘                  │  - PIN / chrome     │  │
 │                                    │  - bridge API       │  │
+│                                    │  - Canvas/WebGL viz │  │
 │                                    └──────────┬──────────┘  │
-│                                               │             │
-│                                    ┌──────────▼──────────┐  │
-│                                    │ React UI (Vite)     │  │
-│                                    │  pages + charts     │  │
-│                                    │  (Canvas/WebGL)     │  │
-│                                    └──────────┬──────────┘  │
+│                                               │ TCP :58632  │
 └───────────────────────────────────────────────┼─────────────┘
-                                                │ TCP :58632
+                                                │
 ┌───────────────────────────────────────────────▼─────────────┐
-│  SYSTEM daemon — honeypots, firewall, WS control, STATUS    │
+│  SYSTEM — asteria-client.exe (motor only; no GUI toolkit)   │
 └─────────────────────────────────────────────────────────────┘
                          │ HTTPS / WSS
                          ▼
-              Cloud API + Dashboard
+              Cloud API + Dashboard (asteria.run)
 ```
 
 ### 4.1 Teknoloji seçimleri (önerilen)
@@ -99,10 +99,10 @@ olur** — Windows’ta WebView2 ile gömülü, yerel IPC üzerinden canlı.
 | Stil | **CSS variables + dashboard token set** (Tailwind isteğe bağlı) | Tek marka dili; purple-AI klişesinden kaçın |
 | Grafik | **SVG/Canvas varsayılan; WebGL seçici** | Threat feed / trend / heatmap için; her kart WebGL değil |
 | Host köprüsü | WebView2 `postMessage` ↔ Python (`pywebview` **veya** `pythonnet`/`webview2` thin wrapper) | Tek yönlü güven modeli: UI istek atar, host yetkilendirir |
-| Paket | UI → `ui/dist` → PyInstaller datas | Offline çalışır; CDN’e bağımlı değil |
-| Runtime | **Evergreen WebView2** + installer bootstrapper; Fixed Version yalnızca air-gapped ihtiyaçta | Küçük installer; Fixed ~100MB+ |
+| Paket | UI → `ui/dist` → **`asteria-gui.exe`** (ayrı artifact); motor exe GUI datas taşımaz | Offline; CDN yok |
+| Runtime | **Evergreen WebView2** + installer bootstrapper; Fixed Version yalnızca air-gapped | Küçük installer; Fixed ~100MB+ |
 
-**Bilerek seçilmeyenler:** Electron (çift runtime, boyut), CEF gömme (bakım), saf Tk tema cilası (limit aşılmış).
+**Bilerek seçilmeyenler:** Electron (çift runtime, boyut), CEF gömme (bakım), saf Tk tema cilası (limit aşılmış), GUI’yi motor onedir `_internal` içine gömmek (yüzey + güvenlik).
 
 ### 4.2 Bridge sözleşmesi (taslak)
 
@@ -298,7 +298,7 @@ Her sayfa için:
 ## 8. Repo / dizin önerisi
 
 ```
-cloud-client/
+asteria-client/
   ui/                      # React + Vite (yeni)
     src/
       pages/
@@ -306,17 +306,19 @@ cloud-client/
       bridge/              # host message types
       theme/
       i18n/
-    dist/                  # build çıktısı (gitignore veya release artifact)
-  client_webview_host.py   # WebView2 host (yeni)
-  client_gui.py            # CTk — Faz 3’e kadar flag ile
+    dist/                  # build çıktısı
+  asteria-gui.spec         # ayrı GUI exe (yeni)
+  client_webview_host.py   # GUI process entry (yeni)
+  client_gui.py            # CTk — G3’e kadar flag ile
   docs/
-    GUI_WEBVIEW_ROADMAP.md # bu belge
+    ASTERIA_DUAL_TRACK_ROADMAP.md  # motor + GUI üst plan
+    GUI_WEBVIEW_ROADMAP.md         # bu belge
     design/
-      tokens.md            # Faz 0
-honeypot-contract/
+      tokens.md
+asteria-contract/
   agent/
-    gui-control-center.md  # UX ilkeleri (güncellenir)
-    gui-webview-bridge.md  # yeni bridge SoT
+    gui-control-center.md
+    gui-webview-bridge.md  # bridge SoT (yeni)
 ```
 
 ---
@@ -328,9 +330,9 @@ honeypot-contract/
 | WebView2 Runtime | Installer: Evergreen bootstrapper (sessiz); yoksa indirme + yeniden dene |
 | Fixed Version | Yalnızca offline/air-gap skus; ayrı build profili |
 | Boyut | UI dist ~ birkaç MB; Evergreen runtime makinede paylaşımlı |
-| İmza | Host exe + yeni DLL’ler Authenticode (`build.ps1 -Sign`) |
-| Güncelleme | Mevcut updater; UI assets exe ile birlikte versioned |
-| Geri dönüş | `CHP_UI=ctk` veya uninstall+eski sürüm (Faz 3 öncesi) |
+| İmza | `asteria-client.exe` + `asteria-gui.exe` Authenticode (`build.ps1 -Sign`) |
+| Güncelleme | Mevcut updater; her iki exe versioned birlikte |
+| Geri dönüş | `ASTERIA_UI=ctk` veya uninstall+eski sürüm (G3 öncesi) |
 
 ---
 
@@ -341,7 +343,8 @@ honeypot-contract/
 3. Token, PIN hash, machine_id JS global’ine yazılmaz; host proxy eder.  
 4. DevTools production’da kapalı (lab flag ile açılır).  
 5. XSS: kullanıcı/IP/log stringleri escape; threat feed untrusted.  
-6. Elevation: UI process non-admin kalır; motor SYSTEM’de.
+6. Elevation: `asteria-gui.exe` non-admin; motor SYSTEM’de.  
+7. Motor hardening / `_internal` / Nuitka: [`ASTERIA_DUAL_TRACK_ROADMAP.md`](ASTERIA_DUAL_TRACK_ROADMAP.md) Track M.
 
 ---
 
@@ -424,7 +427,8 @@ Sonra: kullanıcı onayı ile Faz 2 sayfa sırasına geçilir.
 - `cloud-client/client_gui_theme.py` — geçici tokenler  
 - `cloud-client/client_daemon_ipc.py` — IPC  
 - `cloud-client/client_settings_util.py` — ayar şeması  
-- Canlı dashboard: `https://honeypot.yesnext.com.tr/dashboard`
+- Canlı dashboard: `https://asteria.run` (legacy alias: honeypot.yesnext.com.tr)  
+- Üst plan: [`ASTERIA_DUAL_TRACK_ROADMAP.md`](ASTERIA_DUAL_TRACK_ROADMAP.md)
 
 ---
 

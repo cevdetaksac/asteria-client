@@ -60,7 +60,7 @@ değil; güvenli, ölçülebilir ve geri alınabilir olanları ürüne kazandır
 | Shadow network state | `[~]` | Baseline + confirm restore + dry-run plan/`rollback_version` landed; otomatik connectivity rollback ve NIC safety matrix açık. |
 | Asimetrik E2E komutlar | `[R]` | Önce browser/hardware-backed admin imzası + agent verification; sonra gerekirse agent public key'ine payload encryption. Key lifecycle şart. |
 | Hardware fingerprint kilidi | `[R]` | UUID+MAC+CPU katı kilit VM clone/NIC/anakart değişiminde sistemi kilitler. TPM-backed device key/certificate + kontrollü re-enrollment tercih edilir. |
-| PyInstaller decompilation riski | `[R]` | Python bytecode/metadata çıkarılabilir; kaynak birebir garanti edilmese de mantık büyük ölçüde analiz edilebilir. Secret gömmeme + signing/integrity öncelikli, Nuitka maliyet artırıcı katman. |
+| PyInstaller decompilation riski | `[R]` | Python bytecode/metadata çıkarılabilir. Dual-track: GUI ayrılınca motor Nuitka/onefile + signing/attestation — [`ASTERIA_DUAL_TRACK_ROADMAP.md`](ASTERIA_DUAL_TRACK_ROADMAP.md). Secret gömmeme öncelikli. |
 | Strings/static analysis | `[R]` | Endpoint/banner hata mesajı secret değildir. Release secret scanner ve gereksiz iç detay/log temizliği uygulanır; güvenlik endpoint gizliliğine bağlanmaz. |
 | Procmon/debugger/dinamik analiz | `[R]` | Davranış tamamen saklanamaz. Tamper-evident runtime, signed binary/policy ve server-side enforcement ile bypass değeri azaltılır. |
 | Wireshark trafik analizi | `[R]` | Doğru TLS doğrulamasında pasif dinleyici payload okuyamaz; hedef/cloud/TLS trust compromise ayrı tehdittir. E2E bu ikinci tehdidi azaltır. |

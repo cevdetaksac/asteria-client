@@ -63,6 +63,8 @@ gh release create vX.Y.Z cloud-client-installer.exe --title "vX.Y.Z" --notes-fil
 | [`docs/CHANGELOG.md`](docs/CHANGELOG.md) | Client release history |
 | [`docs/OPERATIONS.md`](docs/OPERATIONS.md) | Build / ops notes |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | Security reporting |
+| [`docs/ASTERIA_DUAL_TRACK_ROADMAP.md`](docs/ASTERIA_DUAL_TRACK_ROADMAP.md) | Motor hardening + `asteria-gui.exe` plan |
+| [`docs/GUI_WEBVIEW_ROADMAP.md`](docs/GUI_WEBVIEW_ROADMAP.md) | GUI WebView/WebGL detail |
 | [`contract/README.md`](contract/README.md) | Pointer to asteria-contract |
 | [`AGENTS.md`](AGENTS.md) | Cursor / agent reading order |
 
