@@ -1,3 +1,7 @@
+# v4.9.40
+- **GUI:** Tk-free `client_helpers` runtime shim (fixes `No module named client_helpers`); richer GUI exception/tray logging; expanded gui hiddenimports.
+- Carries 4.9.39 tray brick fix, presence/WS harden, Control Center UX.
+
 # v4.9.39
 - **Tray brick fix:** X-close no longer sync-hides inside pywebview `closing` (Win32 hang); supervised tray loop + revive; show/hide off tray callback thread.
 - **Presence/WS:** ping-fail reconnect, 75s stale RX, heartbeat backoff on 499/timeout, `hello_ack`.

@@ -14,9 +14,65 @@ import socket
 import sys
 import threading
 import time
+import types
 import webbrowser
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+# Mark host before any client_* import so PIN lock skips Tk/helpers graph.
+os.environ.setdefault("ASTERIA_GUI_HOST", "1")
+
+
+def _install_client_helpers_shim() -> None:
+    """Provide a Tk-free client_helpers when PyInstaller excludes the real module.
+
+    Older GUI builds logged ``No module named 'client_helpers'`` on token load /
+    account helpers. A stub keeps those paths working without pulling Tk.
+    """
+    if "client_helpers" in sys.modules:
+        return
+    try:
+        import client_helpers  # noqa: F401
+
+        return
+    except Exception:
+        pass
+
+    stub = types.ModuleType("client_helpers")
+
+    def _log(message, *args, **kwargs):
+        try:
+            logging.getLogger("asteria-gui").info("%s", message)
+        except Exception:
+            pass
+
+    class _ClientHelpers:
+        @staticmethod
+        def get_public_ip(force_refresh: bool = False) -> str:
+            return "0.0.0.0"
+
+        @staticmethod
+        def is_session_zero() -> bool:
+            return False
+
+        @staticmethod
+        def is_daemon_running() -> bool:
+            return False
+
+    stub.log = _log
+    stub.ClientHelpers = _ClientHelpers
+    stub.LOGGER = None
+    stub.get_windows_session_id = lambda: -1
+    stub.is_session_zero = _ClientHelpers.is_session_zero
+    stub.has_interactive_user_session = lambda query_stdout=None: True
+    stub.launch_interactive_tray_gui = lambda: False
+    stub.run_cmd = lambda *a, **k: (1, "", "unavailable")
+    stub.is_port_in_use = lambda port: False
+    stub.submit_background = lambda fn, *a, **k: None
+    sys.modules["client_helpers"] = stub
+
+
+_install_client_helpers_shim()
 
 try:
     import webview
@@ -152,12 +208,13 @@ def _pulse_session_gate(window: Any) -> None:
         pass
 
 
-def _schedule_webview(fn, *, delay: float = 0.0) -> None:
+def _schedule_webview(fn, *, delay: float = 0.0, label: str = "ui") -> None:
     """Run WebView ops off the pystray / closing callback thread.
 
     Hiding inside events.closing (or blocking show from tray) can hang Win32
     message dispatch — icon stays visible but clicks/menus die (pywebview bug).
     """
+    logger = _tray_state.get("logger") or logging.getLogger("asteria-gui")
 
     def _run() -> None:
         if delay > 0:
@@ -165,51 +222,60 @@ def _schedule_webview(fn, *, delay: float = 0.0) -> None:
         try:
             fn()
         except Exception:
-            pass
+            logger.exception("WebView op failed label=%s", label)
 
-    threading.Thread(target=_run, name="AsteriaGuiUiOp", daemon=True).start()
+    threading.Thread(target=_run, name=f"AsteriaGuiUiOp-{label}", daemon=True).start()
 
 
 def _hide_to_tray(window: Any, bridge: Optional["MotorBridge"] = None) -> None:
     """Async hide + re-lock PIN (safe from closing callback / shell minimize)."""
     global _hide_pending
+    logger = _tray_state.get("logger") or logging.getLogger("asteria-gui")
     with _hide_lock:
         if _hide_pending or _quitting:
+            logger.info("hide_to_tray skipped pending=%s quitting=%s", _hide_pending, _quitting)
             return
         _hide_pending = True
+    logger.info("hide_to_tray scheduled (async)")
 
     def _do() -> None:
         global _hide_pending
         try:
             try:
                 window.hide()
+                logger.info("hide_to_tray: window.hide() ok")
             except Exception:
-                pass
+                logger.exception("hide_to_tray: window.hide() failed")
             try:
                 lock = getattr(bridge, "_gui_lock", None) if bridge is not None else None
                 if lock is not None:
                     lock.lock_session()
+                    logger.info("hide_to_tray: session locked")
             except Exception:
-                pass
+                logger.exception("hide_to_tray: lock_session failed")
             _pulse_session_gate(window)
         finally:
             with _hide_lock:
                 _hide_pending = False
 
     # Small delay so closing callback can return False before hide().
-    _schedule_webview(_do, delay=0.05)
+    _schedule_webview(_do, delay=0.05, label="hide")
 
 
 def _show_from_tray(window: Any) -> None:
+    logger = _tray_state.get("logger") or logging.getLogger("asteria-gui")
+    logger.info("show_from_tray scheduled")
+
     def _do() -> None:
         try:
             window.show()
             window.restore()
             _pulse_session_gate(window)
+            logger.info("show_from_tray: show+restore ok")
         except Exception:
-            pass
+            logger.exception("show_from_tray failed")
 
-    _schedule_webview(_do)
+    _schedule_webview(_do, label="show")
 
 
 def _start_show_watcher(window: Any) -> None:
@@ -272,15 +338,18 @@ def _run_tray_icon_once(window: Any, bridge: "MotorBridge", logger: logging.Logg
     image = _load_tray_image("online")
 
     def show_gui(_icon=None, _item=None):
+        logger.info("Tray menu: Open")
         _show_from_tray(window)
 
     def open_dashboard(_icon=None, _item=None):
+        logger.info("Tray menu: Dashboard")
         try:
             bridge.shell("open_dashboard")
         except Exception as exc:
             logger.info("Tray dashboard failed: %s", exc)
 
     def copy_token(_icon=None, _item=None):
+        logger.info("Tray menu: Copy token")
         try:
             bridge.shell("copy_token")
         except Exception as exc:
@@ -288,6 +357,7 @@ def _run_tray_icon_once(window: Any, bridge: "MotorBridge", logger: logging.Logg
 
     def quit_gui(icon=None, _item=None):
         global _quitting
+        logger.info("Tray menu: Quit")
         _quitting = True
         _tray_state["stop"] = True
         try:
@@ -300,7 +370,7 @@ def _run_tray_icon_once(window: Any, bridge: "MotorBridge", logger: logging.Logg
                 window.destroy()
             except Exception:
                 pass
-        _schedule_webview(_destroy)
+        _schedule_webview(_destroy, label="destroy")
 
     icon = pystray.Icon(
         "asteria-gui",
@@ -314,9 +384,11 @@ def _run_tray_icon_once(window: Any, bridge: "MotorBridge", logger: logging.Logg
         ),
     )
     _tray_state["icon"] = icon
+    logger.info("Tray icon.run() starting")
     try:
         icon.run()  # blocking — owns Win32 message pump for this icon
     finally:
+        logger.info("Tray icon.run() ended")
         if _tray_state.get("icon") is icon:
             _tray_state["icon"] = None
 
@@ -424,7 +496,57 @@ def _setup_logging() -> logging.Logger:
             logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
         )
         logger.addHandler(handler)
+    _install_gui_excepthooks(logger)
     return logger
+
+
+def _install_gui_excepthooks(logger: logging.Logger) -> None:
+    """Capture uncaught errors — tray brick / WebView hangs leave breadcrumbs."""
+
+    def _hook(exc_type, exc, tb):
+        try:
+            import traceback
+
+            logger.error(
+                "UNHANDLED EXCEPTION:\n%s",
+                "".join(traceback.format_exception(exc_type, exc, tb)),
+            )
+            for h in logger.handlers:
+                try:
+                    h.flush()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    try:
+        sys.excepthook = _hook
+    except Exception:
+        pass
+
+    if hasattr(threading, "excepthook"):
+        def _thread_hook(args):  # type: ignore[no-untyped-def]
+            try:
+                if args.exc_type is SystemExit:
+                    return
+                import traceback
+
+                logger.error(
+                    "UNHANDLED THREAD EXCEPTION name=%s:\n%s",
+                    getattr(args.thread, "name", "?"),
+                    "".join(
+                        traceback.format_exception(
+                            args.exc_type, args.exc_value, args.exc_traceback
+                        )
+                    ),
+                )
+            except Exception:
+                pass
+
+        try:
+            threading.excepthook = _thread_hook  # type: ignore[assignment]
+        except Exception:
+            pass
 
 
 def _json_safe(payload: Any) -> Any:
@@ -471,6 +593,7 @@ class MotorBridge:
         self.log = logger or logging.getLogger("asteria-gui")
         self._window = window
         os.environ["ASTERIA_GUI_HOST"] = "1"
+        _install_client_helpers_shim()
         from client_gui_lock import GuiLock
 
         self._gui_lock = GuiLock.instance()
@@ -563,11 +686,29 @@ class MotorBridge:
 
     def status(self) -> Dict[str, Any]:
         if not self._authorized():
+            # Throttle locked polls — otherwise silence looks like a dead GUI.
+            now = time.time()
+            last = float(getattr(self, "_last_locked_log", 0.0) or 0.0)
+            if now - last >= 60.0:
+                self._last_locked_log = now
+                self.log.info("STATUS bridge: skipped (gui_locked)")
             return self._deny_locked()
         result = get_status(timeout=3.0)
         safe = _json_safe(result)
-        self.log.info("STATUS bridge: ok=%s", bool(safe.get("ok")))
-        return safe
+        ok = bool(isinstance(safe, dict) and safe.get("ok"))
+        now = time.time()
+        last_ok = float(getattr(self, "_last_status_ok_log", 0.0) or 0.0)
+        # Always log failures; success at most once/minute (avoid drowning tray events).
+        if not ok or (now - last_ok) >= 60.0:
+            self._last_status_ok_log = now
+            payload = safe if isinstance(safe, dict) else {}
+            self.log.info(
+                "STATUS bridge: ok=%s version=%s motor_ok=%s",
+                ok,
+                payload.get("version"),
+                payload.get("motor_ok"),
+            )
+        return safe if isinstance(safe, dict) else {"ok": False, "error": "bad_status"}
 
     def catalog(self) -> Dict[str, Any]:
         """Honeypot service catalog (ports/names) — no secrets."""
@@ -1593,7 +1734,7 @@ def main() -> int:
         logger.error("UI bundle missing: %s", index)
         raise FileNotFoundError(f"Asteria UI bundle missing: {index}")
 
-    logger.info("Starting asteria-gui.exe; UI=%s", index)
+    logger.info("Starting asteria-gui.exe; UI=%s pid=%s", index, os.getpid())
     tray_start = any(arg.lower() in ("--tray", "--mode=tray") for arg in sys.argv[1:])
     bridge = MotorBridge(logger)
     window = webview.create_window(
@@ -1614,17 +1755,25 @@ def main() -> int:
         # Never call window.hide() synchronously here — pywebview/Win32 can hang
         # and brick the tray icon (visible but dead clicks/menus).
         if _quitting:
+            logger.info("closing: quitting=True → allow destroy")
             return True
+        logger.info("closing: cancel destroy → async hide_to_tray")
         _hide_to_tray(window, bridge)
         return False
 
     window.events.closing += _on_closing
+    logger.info(
+        "WebView loop starting pid=%s tray_start=%s",
+        os.getpid(),
+        tray_start,
+    )
     try:
         webview.start(gui="edgechromium", debug=False, private_mode=True)
     except Exception as exc:
         logger.exception("WebView start failed: %s", exc)
         _warn_missing_webview2(logger)
         return 4
+    logger.info("WebView loop ended pid=%s", os.getpid())
     _quitting = True
     _tray_state["stop"] = True
     try:

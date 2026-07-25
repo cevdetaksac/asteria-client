@@ -692,7 +692,9 @@ def watchdog_main(parent_pid: int, log_func=None):
     log_func(f"[watchdog] Maximum attempts ({max_attempts}) reached, exiting")
 
 def install_excepthook(log_func=None):
-    """Exception hook kurulumu"""
+    """Exception hook kurulumu (main + worker threads)."""
+    import threading
+
     if log_func is None:
         log_func = print
         
@@ -707,6 +709,35 @@ def install_excepthook(log_func=None):
         sys.excepthook = _hook
     except Exception:
         pass
+
+    if hasattr(threading, "excepthook"):
+        def _thread_hook(args):  # type: ignore[no-untyped-def]
+            try:
+                if getattr(args, "exc_type", None) is SystemExit:
+                    return
+                import traceback
+                name = getattr(getattr(args, "thread", None), "name", "?")
+                log_func(
+                    "UNHANDLED THREAD EXCEPTION name=%s:\n%s"
+                    % (
+                        name,
+                        "".join(
+                            traceback.format_exception(
+                                args.exc_type, args.exc_value, args.exc_traceback
+                            )
+                        ),
+                    )
+                )
+            except Exception as e:
+                try:
+                    log_func(f"Thread exception hook error: {e}")
+                except Exception:
+                    pass
+
+        try:
+            threading.excepthook = _thread_hook  # type: ignore[assignment]
+        except Exception:
+            pass
 
 # ===== CONFIG MANAGEMENT =====
 
