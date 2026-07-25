@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { motorBridge, type MotorStatus } from '../bridge'
+import { DetailModal, type DetailRow } from '../components/DetailModal'
 import { t } from '../i18n'
 import { asRecord, pick } from '../lib'
 
@@ -9,12 +10,16 @@ type Props = {
   onToast: (msg: string, kind?: 'ok' | 'err') => void
 }
 
+type LayerKey = 'ransomware' | 'canary' | 'network_guard'
+
 export function LayersPage({ status, onRefresh, onToast }: Props) {
   const defense = asRecord(status?.defense_policy)
   const ng = asRecord(status?.network_guard)
+  const rs = asRecord(status?.rs_quarantine)
   const current = pick(defense, 'defense_policy')
   const locked = Boolean(defense.defense_policy_locked)
   const [cfg, setCfg] = useState<Record<string, unknown>>({})
+  const [detail, setDetail] = useState<LayerKey | null>(null)
 
   const policies = [
     { id: 'observe', title: t('layers_policy_observe'), blurb: t('layers_policy_observe_blurb') },
@@ -58,7 +63,63 @@ export function LayersPage({ status, onRefresh, onToast }: Props) {
 
   const rsOn = Boolean(status?.ransomware_running)
   const ngOn = Boolean(ng.enabled ?? ng.running)
-  const canaries = Number(asRecord(status?.rs_quarantine).canary_files || 0) > 0
+  const canaries = Number(rs.canary_files || 0) > 0
+
+  const detailContent = (): { title: string; blurb: string; rows: DetailRow[]; onToggle?: () => void; toggleLabel?: string } => {
+    if (detail === 'ransomware') {
+      return {
+        title: t('layers_rs'),
+        blurb: t('layers_rs_detail_blurb'),
+        rows: [
+          { label: t('layers_rs'), value: rsOn ? t('label_on') : t('label_off'), tone: rsOn ? 'ok' : 'bad' },
+          { label: t('layers_detail_canary_files'), value: pick(rs, 'canary_files') },
+          { label: t('layers_detail_canary_alerts'), value: pick(rs, 'canary_alerts', 'alerts_canary') },
+          { label: t('layers_detail_fs_alerts'), value: pick(rs, 'fs_alerts', 'alerts_fs') },
+          { label: t('layers_detail_proc_alerts'), value: pick(rs, 'process_alerts', 'alerts_process') },
+          { label: t('layers_detail_vss_alerts'), value: pick(rs, 'vss_alerts', 'alerts_vss') },
+          { label: t('layers_detail_total_alerts'), value: pick(rs, 'alerts_total', 'entries') },
+          {
+            label: t('status_quarantine', { count: pick(rs, 'entries') }),
+            value: rs.active ? t('status_rs_active') : t('label_ok'),
+            tone: rs.active ? 'bad' : 'ok',
+          },
+        ],
+        onToggle: () => void toggleLayer('ransomware', !rsOn),
+        toggleLabel: rsOn ? t('layers_close') : t('layers_open'),
+      }
+    }
+    if (detail === 'canary') {
+      return {
+        title: t('layers_canary'),
+        blurb: t('layers_canary_detail_blurb'),
+        rows: [
+          { label: t('layers_canary'), value: canaries ? t('layers_has') : t('layers_none'), tone: canaries ? 'ok' : 'plain' },
+          { label: t('layers_detail_canary_files'), value: pick(rs, 'canary_files') },
+          { label: t('layers_detail_canary_alerts'), value: pick(rs, 'canary_alerts', 'alerts_canary') },
+        ],
+        onToggle: () => void toggleLayer('canaries', !canaries),
+        toggleLabel: t('layers_sync'),
+      }
+    }
+    return {
+      title: t('layers_ng'),
+      blurb: t('layers_ng_detail_blurb'),
+      rows: [
+        { label: t('layers_ng'), value: ngOn ? t('label_on') : t('label_off'), tone: ngOn ? 'ok' : 'bad' },
+        { label: t('status_ng_eyebrow'), value: ng.maintenance ? t('status_ng_maint') : ng.drift ? t('status_ng_drift') : t('status_ng_stable') },
+        { label: t('layers_detail_baseline'), value: pick(ng, 'baseline_version') },
+        {
+          label: t('layers_detail_internet'),
+          value: ng.internet_ok ? t('label_ok') : t('layers_none'),
+          tone: ng.internet_ok ? 'ok' : 'bad',
+        },
+      ],
+      onToggle: () => void toggleLayer('network_guard', !ngOn),
+      toggleLabel: ngOn ? t('layers_close') : t('layers_open'),
+    }
+  }
+
+  const modal = detail ? detailContent() : null
 
   return (
     <section className="page">
@@ -101,26 +162,35 @@ export function LayersPage({ status, onRefresh, onToast }: Props) {
       </div>
 
       <div className="cards three layer-toggles" style={{ marginTop: 28 }}>
-        <article className="layer-card">
+        <article className="layer-card clickable" onClick={() => setDetail('ransomware')}>
           <p>{t('layers_rs')}</p>
-          <strong>{rsOn ? t('label_on') : t('label_off')}</strong>
-          <button type="button" className="btn sm ghost" onClick={() => void toggleLayer('ransomware', !rsOn)}>
-            {rsOn ? t('layers_close') : t('layers_open')}
-          </button>
+          <strong className={rsOn ? 'good' : 'bad'}>{rsOn ? t('label_on') : t('label_off')}</strong>
+          <small>{t('layers_click_detail')}</small>
+          <div className="layer-actions" onClick={(e) => e.stopPropagation()}>
+            <button type="button" className="btn sm ghost" onClick={() => void toggleLayer('ransomware', !rsOn)}>
+              {rsOn ? t('layers_close') : t('layers_open')}
+            </button>
+          </div>
         </article>
-        <article className="layer-card">
+        <article className="layer-card clickable" onClick={() => setDetail('canary')}>
           <p>{t('layers_canary')}</p>
           <strong>{canaries ? t('layers_has') : t('layers_none')}</strong>
-          <button type="button" className="btn sm ghost" onClick={() => void toggleLayer('canaries', !canaries)}>
-            {t('layers_sync')}
-          </button>
+          <small>{t('layers_click_detail')}</small>
+          <div className="layer-actions" onClick={(e) => e.stopPropagation()}>
+            <button type="button" className="btn sm ghost" onClick={() => void toggleLayer('canaries', !canaries)}>
+              {t('layers_sync')}
+            </button>
+          </div>
         </article>
-        <article className="layer-card">
+        <article className="layer-card clickable" onClick={() => setDetail('network_guard')}>
           <p>{t('layers_ng')}</p>
-          <strong>{ngOn ? t('label_on') : t('label_off')}</strong>
-          <button type="button" className="btn sm ghost" onClick={() => void toggleLayer('network_guard', !ngOn)}>
-            {ngOn ? t('layers_close') : t('layers_open')}
-          </button>
+          <strong className={ngOn ? 'good' : 'bad'}>{ngOn ? t('label_on') : t('label_off')}</strong>
+          <small>{t('layers_click_detail')}</small>
+          <div className="layer-actions" onClick={(e) => e.stopPropagation()}>
+            <button type="button" className="btn sm ghost" onClick={() => void toggleLayer('network_guard', !ngOn)}>
+              {ngOn ? t('layers_close') : t('layers_open')}
+            </button>
+          </div>
         </article>
       </div>
 
@@ -128,6 +198,23 @@ export function LayersPage({ status, onRefresh, onToast }: Props) {
         <p className="muted" style={{ marginTop: 18 }}>
           {t('layers_cfg_loaded', { count: Object.keys(cfg).length })}
         </p>
+      )}
+
+      {modal && detail && (
+        <DetailModal
+          title={modal.title}
+          eyebrow={t('layers_eyebrow')}
+          blurb={modal.blurb}
+          rows={modal.rows}
+          actions={
+            modal.onToggle ? (
+              <button type="button" className="btn sm" onClick={modal.onToggle}>
+                {modal.toggleLabel}
+              </button>
+            ) : null
+          }
+          onClose={() => setDetail(null)}
+        />
       )}
     </section>
   )

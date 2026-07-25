@@ -9,7 +9,7 @@ Windows agent for [Asteria](https://asteria.run): honeypot tunnels, threat respo
 | **Releases** | https://github.com/cevdetaksac/asteria-client/releases |
 | **Latest installer** | [asteria-client-installer.exe](https://github.com/cevdetaksac/asteria-client/releases/latest/download/asteria-client-installer.exe) |
 | **Changelog** | [`docs/CHANGELOG.md`](docs/CHANGELOG.md) |
-| **API contract (SoT)** | https://asteria.run/static/shared-contract.zip (`VERSION` ≥ **1.4.31**) |
+| **API contract (SoT)** | https://asteria.run/static/shared-contract.zip (`VERSION` ≥ **1.4.36**) |
 | **Production floor** | Client ≥ **4.9.0** (see contract [`FLEET.md`](https://github.com/cevdetaksac/asteria-contract/blob/main/FLEET.md)) |
 
 ## Features

@@ -1,3 +1,17 @@
+# v4.9.44
+
+## Threat Center — shares + third-party services
+- Motor IPC: `SHARES_LIST` / `SHARE_REMOVE`, `SVC_LIST` / `SVC_STOP` (SYSTEM)
+- WebView Threat page panels with row actions (remove share / stop unknown service)
+- Default SMB shares protected; `PROTECTED_SERVICES` respected on stop
+
+## Contract 1.4.36 gap-scan
+- Verified against published `CLOUD_SURFACE.md` (signing `asteria-chp-v1` / heartbeat `asteria-heartbeat-v1`, anti-brick already ≥4.9.36)
+- Added missing remote command **`sync_firewall_rules`** (POST inventory sync)
+
+## GUI (carried from unreleased 4.9.43 UI polish)
+- `.ip-cols` 3-column grid; honeypot Aç/Kapat equal cards + RDP Taşıma Aracı; Status/Layers detail modals; Threat threats-first + accounts accordion
+
 # v4.9.43
 
 ## Remote commands (dashboard pending stuck)

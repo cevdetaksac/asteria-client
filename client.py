@@ -2129,6 +2129,44 @@ class CloudHoneypotClient:
                         _send(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
                     continue
 
+                if cmd_u == "SHARES_LIST":
+                    try:
+                        from client_threat_local import list_smb_shares
+                        _send(json.dumps(list_smb_shares(), ensure_ascii=False))
+                    except Exception as e:
+                        log(f"[CTRL] SHARES_LIST error: {e}")
+                        _send(json.dumps({"ok": False, "error": str(e), "shares": []}, ensure_ascii=False))
+                    continue
+
+                if cmd_u.startswith("SHARE_REMOVE "):
+                    try:
+                        from client_threat_local import remove_smb_share
+                        share = cmd.split(None, 1)[1].strip() if " " in cmd else ""
+                        _send(json.dumps(remove_smb_share(share), ensure_ascii=False))
+                    except Exception as e:
+                        log(f"[CTRL] SHARE_REMOVE error: {e}")
+                        _send(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
+                    continue
+
+                if cmd_u == "SVC_LIST":
+                    try:
+                        from client_threat_local import list_third_party_services
+                        _send(json.dumps(list_third_party_services(), ensure_ascii=False))
+                    except Exception as e:
+                        log(f"[CTRL] SVC_LIST error: {e}")
+                        _send(json.dumps({"ok": False, "error": str(e), "services": []}, ensure_ascii=False))
+                    continue
+
+                if cmd_u.startswith("SVC_STOP "):
+                    try:
+                        from client_threat_local import stop_windows_service
+                        svc = cmd.split(None, 1)[1].strip() if " " in cmd else ""
+                        _send(json.dumps(stop_windows_service(svc), ensure_ascii=False))
+                    except Exception as e:
+                        log(f"[CTRL] SVC_STOP error: {e}")
+                        _send(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
+                    continue
+
                 if cmd_u in ("RS_STATUS", "RS_QUARANTINE"):
                     try:
                         rs = getattr(self, "ransomware_shield", None)

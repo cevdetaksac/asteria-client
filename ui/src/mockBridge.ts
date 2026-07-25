@@ -224,6 +224,55 @@ export function installMockBridge(): void {
         blocked.clear()
         return { ok: true }
       }
+      if (name === 'SHARES_LIST') {
+        return {
+          ok: true,
+          custom_count: 1,
+          default_only: false,
+          shares: [
+            { name: 'ADMIN$', path: 'C:\\Windows', is_default: true, current_users: 0 },
+            { name: 'C$', path: 'C:\\', is_default: true, current_users: 0 },
+            { name: 'IPC$', path: '', is_default: true, current_users: 0 },
+            { name: 'paylas', path: 'D:\\share', is_default: false, current_users: 1 },
+          ],
+        }
+      }
+      if (name === 'SHARE_REMOVE') {
+        return { ok: true, name: String(args.name || '') }
+      }
+      if (name === 'SVC_LIST') {
+        return {
+          ok: true,
+          unknown_count: 2,
+          total_matched: 3,
+          services: [
+            {
+              name: 'EvlWatcher',
+              display: 'EvlWatcher service',
+              path: 'C:\\Program Files\\EvlWatcher\\EvlWatcher.exe',
+              known: false,
+              status: 'Running',
+            },
+            {
+              name: 'RadminVPN',
+              display: 'Radmin VPN Control Service',
+              path: 'C:\\Program Files\\Radmin VPN\\RvService.exe',
+              known: false,
+              status: 'Running',
+            },
+            {
+              name: 'MySQL80',
+              display: 'MySQL80',
+              path: 'C:\\Program Files\\MySQL\\MySQL Server 8.0\\bin\\mysqld.exe',
+              known: true,
+              status: 'Running',
+            },
+          ],
+        }
+      }
+      if (name === 'SVC_STOP') {
+        return { ok: true, name: String(args.name || ''), status: 'stop_pending' }
+      }
       if (name === 'HONEYPOT_LIST') {
         return { ok: true, services: Array.from(running).map((service) => ({ service })) }
       }

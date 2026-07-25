@@ -72,6 +72,7 @@ CREATE_NO_WINDOW = 0x08000000
 
 ALLOWED_COMMANDS: Set[str] = {
     "block_ip", "unblock_ip", "clear_firewall", "migrate_firewall_brand",
+    "sync_firewall_rules",
     "logoff_user", "disable_account", "enable_account", "reset_password",
     "contain_user",  # IR: logoff + password reset (+ optional disable) in one shot
     "disable_all_users",  # IR panic: disable every local SAM user (excl. machine IDs)
@@ -1506,6 +1507,45 @@ class RemoteCommandExecutor:
             "wipe_all": bool(wipe_all),
             "ips_requested": len(ips),
         }
+
+    def _cmd_sync_firewall_rules(self, params: dict) -> dict:
+        """Push local AR-BLOCK inventory to cloud (POST /api/agent/sync-rules).
+
+        Contract CLOUD_SURFACE §7 — non-destructive inventory sync.
+        """
+        token = self.token_getter()
+        if not token or not self.api_client:
+            return {"success": False, "error": "missing_token_or_api"}
+        try:
+            blocks: list = []
+            if self.auto_response and hasattr(self.auto_response, "list_blocks"):
+                try:
+                    blocks = list(self.auto_response.list_blocks() or [])
+                except Exception:
+                    blocks = []
+            if not blocks and self.auto_response and hasattr(self.auto_response, "_blocks"):
+                try:
+                    with self.auto_response._lock:
+                        blocks = [
+                            {"ip": ip, **(meta if isinstance(meta, dict) else {})}
+                            for ip, meta in dict(self.auto_response._blocks).items()
+                        ]
+                except Exception:
+                    blocks = []
+            # Prefer FirewallAgent inventory sync when available
+            base = str(getattr(self.api_client, "base_url", "") or "").rstrip("/")
+            if base.lower().endswith("/api"):
+                base = base[:-4]
+            if base and hasattr(self.api_client, "sync_firewall_rules"):
+                ok = bool(self.api_client.sync_firewall_rules(token, blocks))
+                return {
+                    "success": ok,
+                    "message": f"Synced {len(blocks)} block(s)" if ok else "sync-rules failed",
+                    "data": {"blocks": len(blocks)},
+                }
+            return {"success": False, "error": "sync_api_unavailable"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     def _cmd_migrate_firewall_brand(self, params: dict) -> dict:
         """Force the idempotent HP→AR migration and snapshot sync."""

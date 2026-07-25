@@ -94,6 +94,10 @@ from client_daemon_ipc import (
     ping,
     ransomware_status,
     ransomware_unlock,
+    share_remove,
+    shares_list,
+    svc_list,
+    svc_stop,
     threat_top,
     unblock_ip,
 )
@@ -132,6 +136,10 @@ _IPC_ALLOWLIST = frozenset(
         "HONEYPOT_LIST",
         "HONEYPOT_START",
         "HONEYPOT_STOP",
+        "SHARES_LIST",
+        "SHARE_REMOVE",
+        "SVC_LIST",
+        "SVC_STOP",
     }
 )
 
@@ -878,6 +886,14 @@ class MotorBridge:
             )
         if name == "HONEYPOT_STOP":
             return honeypot_stop(str(args.get("service") or ""))
+        if name == "SHARES_LIST":
+            return shares_list(timeout=12.0)
+        if name == "SHARE_REMOVE":
+            return share_remove(str(args.get("name") or args.get("share") or ""))
+        if name == "SVC_LIST":
+            return svc_list(timeout=25.0)
+        if name == "SVC_STOP":
+            return svc_stop(str(args.get("name") or args.get("service") or ""))
         return {"ok": False, "error": "ipc_unhandled", "cmd": name}
 
     def cloud(

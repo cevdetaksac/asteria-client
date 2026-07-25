@@ -174,53 +174,59 @@ export function ServicesPage({ onToast }: Props) {
           const active = running.includes(svc.service.toUpperCase())
           const isRdp = svc.service.toUpperCase() === 'RDP'
           const listenPort = isRdp ? Number(svc.port || 3389) : Number(svc.port)
-          const realPort = isRdp && rdp ? rdp.current_port : listenPort
           return (
-            <article key={`${svc.service}-${svc.port}`} className={`service-card ${active ? 'on' : ''}`}>
-              <div>
-                <p className="eyebrow">{active ? t('label_active') : t('label_off')}</p>
-                <h3>{svc.service}</h3>
-                <p className="mono muted">
-                  {isRdp
-                    ? t('services_rdp_ports', {
-                        honeypot: listenPort,
-                        real: realPort,
-                      })
-                    : `:${svc.port}`}
-                </p>
-                {isRdp && rdp && (
-                  <p className="muted rdp-status">
-                    {rdp.protected
-                      ? t('services_rdp_protected', { port: rdp.current_port })
-                      : t('services_rdp_standard', { port: rdp.current_port })}
-                    {rdp.pending ? ` · ${t('services_rdp_pending', { sec: secondsLeft })}` : ''}
-                  </p>
-                )}
-              </div>
+            <article key={`${svc.service}-${svc.port}`} className={`service-card ${active ? 'active' : ''}`}>
+              <h3 className="service-card-title">
+                {svc.service}
+                <span className="port"> : {listenPort}</span>
+              </h3>
               <div className="service-actions">
-                {isRdp && (
-                  <button
-                    type="button"
-                    className="btn ghost"
-                    disabled={rdpBusy}
-                    onClick={() => void openRdpModal()}
-                  >
-                    {t('services_rdp_secure_btn')}
-                  </button>
-                )}
                 <button
                   type="button"
                   className={`btn ${active ? 'danger' : ''}`}
                   disabled={busy === svc.service}
                   onClick={() => void toggle(svc, !active)}
                 >
-                  {active ? t('btn_stop') : t('btn_start')}
+                  {active ? t('layers_close') : t('layers_open')}
                 </button>
               </div>
             </article>
           )
         })}
       </div>
+
+      <article className="panel rdp-tool-card">
+        <div className="rdp-tool-head">
+          <div>
+            <p className="eyebrow">{t('services_rdp_tool_eyebrow')}</p>
+            <h3>{t('services_rdp_tool_title')}</h3>
+            <p className="muted">{t('services_rdp_tool_blurb')}</p>
+          </div>
+          {rdp && (
+            <span className={`pill ${rdp.protected ? 'ok' : 'off'}`}>
+              {rdp.protected
+                ? t('services_rdp_protected', { port: rdp.current_port })
+                : t('services_rdp_standard', { port: rdp.current_port })}
+            </span>
+          )}
+        </div>
+        <ol className="rdp-tool-steps">
+          <li>{t('services_rdp_step_1')}</li>
+          <li>{t('services_rdp_step_2')}</li>
+          <li>{t('services_rdp_step_3')}</li>
+        </ol>
+        {rdp?.pending && (
+          <p className="muted rdp-status">{t('services_rdp_pending', { sec: secondsLeft })}</p>
+        )}
+        <div className="btn-row">
+          <button type="button" className="btn" disabled={rdpBusy} onClick={() => void openRdpModal()}>
+            {t('services_rdp_secure_btn')}
+          </button>
+          <button type="button" className="btn ghost" disabled={rdpBusy} onClick={() => void refreshRdp()}>
+            {t('btn_refresh')}
+          </button>
+        </div>
+      </article>
 
       {rdpModal && rdp && (
         <RdpSecureMoveModal

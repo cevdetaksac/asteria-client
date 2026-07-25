@@ -11,6 +11,9 @@ Protocol (newline-terminated, UTF-8):
   RS_UNLOCK
   RS_STATUS
   THREAT_TOP
+  IP_TABLE
+  SHARES_LIST / SHARE_REMOVE <name>
+  SVC_LIST / SVC_STOP <name>
   NG_MAINT_START / NG_MAINT_END / NG_MAINT_END_SNAPSHOT / NG_SNAPSHOT
   NG_ACCEPT_SURFACE
   HONEYPOT START <SERVICE> <PORT>
@@ -213,6 +216,43 @@ def is_motor_healthy(timeout: float = 1.2) -> bool:
         return False
     except Exception:
         return False
+
+
+def shares_list(timeout: float = 12.0) -> Dict[str, Any]:
+    try:
+        return request_json("SHARES_LIST", timeout=timeout)
+    except Exception as e:
+        return {"ok": False, "error": str(e), "shares": [], "custom_count": 0}
+
+
+def share_remove(name: str, timeout: float = 15.0) -> Dict[str, Any]:
+    share = str(name or "").strip()
+    if not share:
+        return {"ok": False, "error": "missing_share"}
+    # Protocol line: no spaces in share names expected (SMB names)
+    safe = "".join(c if c.isalnum() or c in "._$-" else "_" for c in share)[:80]
+    try:
+        return request_json(f"SHARE_REMOVE {safe}", timeout=timeout)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def svc_list(timeout: float = 25.0) -> Dict[str, Any]:
+    try:
+        return request_json("SVC_LIST", timeout=timeout)
+    except Exception as e:
+        return {"ok": False, "error": str(e), "services": [], "unknown_count": 0}
+
+
+def svc_stop(name: str, timeout: float = 20.0) -> Dict[str, Any]:
+    svc = str(name or "").strip()
+    if not svc:
+        return {"ok": False, "error": "missing_service"}
+    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in svc)[:128]
+    try:
+        return request_json(f"SVC_STOP {safe}", timeout=timeout)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 def honeypot_start(service: str, port: int, timeout: float = 8.0) -> Dict[str, Any]:

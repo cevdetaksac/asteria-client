@@ -112,6 +112,7 @@ _hidden = [
     'client_helpers',
     'client_instance',
     'client_install_acl',
+    'client_threat_local',
     'client_update_hardening',
     'client_updater',
     'client_utils',

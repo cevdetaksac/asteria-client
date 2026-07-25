@@ -41,7 +41,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.43"  # UX + tunnel cmds + _internal Users RX ACL + GUI runtime_tmpdir
+VERSION = "4.9.44"  # Threat shares/services IPC + sync_firewall_rules; contract 1.4.36 gap-scan
 
 CLIENT_VERSION = VERSION  # Main version constant
 __version__ = VERSION  # Export for compatibility

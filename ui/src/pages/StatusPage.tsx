@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { motorBridge, type MotorStatus } from '../bridge'
+import { DetailModal } from '../components/DetailModal'
 import { IconBtn, icons } from '../components/IconBtn'
 import { t } from '../i18n'
 import { asRecord, boolLabel, formatBps, pick } from '../lib'
@@ -45,6 +46,7 @@ export function StatusPage({ status, online, updatedAt, onRefresh, onToast, onNa
   const [blocked, setBlocked] = useState<IpRow[]>([])
   const [whitelist, setWhitelist] = useState<IpRow[]>([])
   const [ipTotals, setIpTotals] = useState({ watching: 0, blocked: 0, whitelist: 0 })
+  const [detail, setDetail] = useState<'motor' | 'mode' | 'honeypot' | 'resources' | 'ransomware' | 'netguard' | null>(null)
 
   const loadExtras = async () => {
     const [h, table, cloud] = await Promise.all([
@@ -300,40 +302,40 @@ export function StatusPage({ status, online, updatedAt, onRefresh, onToast, onNa
       </div>
 
       <div className="chip-row">
-        <button type="button" className={`chip ${online ? 'on' : ''}`}>
+        <button type="button" className={`chip ${online ? 'on' : ''}`} onClick={() => setDetail('motor')}>
           {t('status_card_motor')} {online ? t('label_ok') : t('status_motor_down')}
         </button>
-        <button type="button" className={`chip ${status?.ransomware_running ? 'on' : ''}`} onClick={() => onNavigate('layers')}>
+        <button type="button" className={`chip ${status?.ransomware_running ? 'on' : ''}`} onClick={() => setDetail('ransomware')}>
           {t('layers_rs')} {boolLabel(status?.ransomware_running, t('label_on'), t('label_off'))}
         </button>
-        <button type="button" className={`chip ${ng.running ? 'on' : ''}`} onClick={() => onNavigate('layers')}>
+        <button type="button" className={`chip ${ng.running ? 'on' : ''}`} onClick={() => setDetail('netguard')}>
           NetGuard {boolLabel(ng.running, t('label_on'), t('label_off'))}
         </button>
-        <button type="button" className={`chip ${running.length ? 'on' : ''}`} onClick={() => onNavigate('services')}>
+        <button type="button" className={`chip ${running.length ? 'on' : ''}`} onClick={() => setDetail('honeypot')}>
           {t('status_chip_honeypot', { count: running.length })}
         </button>
-        <button type="button" className={`chip ${rs.active ? 'warn' : ''}`} onClick={() => void unlockRs()}>
+        <button type="button" className={`chip ${rs.active ? 'warn' : ''}`} onClick={() => setDetail('ransomware')}>
           {t('status_quarantine', { count: pick(rs, 'entries') })}
         </button>
       </div>
 
       <div className="cards">
-        <article>
+        <article className="clickable" onClick={() => setDetail('motor')}>
           <p>{t('status_card_motor')}</p>
           <strong>{online ? t('label_active') : t('status_motor_down')}</strong>
           <small>IPC 127.0.0.1:58632 · {pick(status, 'version')}</small>
         </article>
-        <article>
+        <article className="clickable" onClick={() => setDetail('mode')}>
           <p>{t('status_card_mode')}</p>
           <strong>{pick(status, 'protection_mode')}</strong>
           <small>{t('status_policy', { policy: pick(defense, 'defense_policy') })}</small>
         </article>
-        <article className="clickable" onClick={() => onNavigate('services')}>
+        <article className="clickable" onClick={() => setDetail('honeypot')}>
           <p>{t('status_card_honeypot')}</p>
           <strong>{running.length}</strong>
           <small>{running.length ? running.join(', ') : t('status_no_services')}</small>
         </article>
-        <article className="clickable" onClick={() => onNavigate('threat')}>
+        <article className="clickable" onClick={() => setDetail('resources')}>
           <p>{t('status_card_resources')}</p>
           <strong>{hostCpu}%</strong>
           <small>
@@ -353,7 +355,7 @@ export function StatusPage({ status, online, updatedAt, onRefresh, onToast, onNa
       </div>
 
       <div className="split" style={{ marginTop: 18 }}>
-        <article className="panel">
+        <article className="panel clickable" onClick={() => setDetail('netguard')}>
           <p className="eyebrow">{t('status_ng_eyebrow')}</p>
           <h3>{ng.maintenance ? t('status_ng_maint') : ng.drift ? t('status_ng_drift') : t('status_ng_stable')}</h3>
           <p className="muted">
@@ -362,19 +364,19 @@ export function StatusPage({ status, online, updatedAt, onRefresh, onToast, onNa
               inet: boolLabel(ng.internet_ok, t('label_ok'), t('layers_none')),
             })}
           </p>
-          <div className="btn-row">
+          <div className="btn-row" onClick={(e) => e.stopPropagation()}>
             <button type="button" className="btn ghost" onClick={() => void ngMaint(true)}>{t('status_ng_start')}</button>
             <button type="button" className="btn ghost" onClick={() => void ngMaint(false)}>{t('status_ng_end')}</button>
             <button type="button" className="btn" onClick={() => void ngAccept()}>{t('status_ng_accept')}</button>
           </div>
         </article>
-        <article className="panel">
+        <article className="panel clickable" onClick={() => setDetail('ransomware')}>
           <p className="eyebrow">{t('status_rs_eyebrow')}</p>
           <h3>{rs.active ? t('status_rs_active') : t('status_rs_watch')}</h3>
           <p className="muted">
             {t('status_rs_meta', { canary: pick(rs, 'canary_files'), alerts: pick(rs, 'alerts_total') })}
           </p>
-          <div className="btn-row">
+          <div className="btn-row" onClick={(e) => e.stopPropagation()}>
             <button
               type="button"
               className="btn danger"
@@ -412,6 +414,143 @@ export function StatusPage({ status, online, updatedAt, onRefresh, onToast, onNa
           </div>
         </article>
       </div>
+
+      {detail === 'motor' && (
+        <DetailModal
+          title={t('status_card_motor')}
+          eyebrow={t('status_eyebrow')}
+          blurb={online ? t('status_detail_motor_ok') : t('status_detail_motor_down')}
+          rows={[
+            { label: t('status_card_motor'), value: online ? t('label_active') : t('status_motor_down'), tone: online ? 'ok' : 'bad' },
+            { label: t('about_version'), value: pick(status, 'version') },
+            { label: 'IPC', value: '127.0.0.1:58632' },
+          ]}
+          onClose={() => setDetail(null)}
+        />
+      )}
+      {detail === 'mode' && (
+        <DetailModal
+          title={t('status_card_mode')}
+          eyebrow={t('status_eyebrow')}
+          blurb={t('status_detail_mode_blurb')}
+          rows={[
+            { label: t('status_card_mode'), value: pick(status, 'protection_mode') },
+            { label: t('layers_title'), value: pick(defense, 'defense_policy') },
+            { label: t('layers_version', { version: pick(defense, 'defense_policy_version') }), value: pick(defense, 'defense_policy_version') },
+          ]}
+          actions={
+            <button type="button" className="btn sm ghost" onClick={() => { setDetail(null); onNavigate('layers') }}>
+              {t('nav_layers')}
+            </button>
+          }
+          onClose={() => setDetail(null)}
+        />
+      )}
+      {detail === 'honeypot' && (
+        <DetailModal
+          title={t('status_card_honeypot')}
+          eyebrow={t('services_eyebrow')}
+          blurb={running.length ? running.join(', ') : t('status_no_services')}
+          rows={[
+            { label: t('status_card_honeypot'), value: String(running.length), tone: running.length ? 'ok' : 'plain' },
+          ]}
+          actions={
+            <button type="button" className="btn sm" onClick={() => { setDetail(null); onNavigate('services') }}>
+              {t('nav_services')}
+            </button>
+          }
+          onClose={() => setDetail(null)}
+        />
+      )}
+      {detail === 'resources' && (
+        <DetailModal
+          title={t('status_card_resources')}
+          eyebrow={t('status_eyebrow')}
+          blurb={t('status_detail_resources_blurb')}
+          rows={[
+            { label: 'CPU', value: `${hostCpu}%` },
+            { label: 'RAM', value: `${hostRam}%` },
+            { label: t('status_proc_res', { cpu: procCpu, ram: procRam }), value: `${procCpu}% / ${procRam} MB` },
+            { label: 'Network', value: `↓${netDown} ↑${netUp}` },
+            { label: t('btn_refresh'), value: updatedAt || '—' },
+          ]}
+          actions={
+            <button type="button" className="btn sm ghost" onClick={() => { setDetail(null); onNavigate('threat') }}>
+              {t('nav_threat')}
+            </button>
+          }
+          onClose={() => setDetail(null)}
+        />
+      )}
+      {detail === 'ransomware' && (
+        <DetailModal
+          title={t('layers_rs')}
+          eyebrow={t('status_rs_eyebrow')}
+          blurb={rs.active ? t('status_rs_active') : t('status_rs_watch')}
+          rows={[
+            {
+              label: t('layers_rs'),
+              value: status?.ransomware_running ? t('label_on') : t('label_off'),
+              tone: status?.ransomware_running ? 'ok' : 'bad',
+            },
+            { label: t('layers_detail_canary_files'), value: pick(rs, 'canary_files') },
+            { label: t('layers_detail_total_alerts'), value: pick(rs, 'alerts_total') },
+            {
+              label: t('status_quarantine', { count: pick(rs, 'entries') }),
+              value: rs.active ? t('status_rs_active') : t('label_ok'),
+              tone: rs.active ? 'bad' : 'ok',
+            },
+          ]}
+          actions={
+            <>
+              <button
+                type="button"
+                className="btn sm danger"
+                disabled={!rs.active && Number(rs.entries || 0) === 0}
+                onClick={() => void unlockRs()}
+              >
+                {t('status_rs_unlock')}
+              </button>
+              <button type="button" className="btn sm ghost" onClick={() => { setDetail(null); onNavigate('layers') }}>
+                {t('nav_layers')}
+              </button>
+            </>
+          }
+          onClose={() => setDetail(null)}
+        />
+      )}
+      {detail === 'netguard' && (
+        <DetailModal
+          title={t('layers_ng')}
+          eyebrow={t('status_ng_eyebrow')}
+          blurb={t('layers_ng_detail_blurb')}
+          rows={[
+            {
+              label: t('layers_ng'),
+              value: ng.running || ng.enabled ? t('label_on') : t('label_off'),
+              tone: ng.running || ng.enabled ? 'ok' : 'bad',
+            },
+            {
+              label: t('status_ng_eyebrow'),
+              value: ng.maintenance ? t('status_ng_maint') : ng.drift ? t('status_ng_drift') : t('status_ng_stable'),
+            },
+            { label: t('layers_detail_baseline'), value: pick(ng, 'baseline_version') },
+            {
+              label: t('layers_detail_internet'),
+              value: ng.internet_ok ? t('label_ok') : t('layers_none'),
+              tone: ng.internet_ok ? 'ok' : 'bad',
+            },
+          ]}
+          actions={
+            <>
+              <button type="button" className="btn sm ghost" onClick={() => void ngMaint(true)}>{t('status_ng_start')}</button>
+              <button type="button" className="btn sm ghost" onClick={() => void ngMaint(false)}>{t('status_ng_end')}</button>
+              <button type="button" className="btn sm" onClick={() => void ngAccept()}>{t('status_ng_accept')}</button>
+            </>
+          }
+          onClose={() => setDetail(null)}
+        />
+      )}
     </section>
   )
 }
