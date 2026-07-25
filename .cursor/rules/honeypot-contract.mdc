@@ -1,18 +1,19 @@
 ---
-description: YesNext shared honeypot-contract — read VERSION/INDEX before API or agent work
+description: Asteria shared contract — read VERSION/INDEX before API or agent work
 alwaysApply: true
 ---
 
 # Shared contract (zorunlu)
 
-Sen YesNext Honeypot **Windows client** tarafını geliştiriyorsun.
+Sen **Asteria** Windows client tarafını geliştiriyorsun.
 
 ## CONTRACT_ROOT
 
 ```text
-CONTRACT_ROOT = ../honeypot-contract
-# absolute: c:\honeypot-cloud\honeypot-contract
-# veya sibling clone: <workspace>/honeypot-contract
+CONTRACT_ROOT = ../asteria-contract
+# absolute: c:\asteria-client-workspace\asteria-contract
+# veya sibling clone: <workspace>/asteria-contract
+# legacy folder/repo names (honeypot-contract) may still appear in older notes
 ```
 
 Yoksa: kullanıcıya clone/submodule etmesini söyle; uydurma API yazma.
@@ -27,18 +28,16 @@ Yoksa: kullanıcıya clone/submodule etmesini söyle; uydurma API yazma.
 
 ## SoT
 
-- Fleet matrix: `FLEET.md` · Production floor: client ≥ **4.5.68** · Contract `VERSION` **1.1.6+**
-- `agent/CLIENT.md`, `register-protection.md`, `ransomware-shield.md`, `remote-input.md`
+- Fleet matrix: `FLEET.md` · Production floor: client ≥ **4.9.0** · Contract `VERSION` **1.4.31+**
+- Brand: **Asteria** · Primary API: `https://asteria.run` (legacy: `honeypot.yesnext.com.tr`)
+- `agent/CLIENT.md`, `rebrand-asteria.md`, `firewall-brand-migrate.md`, `register-protection.md`
 - `api/08-architecture.md`, `api/09-threat-intel.md`, `api/03-control-websocket.md`
-- Client `docs/api/*` stub’dır — düzenleme sadece `honeypot-contract` içinde
+- Client `docs/api/*` stub’dır — düzenleme sadece `asteria-contract` içinde
 
 ## Kurallar
 
-- Base API: `https://honeypot.yesnext.com.tr` — Bearer token; agent API’de `?token=` yok
+- Base API: `https://asteria.run` — Bearer token; agent API’de `?token=` yok
 - Client harici threat feed çekmez; sadece cloud threat-intel bundle
 - Min client notları ilgili MD’de
 - Acceptance checklist’leri ilgili contract dosyasının sonunda
-
-## Çıktı (her anlamlı değişiklikten sonra)
-
-Kısa özet: hangi contract dosyasına uyuldu, VERSION, ne implement edildi, kalan gap.
+- Wire kimlikleri (ProgramData, schtasks, `yesnext-chp-v1`) için `cloud/PRODUCT_BRANDING.md`

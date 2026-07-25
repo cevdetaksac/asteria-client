@@ -2,12 +2,12 @@
 
 ## Shared contract
 
-API / agent behavior SoT: [honeypot-contract](https://github.com/cevdetaksac/honeypot-contract) (`VERSION` ≥ **1.4.29**, [`FLEET.md`](https://github.com/cevdetaksac/honeypot-contract/blob/main/FLEET.md)).
+API / agent behavior SoT: [asteria-contract](https://github.com/cevdetaksac/asteria-contract) (`VERSION` ≥ **1.4.31**, [`FLEET.md`](https://github.com/cevdetaksac/asteria-contract/blob/main/FLEET.md)).
 
 ## Build & Release
 
 ```powershell
-cd cloud-client
+cd asteria-client
 .\build.ps1 -Clean -WebRTC   # production profile (~69 MB)
 # or: .\build.ps1 -Clean     # JPEG/WS only
 ```
@@ -18,7 +18,7 @@ Artifact: `cloud-client-installer.exe` (repo root, not `dist\`).
 gh release create vX.Y.Z cloud-client-installer.exe --title "vX.Y.Z" --notes-file release_notes_vX.Y.Z.md
 ```
 
-Repo: `cevdetaksac/yesnext-cloud-honeypot-client`.
+Repo: `cevdetaksac/asteria-client` (legacy slug `yesnext-cloud-honeypot-client` redirects).
 
 ## Windows Defender / AV
 

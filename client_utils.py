@@ -2713,7 +2713,7 @@ class UpdateProgressDialog:
 
 
 def create_update_manager(github_owner: str = "cevdetaksac", 
-                         github_repo: str = "yesnext-cloud-honeypot-client",
+                         github_repo: str = "asteria-client",
                          log_func=None) -> InstallerUpdateManager:
     """Update manager factory fonksiyonu"""
     return InstallerUpdateManager(github_owner, github_repo, log_func)

@@ -55,9 +55,10 @@ INSTALL_VENDOR_DIR = "Asteria"
 LEGACY_INSTALL_VENDOR_DIR = "YesNext"
 LEGACY_INSTALL_DIR_NAME = "Cloud Honeypot Client"
 
-# GitHub repository information (historical repo id — display brand is Asteria)
+# GitHub repository information (Asteria; legacy slug still redirects)
 GITHUB_OWNER = "cevdetaksac"
-GITHUB_REPO = "yesnext-cloud-honeypot-client"
+GITHUB_REPO = "asteria-client"
+GITHUB_REPO_LEGACY = "yesnext-cloud-honeypot-client"
 
 # ===================== NETWORK CONFIGURATION ===================== #
 
@@ -541,7 +542,7 @@ def resolve_client_exe_path(preferred: str = "") -> str:
 __all__ = [
     # Application metadata
     '__version__', 'APP_NAME', 'BRAND_NAME', 'VENDOR_NAME',
-    'GITHUB_OWNER', 'GITHUB_REPO',
+    'GITHUB_OWNER', 'GITHUB_REPO', 'GITHUB_REPO_LEGACY',
     'CLIENT_EXE_NAME', 'CLIENT_EXE_ALIASES',
     
     # Network configuration  

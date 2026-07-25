@@ -1039,8 +1039,13 @@ def _is_allowed_update_url(url: str) -> bool:
         path = (p.path or "").lower()
         # github.com/.../releases/download/... or CDN object URLs
         if "github.com" in host:
-            needle = f"/{GITHUB_OWNER.lower()}/{GITHUB_REPO.lower()}/"
-            if needle not in path:
+            from client_constants import GITHUB_REPO_LEGACY
+            owner = GITHUB_OWNER.lower()
+            allowed = (
+                f"/{owner}/{GITHUB_REPO.lower()}/",
+                f"/{owner}/{str(GITHUB_REPO_LEGACY or '').lower()}/",
+            )
+            if not any(n and n in path for n in allowed):
                 return False
         return True
     except Exception:

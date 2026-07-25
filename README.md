@@ -6,11 +6,11 @@ Windows agent for [Asteria](https://asteria.run): honeypot tunnels, threat respo
 
 | | |
 |--|--|
-| **Releases** | https://github.com/cevdetaksac/yesnext-cloud-honeypot-client/releases |
-| **Latest installer** | [cloud-client-installer.exe](https://github.com/cevdetaksac/yesnext-cloud-honeypot-client/releases/latest/download/cloud-client-installer.exe) |
+| **Releases** | https://github.com/cevdetaksac/asteria-client/releases |
+| **Latest installer** | [cloud-client-installer.exe](https://github.com/cevdetaksac/asteria-client/releases/latest/download/cloud-client-installer.exe) |
 | **Changelog** | [`docs/CHANGELOG.md`](docs/CHANGELOG.md) |
 | **API contract (SoT)** | https://asteria.run/static/shared-contract.zip (`VERSION` ≥ **1.4.31**) |
-| **Production floor** | Client ≥ **4.9.0** (see contract [`FLEET.md`](https://github.com/cevdetaksac/honeypot-contract/blob/main/FLEET.md)) |
+| **Production floor** | Client ≥ **4.9.0** (see contract [`FLEET.md`](https://github.com/cevdetaksac/asteria-contract/blob/main/FLEET.md)) |
 
 ## Features
 
@@ -24,7 +24,7 @@ Windows agent for [Asteria](https://asteria.run): honeypot tunnels, threat respo
 
 ## Install (Windows)
 
-1. Download `cloud-client-installer.exe` from the [latest release](https://github.com/cevdetaksac/yesnext-cloud-honeypot-client/releases/latest).
+1. Download `cloud-client-installer.exe` from the [latest release](https://github.com/cevdetaksac/asteria-client/releases/latest).
 2. Run as Administrator (`/S` for silent).
 3. Agent registers with the cloud API and stores the token under ProgramData.
 
@@ -63,10 +63,10 @@ gh release create vX.Y.Z cloud-client-installer.exe --title "vX.Y.Z" --notes-fil
 | [`docs/CHANGELOG.md`](docs/CHANGELOG.md) | Client release history |
 | [`docs/OPERATIONS.md`](docs/OPERATIONS.md) | Build / ops notes |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | Security reporting |
-| [`contract/README.md`](contract/README.md) | Pointer to honeypot-contract |
+| [`contract/README.md`](contract/README.md) | Pointer to asteria-contract |
 | [`AGENTS.md`](AGENTS.md) | Cursor / agent reading order |
 
-Local `docs/api/*` files are **stubs** — edit behavior only in [honeypot-contract](https://github.com/cevdetaksac/honeypot-contract).
+Local `docs/api/*` files are **stubs** — edit behavior only in [asteria-contract](https://github.com/cevdetaksac/asteria-contract).
 
 ## Security
 

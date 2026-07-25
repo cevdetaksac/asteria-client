@@ -3,12 +3,14 @@
 **CONTRACT_ROOT** (this workspace):
 
 ```text
-../honeypot-contract
+../asteria-contract
 ```
 
-Remote: https://github.com/cevdetaksac/honeypot-contract · **VERSION ≥ 1.4.25** · production floor client ≥ **4.9.0** ([`FLEET.md`](https://github.com/cevdetaksac/honeypot-contract/blob/main/FLEET.md))
+Remote: https://github.com/cevdetaksac/asteria-contract · **VERSION ≥ 1.4.31** · production floor client ≥ **4.9.0** ([`FLEET.md`](https://github.com/cevdetaksac/asteria-contract/blob/main/FLEET.md))
 
-Local `docs/api/*` are stubs — source of truth is **only** honeypot-contract.
+Legacy clone URL redirects: `honeypot-contract` → `asteria-contract`.
+
+Local `docs/api/*` are stubs — source of truth is **only** asteria-contract.
 
 ## Agent / Cursor — read order
 
