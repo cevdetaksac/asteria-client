@@ -41,7 +41,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.41"  # ProgramData\\Asteria brand path + YesNext migrate; dashboard deep-links 1.4.35
+VERSION = "4.9.42"  # IP action icon buttons + tooltips; slightly smaller GUI fonts
 
 CLIENT_VERSION = VERSION  # Main version constant
 __version__ = VERSION  # Export for compatibility

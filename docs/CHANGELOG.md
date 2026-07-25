@@ -1,3 +1,7 @@
+# v4.9.42
+- **Status / IP list actions:** cramped text buttons replaced with Font Awesome icon buttons (block / unblock / whitelist / remove) plus hover tooltip (`title` + CSS).
+- **Typography:** slightly smaller base UI fonts (nav, page titles, cards, panels, buttons) for a less dense Control Center.
+
 # v4.9.41
 - **ProgramData brand path:** durable state moves to `%ProgramData%\Asteria\` (flat). First run / installer copies YesNext `CloudHoneypotClient` + `CloudHoneypot` (+ AppData legacy) without overwriting newer Asteria files.
 - **Installer artifact renamed:** `asteria-client-installer.exe` is now the primary release asset. Releases also publish an identical `cloud-client-installer.exe` alias because agents ≤4.9.40 hardcode that name as their fallback download URL; self-update tries the Asteria name first, then the legacy one. Staging/cleanup recognizes both prefixes.
