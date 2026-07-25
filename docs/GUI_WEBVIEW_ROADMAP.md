@@ -4,7 +4,8 @@
 > Başlangıç: client **4.9.32**, contract `agent/gui-control-center.md`  
 > Hedef: CustomTkinter shell → **ayrı `asteria-gui.exe`** (WebView2 host + React/Vite UI);
 > dashboard ile görsel/UX uyumu; isteğe bağlı **WebGL** ile canlı görselleştirme  
-> Durum: planlama (uygulama başlamadı)  
+> Durum: Control Center lab — 6 sayfa (status/threat/iplist/services/layers/settings)
+> + allowlist bridge (`ipc` / `cloud` / `shell` / `pin`); CTk parity devam ediyor.  
 > **Üst plan (motor + GUI birlikte):** [`ASTERIA_DUAL_TRACK_ROADMAP.md`](ASTERIA_DUAL_TRACK_ROADMAP.md)
 
 Bu belge **GUI detay / parity** yol haritasıdır. Motor hardening, tek-exe ve

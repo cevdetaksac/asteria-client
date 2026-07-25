@@ -203,9 +203,14 @@ def command_signing_enabled() -> bool:
         return True
 
 
-def _signing_secret(token: str) -> bytes:
+# Contract 1.4.32+ / client ≥4.9.35 — emit Asteria context; verify accepts legacy.
+_COMMAND_SIGNING_CONTEXT = "asteria-chp-v1"
+_COMMAND_SIGNING_LEGACY = "yesnext-chp-v1"
+
+
+def _signing_secret(token: str, context: str = _COMMAND_SIGNING_CONTEXT) -> bytes:
     machine = os.environ.get("COMPUTERNAME", "unknown")
-    material = f"{token}|{machine}|yesnext-chp-v1"
+    material = f"{token}|{machine}|{context}"
     return hashlib.sha256(material.encode("utf-8")).digest()
 
 
@@ -252,9 +257,13 @@ def inspect_command_signature(
     # used here — cloud must mirror the same alias rule for matching digests.
     cmd_type = str(command.get("type", command.get("command", "")))
     issued_at = str(command.get("issued_at", command.get("created_at", "")))
-    expected = sign_command(token, command_id, cmd_type, issued_at)
-    if hmac.compare_digest(str(sig), expected):
-        return "ok"
+    msg = f"{command_id}|{cmd_type}|{issued_at}".encode("utf-8")
+    for context in (_COMMAND_SIGNING_CONTEXT, _COMMAND_SIGNING_LEGACY):
+        expected = hmac.new(
+            _signing_secret(token, context), msg, hashlib.sha256
+        ).hexdigest()
+        if hmac.compare_digest(str(sig), expected):
+            return "ok"
     return "invalid"
 
 

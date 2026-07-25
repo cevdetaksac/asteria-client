@@ -34,9 +34,9 @@ def _read_token() -> str:
         return ""
 
 
-def _signing_secret(token: str) -> bytes:
+def _signing_secret(token: str, context: str = "asteria-chp-v1") -> bytes:
     machine = os.environ.get("COMPUTERNAME", "unknown")
-    material = f"{token}|{machine}|yesnext-chp-v1"
+    material = f"{token}|{machine}|{context}"
     return hashlib.sha256(material.encode("utf-8")).digest()
 
 
@@ -58,8 +58,14 @@ def verify_operator_stop(payload: dict) -> bool:
     sig = str(payload.get("sig") or "")
     if not issued_at or not sig:
         return False
-    expected = sign_operator_stop(token, issued_at, host)
-    return hmac.compare_digest(sig, expected)
+    msg = f"operator_pin|{issued_at}|{host}".encode("utf-8")
+    for context in ("asteria-chp-v1", "yesnext-chp-v1"):
+        expected = hmac.new(
+            _signing_secret(token, context), msg, hashlib.sha256
+        ).hexdigest()
+        if hmac.compare_digest(sig, expected):
+            return True
+    return False
 
 
 def arm_operator_stop() -> bool:

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Asteria Client — main application orchestrator.
 
@@ -57,14 +57,17 @@ from tkinter import messagebox
 from typing import Optional, Dict, Any, Union
 import webbrowser, logging
 
-import customtkinter as ctk
+if os.environ.get("ASTERIA_MOTOR_ONLY") == "1":
+    ctk = None
+else:
+    import customtkinter as ctk
 
 # Local module imports  
 from client_firewall import FirewallAgent
 from client_helpers import log, ClientHelpers, run_cmd, is_session_zero, launch_interactive_tray_gui
 import client_helpers
 from client_service_manager import ServiceManager
-from client_api import HoneypotAPIClient, api_request_with_token
+from client_api import AsteriaAPIClient, api_request_with_token
 from client_helpers import is_port_in_use
 from client_tokens import create_token_manager, get_token_file_paths
 from client_task_scheduler import perform_comprehensive_task_management
@@ -96,8 +99,12 @@ from client_instance import check_singleton
 from client_logging import LoggingManager, setup_logging
 from client_security import SecurityManager
 from client_updater import UpdateManager
-from client_tray import TrayManager
-from client_gui import ModernGUI
+if os.environ.get("ASTERIA_MOTOR_ONLY") == "1":
+    TrayManager = None
+    ModernGUI = None
+else:
+    from client_tray import TrayManager
+    from client_gui import ModernGUI
 
 # Import threat detection modules (v4.0)
 from client_eventlog import EventLogWatcher
@@ -221,7 +228,7 @@ class CloudHoneypotClient:
             self.lang = "en"
 
         # Initialize core components
-        self.api_client = HoneypotAPIClient(str(API_URL), log)
+        self.api_client = AsteriaAPIClient(str(API_URL), log)
         
         # Initialize token manager
         token_file_new, token_file_old = get_token_file_paths(APP_DIR)
@@ -341,6 +348,7 @@ class CloudHoneypotClient:
                     api_client=self.api_client,
                     token_getter=lambda: self.state.get("token", ""),
                 )
+                self.auto_response.alert_pipeline = self.alert_pipeline
                 self.remote_commands = RemoteCommandExecutor(
                     api_client=self.api_client,
                     token_getter=lambda: self.state.get("token", ""),
@@ -372,6 +380,7 @@ class CloudHoneypotClient:
                 # Wire auto_response into alert pipeline for auto-blocking
                 if self.alert_pipeline:
                     self.alert_pipeline.auto_response = self.auto_response
+                    self.auto_response.alert_pipeline = self.alert_pipeline
                 # Wire silent hours + logon challenge into threat engine
                 if self.threat_engine:
                     self.threat_engine.silent_hours_guard = self.silent_hours_guard
@@ -2965,7 +2974,12 @@ class CloudHoneypotClient:
                     api_client=self.api_client,
                     token_getter=lambda: self.state.get("token", ""),
                 )
+                self.auto_response.alert_pipeline = self.alert_pipeline
                 log("[MOTOR] AutoResponse constructed (daemon ensure)")
+            elif self.alert_pipeline and not getattr(
+                self.auto_response, "alert_pipeline", None
+            ):
+                self.auto_response.alert_pipeline = self.alert_pipeline
             if self.remote_commands is None:
                 self.remote_commands = RemoteCommandExecutor(
                     api_client=self.api_client,
@@ -3816,6 +3830,19 @@ if __name__ == "__main__":
     
     if operation_mode == GUI_MODE or want_frontend:
         # ===== GUI MODE - Normal GUI application with tray functionality =====
+        if os.environ.get("ASTERIA_MOTOR_ONLY") == "1":
+            gui_exe = os.path.join(os.path.dirname(sys.executable), "asteria-gui.exe")
+            if os.path.isfile(gui_exe):
+                gui_args = ["--tray"] if want_tray and not want_show_gui else []
+                subprocess.Popen(
+                    [gui_exe, *gui_args],
+                    close_fds=True,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+                log(f"[GUI] Motor-only handoff -> {gui_exe} {' '.join(gui_args)}")
+                sys.exit(0)
+            log("[GUI] Motor-only build has no asteria-gui.exe sibling")
+            sys.exit(3)
 
         # Session 0 (SYSTEM) cannot show a visible desktop window
         if is_session_zero():

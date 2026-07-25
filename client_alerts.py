@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 Asteria Client — Alert Pipeline (v4.0)
@@ -140,7 +140,7 @@ class AlertPipeline:
     ):
         """
         Args:
-            api_client:       HoneypotAPIClient instance for API calls.
+            api_client:       AsteriaAPIClient instance for API calls.
             token_getter:     Callable returning current auth token.
             gui_toast_func:   Callable(title, message, severity) for GUI toast.
             tray_notify_func: Callable(title, message) for tray balloon.
@@ -375,12 +375,42 @@ class AlertPipeline:
                         log(f"[ALERTS] 🚫 Auto-blocked IP: {source_ip} — {reason}")
 
                 elif action == "logoff_user" and username:
-                    self.auto_response.logoff_user(username)
-                    log(f"[ALERTS] 🚪 Auto-logoff: {username}")
+                    # C-BRICK-1: auto logoff requires fresh account_linked
+                    ok = self.auto_response.logoff_user(username, auto=True)
+                    if ok:
+                        log(f"[ALERTS] 🚪 Auto-logoff: {username}")
+                    else:
+                        log(
+                            f"[ALERTS] Auto-logoff skipped for {username} "
+                            f"(linked gate / no session)"
+                        )
 
                 elif action == "disable_account" and username:
-                    self.auto_response.disable_account(username)
-                    log(f"[ALERTS] 🔒 Auto-disabled: {username}")
+                    # Auto alert pipeline must not disable accounts (stuck servers).
+                    # Use dashboard IR with confirm:true instead.
+                    # Also emit C-BRICK-1 skip if somehow called while unlinked.
+                    log(
+                        f"[ALERT] Skipping auto disable_account for {username} "
+                        f"(requires operator-confirmed IR)"
+                    )
+                    try:
+                        from client_brick_guard import (
+                            account_linked_for_auto,
+                            emit_skipped_unlinked,
+                        )
+                        tok = ""
+                        try:
+                            tok = (self.token_getter() or "") if self.token_getter else ""
+                        except Exception:
+                            tok = ""
+                        if not account_linked_for_auto(
+                            token=tok, api_client=self.api_client
+                        ):
+                            emit_skipped_unlinked(
+                                self, action="disable_account", username=username
+                            )
+                    except Exception:
+                        pass
 
                 elif action == "notify_urgent":
                     pass  # Handled in severity routing below

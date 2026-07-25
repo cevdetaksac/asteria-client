@@ -180,10 +180,31 @@ class LogonChallengeGuard:
         actions = []
         if self.auto_logoff and self.auto_response and username:
             try:
-                self.auto_response.logoff_user(username)
-                actions.append("logoff_user")
-                with self._lock:
-                    self._stats["logoffs"] += 1
+                # C-BRICK-1: auto logoff requires fresh account_linked
+                from client_brick_guard import account_linked_for_auto
+
+                tok = ""
+                try:
+                    tok = (self.token_getter() or "") if self.token_getter else ""
+                except Exception:
+                    tok = ""
+                if not account_linked_for_auto(
+                    token=tok, api_client=self.api_client
+                ):
+                    actions.append("skipped_unlinked")
+                    try:
+                        from client_brick_guard import emit_skipped_unlinked
+                        emit_skipped_unlinked(
+                            self.alert_pipeline,
+                            action="logoff_user",
+                            username=username,
+                        )
+                    except Exception:
+                        pass
+                elif self.auto_response.logoff_user(username, auto=True):
+                    actions.append("logoff_user")
+                    with self._lock:
+                        self._stats["logoffs"] += 1
             except Exception as e:
                 log(f"[LOGON-CHALLENGE] logoff error: {e}")
 

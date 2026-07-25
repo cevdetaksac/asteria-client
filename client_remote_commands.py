@@ -870,9 +870,17 @@ class RemoteCommandExecutor:
         cmd_id = cmd.get("command_id", "")
         cmd_type = cmd.get("command_type", "")
         executed_at = datetime.now(timezone.utc).isoformat()
-        status = result.get("status")
-        if not status:
-            status = "completed" if (result.get("success") or result.get("ok")) else "failed"
+        # Lifecycle only — never forward SAM active/disabled as command status
+        try:
+            from client_brick_guard import lifecycle_status_from_result
+
+            status = lifecycle_status_from_result(result)
+        except Exception:
+            status = (
+                "completed"
+                if (result.get("success") or result.get("ok"))
+                else "failed"
+            )
         # Prefer prompt-shaped payload fields inside result
         payload = {
             "token": token,
@@ -1600,8 +1608,13 @@ class RemoteCommandExecutor:
     def _account_mutate_result(
         self, username: str, *, want_enabled: bool, ok: bool, action: str
     ) -> dict:
-        """Shared enable/disable result with refreshed user row for cloud UI."""
+        """Shared enable/disable result with refreshed user row for cloud UI.
+
+        Wire: SAM ``active``/``disabled`` lives only under ``data`` — never as
+        top-level ``status`` (that field is reserved for completed/failed…).
+        """
         from client_remote_session import find_local_user
+        from client_brick_guard import sam_account_status
 
         user = None
         try:
@@ -1609,6 +1622,7 @@ class RemoteCommandExecutor:
         except Exception:
             user = None
         enabled = bool(user.get("enabled")) if isinstance(user, dict) else want_enabled if ok else None
+        account_status = sam_account_status(enabled)
         err = None
         if not ok:
             try:
@@ -1617,15 +1631,16 @@ class RemoteCommandExecutor:
                     err = "PROTECTED_ACCOUNT"
             except Exception:
                 pass
+            if not err and self.auto_response is not None:
+                last = getattr(self.auto_response, "_last_disable_error", None)
+                if last and action == "disabled":
+                    err = str(last)
             err = err or f"Failed to {action} {username}"
         return {
             "success": ok,
             "ok": ok,
             "username": username,
             "enabled": enabled,
-            "status": (
-                "active" if enabled else "disabled"
-            ) if enabled is not None else None,
             "message": (
                 f"Account {username} {action}"
                 if ok
@@ -1635,9 +1650,8 @@ class RemoteCommandExecutor:
             "data": {
                 "username": username,
                 "enabled": enabled,
-                "status": (
-                    "active" if enabled else "disabled"
-                ) if enabled is not None else None,
+                "status": account_status,
+                "account_status": account_status,
                 "user": user,
             },
         }
@@ -1647,7 +1661,7 @@ class RemoteCommandExecutor:
         if not username:
             return {"success": False, "ok": False, "error": "No username specified"}
         if self.auto_response:
-            ok = self.auto_response.disable_account(username)
+            ok = self.auto_response.disable_account(username, allow_privileged=True)
         else:
             raw = self._run_net_user(username, "/active:no", "disabled")
             ok = bool(raw.get("ok") or raw.get("success"))

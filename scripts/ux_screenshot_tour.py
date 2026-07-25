@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """UX screenshot tour — capture every main GUI page for review.
 
 Launches ModernGUI with a lightweight stub app (real I18N + optional live
@@ -54,10 +54,10 @@ class FakeAPI:
         if self._cfg is not None:
             return self._cfg
         try:
-            from client_api import HoneypotAPIClient
+            from client_api import AsteriaAPIClient
             from client_helpers import log as _log
 
-            real = HoneypotAPIClient(API_URL, _log)
+            real = AsteriaAPIClient(API_URL, _log)
             cfg = real.fetch_threat_config(token)
             if isinstance(cfg, dict) and cfg:
                 self._cfg = cfg

@@ -7,7 +7,6 @@ source next to the exe. Application code must enter PYZ via Analysis/imports
 (and ``hiddenimports``) as bytecode only.
 """
 import os
-import importlib
 
 # rd6 WebRTC is opt-in because aiortc/av add native binaries and substantial
 # size. Build with HONEYPOT_WEBRTC=1 after installing requirements-webrtc.txt.
@@ -25,8 +24,6 @@ if _webrtc_enabled:
     except Exception:
         _webrtc_hidden = []
 
-ctk_path = os.path.dirname(importlib.import_module('customtkinter').__file__)
-
 try:
     import certifi as _certifi
     _cacert = _certifi.where()
@@ -39,11 +36,11 @@ _datas = [
     ('certs/*.ico', 'certs'),
     ('certs/*.png', 'certs'),
     ('certs/*.bmp', 'certs'),
+    ('logo_set/*.png', 'logo_set'),
     ('client_config.json', '.'),
     ('client_lang.json', '.'),
     ('memory_restart.ps1', '.'),
     ('scripts/update-and-install.ps1', 'scripts'),
-    (os.path.join(ctk_path, 'assets'), 'customtkinter/assets'),
 ] + _certifi_datas
 
 # Ensure optional/lazy modules are collected into PYZ (bytecode), not datas.
@@ -62,9 +59,7 @@ _hidden = [
     'client_rdp_nla',
     'client_honeypots',
     'client_service_manager',
-    'client_gui',
     'client_gui_lock',
-    'client_gui_theme',
     'client_uninstall_gate',
     'client_logon_challenge',
     'client_eventlog',
@@ -72,6 +67,7 @@ _hidden = [
     'client_threat_intel',
     'client_alerts',
     'client_auto_response',
+    'client_brick_guard',
     'client_remote_commands',
     'client_remote_desktop',
     'client_rd_adaptive',
@@ -112,7 +108,6 @@ _hidden = [
     'client_logging',
     'client_log_retention',
     'client_api',
-    'client_tray',
     'client_tokens',
     'client_helpers',
     'client_instance',
@@ -123,8 +118,6 @@ _hidden = [
     'client_task_scheduler',
     'client_monitoring',
     'client_rdp',
-    'customtkinter',
-    'darkdetect',
     'paramiko',
     'psutil',
     'websocket',
@@ -148,8 +141,15 @@ a = Analysis(
     hiddenimports=_hidden,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=['rthook_ssl_certs.py'],
-    excludes=_webrtc_excludes,
+    runtime_hooks=['rthook_ssl_certs.py', 'rthook_motor_only.py'],
+    excludes=_webrtc_excludes + [
+        'client_gui',
+        'client_gui_theme',
+        'client_tray',
+        'customtkinter',
+        'pystray',
+        'darkdetect',
+    ],
     noarchive=False,
     optimize=1,
 )
@@ -171,7 +171,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['certs\\honeypot_256.ico'],
+    icon=['certs\\asteria_256.ico'],
 )
 
 coll = COLLECT(

@@ -160,8 +160,28 @@ def get_active_interactive_session_id() -> int:
     return 0
 
 
+def resolve_interactive_tray_command() -> tuple[str, str]:
+    """Return (exe_path, cmdline) for the interactive tray host.
+
+    Prefer sibling asteria-gui.exe so Users never LoadLibrary the motor
+    ``_internal`` tree (SYSTEM/Admin-only ACL). Fall back to motor
+    ``--mode=tray`` only when the GUI binary is missing (legacy upgrade).
+    """
+    import sys
+
+    if getattr(sys, "frozen", False):
+        motor = sys.executable
+        gui = os.path.join(os.path.dirname(motor), "asteria-gui.exe")
+        if os.path.isfile(gui):
+            return gui, f'"{gui}" --tray'
+        return motor, f'"{motor}" --mode=tray'
+    exe = sys.executable
+    script = os.path.abspath(sys.argv[0]) if sys.argv else ""
+    return exe, f'"{exe}" "{script}" --mode=tray'
+
+
 def interactive_frontend_running() -> bool:
-    """True if honeypot-client GUI/tray is already running in a user session (session id > 0)."""
+    """True if tray/GUI is already running in a user session (session id > 0)."""
     try:
         import ctypes
         import psutil
@@ -176,12 +196,25 @@ def interactive_frontend_running() -> bool:
                     continue
                 name = (proc.info.get("name") or "").lower()
                 cmdline = " ".join(proc.info.get("cmdline") or [])
-                if "honeypot-client" not in name and "client.py" not in cmdline:
+                is_gui = "asteria-gui" in name
+                is_motor_ui = (
+                    "asteria-client" in name
+                    or "honeypot-client" in name
+                    or "client.py" in cmdline
+                )
+                if not is_gui and not is_motor_ui:
                     continue
-                if "--watchdog" in cmdline or "--silent-update" in cmdline:
-                    continue
-                if "--mode=daemon" in cmdline or "--daemon" in cmdline:
-                    continue
+                if is_motor_ui and not is_gui:
+                    if "--watchdog" in cmdline or "--silent-update" in cmdline:
+                        continue
+                    if "--mode=daemon" in cmdline or "--daemon" in cmdline:
+                        continue
+                    if "--mode=guardian" in cmdline or "--guardian" in cmdline:
+                        continue
+                    if "--create-tasks" in cmdline or "--uninstall-gate" in cmdline:
+                        continue
+                    if "--healthcheck" in cmdline:
+                        continue
                 sid = wintypes.DWORD()
                 if kernel32.ProcessIdToSessionId(pid, ctypes.byref(sid)):
                     if int(sid.value) > 0:
@@ -196,7 +229,6 @@ def interactive_frontend_running() -> bool:
 def launch_interactive_tray_gui() -> bool:
     """Start CloudHoneypot-Tray in the logged-on user session (visible desktop)."""
     try:
-        import sys
         import time
         from client_task_scheduler import TASK_NAME_TRAY
         from client_winproc import run_hidden
@@ -235,10 +267,9 @@ def launch_interactive_tray_gui() -> bool:
 
 
 def _launch_tray_via_wts() -> bool:
-    """CreateProcessAsUser(--mode=tray) into Active session id > 0 (needs SYSTEM)."""
+    """CreateProcessAsUser(tray host) into Active session id > 0 (needs SYSTEM)."""
     try:
         import ctypes
-        import sys
         from ctypes import wintypes
 
         session_id = get_active_interactive_session_id()
@@ -246,13 +277,8 @@ def _launch_tray_via_wts() -> bool:
             log("[SESSION] WTS launch: no active interactive session id")
             return False
 
-        if getattr(sys, "frozen", False):
-            exe = sys.executable
-            cmdline = f'"{exe}" --mode=tray'
-        else:
-            exe = sys.executable
-            script = os.path.abspath(sys.argv[0]) if sys.argv else ""
-            cmdline = f'"{exe}" "{script}" --mode=tray'
+        exe, cmdline = resolve_interactive_tray_command()
+        log(f"[SESSION] WTS tray host={os.path.basename(exe)}")
 
         wts = ctypes.windll.wtsapi32
         adv = ctypes.windll.advapi32

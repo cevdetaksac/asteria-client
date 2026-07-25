@@ -21,7 +21,7 @@ class TestRotateInPlace(unittest.TestCase):
         self.tmp.cleanup()
         tokens._FP_CACHE = None
 
-    def test_schema_v2_uses_rotate_not_bare_register(self):
+    def test_schema_v2_rewraps_without_rotate_or_register(self):
         bind = {"schema": 1, "fingerprint": "fp-now", "token_prefix": "oldtok12"}
         os.makedirs(self.pd, exist_ok=True)
         with open(os.path.join(self.pd, "device_binding.json"), "w", encoding="utf-8") as fh:
@@ -53,13 +53,11 @@ class TestRotateInPlace(unittest.TestCase):
             out = tm.ensure_hardware_binding()
 
         self.assertTrue(out)
-        self.assertEqual(len(rotate_calls), 1)
-        self.assertEqual(rotate_calls[0][0], "old-token-uuid")
-        self.assertEqual(rotate_calls[0][2], "identity_v2")
+        self.assertEqual(out, "old-token-uuid")
+        self.assertEqual(len(rotate_calls), 0)
         reg.assert_not_called()
         persist.assert_called_once()
-        # Disk write only via persist after rotate ok — first arg is new uuid
-        self.assertNotEqual(persist.call_args[0][0], "old-token-uuid")
+        self.assertEqual(persist.call_args[0][0], "old-token-uuid")
 
     def test_rotate_409_retries_new_uuid(self):
         calls = {"n": 0}
@@ -83,7 +81,44 @@ class TestRotateInPlace(unittest.TestCase):
         self.assertGreaterEqual(calls["n"], 2)
         persist.assert_called_once()
 
-    def test_rotate_fail_keeps_register_until_quarantine(self):
+    def test_legacy_supersede_notifies_cloud(self):
+        """Leftover AppData token different from canonical → rotate-token old→new."""
+        legacy_path = os.path.join(self.pd, "AppData", "token.dat")
+        os.makedirs(os.path.dirname(legacy_path), exist_ok=True)
+        with open(legacy_path, "w", encoding="utf-8") as fh:
+            fh.write("legacy-old-uuid")
+
+        rotate_calls = []
+
+        def _rotate(api_url, old, new, **kw):
+            rotate_calls.append((old, new, kw.get("reason")))
+            return {
+                "ok": True,
+                "status_code": 200,
+                "token": new,
+                "client_id": 7,
+                "rotated": True,
+            }
+
+        with mock.patch.object(tokens, "_programdata_client_dir", return_value=self.pd), \
+                mock.patch.object(tokens, "get_canonical_token_path", return_value=self.token_path), \
+                mock.patch.object(tokens, "get_device_fingerprint", return_value="fp"), \
+                mock.patch.object(tokens, "get_windows_machine_guid", return_value="G"), \
+                mock.patch.object(
+                    tokens, "get_legacy_token_paths", return_value=[legacy_path]
+                ), \
+                mock.patch.object(tokens, "_read_token_from_path", return_value="legacy-old-uuid"), \
+                mock.patch.object(tokens, "rotate_token_api", side_effect=_rotate):
+            tm = tokens.TokenManager("https://example/api", "HOST", self.token_path, "token.txt")
+            n = tm.reconcile_superseded_tokens("canonical-new-uuid")
+
+        self.assertEqual(n, 1)
+        self.assertEqual(rotate_calls[0][0], "legacy-old-uuid")
+        self.assertEqual(rotate_calls[0][1], "canonical-new-uuid")
+        self.assertEqual(rotate_calls[0][2], "legacy_supersede")
+        self.assertFalse(os.path.isfile(legacy_path))
+
+    def test_rotate_fail_keeps_old_identity_without_quarantine(self):
         """Failed rotate must not call register while old token still loaded."""
         with mock.patch.object(tokens, "get_device_fingerprint", return_value="fp"), \
                 mock.patch.object(tokens, "get_windows_machine_guid", return_value="G"), \
@@ -96,10 +131,9 @@ class TestRotateInPlace(unittest.TestCase):
                 mock.patch.object(tokens.TokenManager, "register_client", return_value="fresh") as reg:
             tm = tokens.TokenManager("https://example/api", "HOST", self.token_path, "token.txt")
             out = tm._reenroll("identity_v2")
-        # 500 → rotate returns None → quarantine then register
-        quar.assert_called_once()
-        reg.assert_called_once()
-        self.assertEqual(out, "fresh")
+        quar.assert_not_called()
+        reg.assert_not_called()
+        self.assertEqual(out, "old-token")
 
 
 class TestRotateTokenApiHelper(unittest.TestCase):

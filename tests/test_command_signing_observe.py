@@ -21,7 +21,7 @@ _VECTOR_TYPE = "block_ip"
 _VECTOR_ISSUED = "2026-07-22T00:00:00+00:00"
 # Precomputed with COMPUTERNAME=TESTHOST (regenerate if algorithm changes).
 _VECTOR_SIG = (
-    "a097c4789b5421336f2ed4cd496a092ea3cd1600b5648ecd8efc11b925c7ed48"
+    "90a4879eecc999c6e4002669a70624487e659a11d691552ac7b1ba924d504d38"
 )
 
 

@@ -51,6 +51,7 @@ def get_client_exe_path():
         )
 
 CLIENT_EXE = get_client_exe_path()
+GUI_EXE = os.path.join(os.path.dirname(CLIENT_EXE), "asteria-gui.exe")
 
 TASK_CACHE_MAX_AGE = 1800  # seconds
 
@@ -170,7 +171,8 @@ TASK_CONFIGS = {
             "<RunLevel>HighestAvailable</RunLevel>"
         ),
         # Logon → tray icon (not forced window); onboarding still forces GUI via should_force_gui_visible
-        "args": "--mode=tray",
+        "command": "gui",
+        "args": "--tray",
         # IgnoreNew: multi-user RDP — second logon must NOT kill first user's GUI
         "multi_instance": "IgnoreNew",
         "hidden": False, "wake": False, "network_required": False,
@@ -339,11 +341,21 @@ def _build_task_xml(cfg: dict) -> str:
     if cfg.get("command") == "powershell":
         actions = _build_memory_restart_action()
     else:
+        command = (
+            GUI_EXE
+            if cfg.get("command") == "gui" and os.path.isfile(GUI_EXE)
+            else CLIENT_EXE
+        )
+        arguments = (
+            cfg["args"]
+            if command == GUI_EXE
+            else ("--mode=tray" if cfg.get("command") == "gui" else cfg["args"])
+        )
         actions = (
             f'<Actions Context="Author"><Exec>'
-            f'<Command>"{CLIENT_EXE}"</Command>'
-            f'<Arguments>{cfg["args"]}</Arguments>'
-            f'<WorkingDirectory>{os.path.dirname(CLIENT_EXE)}</WorkingDirectory>'
+            f'<Command>"{command}"</Command>'
+            f'<Arguments>{arguments}</Arguments>'
+            f'<WorkingDirectory>{os.path.dirname(command)}</WorkingDirectory>'
             f'</Exec></Actions>'
         )
 

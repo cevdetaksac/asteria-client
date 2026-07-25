@@ -1,6 +1,6 @@
 # Asteria Client
 
-**Current Version: 4.9.34**
+**Current Version: 4.9.38**
 
 Windows agent for [Asteria](https://asteria.run): honeypot tunnels, threat response, remote desktop, and firewall sync. Open-source client; cloud/dashboard features may require a license.
 
@@ -32,9 +32,13 @@ API base (default): `https://asteria.run/api` (legacy failover: honeypot.yesnext
 
 ## Build
 
-Requirements: Python 3.11/3.12, pip, PyInstaller, NSIS.
+Requirements: Python 3.11/3.12, pip, PyInstaller, Node.js/npm, NSIS,
+WebView2 Evergreen.
 
 ```powershell
+npm --prefix ui install
+python -m pip install -r requirements.txt -r requirements-gui.txt
+
 # Default (JPEG / WS)
 powershell -ExecutionPolicy Bypass -File build.ps1 -Clean
 
@@ -43,12 +47,14 @@ python -m pip install -r requirements-webrtc.txt
 powershell -ExecutionPolicy Bypass -File build.ps1 -Clean -WebRTC
 ```
 
-Output: `cloud-client-installer.exe` (repo root). Optional Authenticode: `-Sign`.
+Output: `cloud-client-installer.exe` containing motor-only
+`asteria-client.exe` + onefile `asteria-gui.exe`. Optional dev signing:
+`-Sign`; production `-Release` refuses unsigned/non-WebRTC builds.
 
 ## Release
 
 ```powershell
-.\build.ps1 -Clean -WebRTC
+.\build.ps1 -Clean -WebRTC -Sign -Release
 gh release create vX.Y.Z cloud-client-installer.exe --title "vX.Y.Z" --notes-file release_notes_vX.Y.Z.md
 ```
 

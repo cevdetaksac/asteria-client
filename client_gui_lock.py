@@ -17,7 +17,15 @@ import threading
 import time
 from typing import Optional, Tuple
 
-from client_helpers import log
+if os.environ.get("ASTERIA_GUI_HOST") == "1":
+    # The WebView host deliberately excludes Tk/client_helpers. Keep PIN
+    # verification independent from the legacy GUI dependency graph.
+    import logging
+
+    def log(message):
+        logging.getLogger("asteria-gui").info("%s", message)
+else:
+    from client_helpers import log
 
 _PBKDF2_ITERATIONS = 120_000
 _SALT_BYTES = 16

@@ -154,11 +154,16 @@ public class HpKill {
 }
 
 function Stop-HoneypotProcessesFast {
-    # 1) Fastest bulk kill (Asteria + legacy image names)
+    # 1) Fastest bulk kill (Asteria motor + GUI + legacy image names)
     try { & taskkill.exe /F /T /IM asteria-client.exe 2>$null | Out-Null } catch {}
+    try { & taskkill.exe /F /T /IM asteria-gui.exe 2>$null | Out-Null } catch {}
     try { & taskkill.exe /F /T /IM honeypot-client.exe 2>$null | Out-Null } catch {}
     try {
         Get-CimInstance Win32_Process -Filter "Name='asteria-client.exe'" -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                try { $_.Terminate() | Out-Null } catch {}
+            }
+        Get-CimInstance Win32_Process -Filter "Name='asteria-gui.exe'" -ErrorAction SilentlyContinue |
             ForEach-Object {
                 try { $_.Terminate() | Out-Null } catch {}
             }
@@ -169,7 +174,7 @@ function Stop-HoneypotProcessesFast {
     } catch {}
 
     # 2) Per-PID TerminateProcess — use TERMINATE|SYNCHRONIZE (0x1F0FFF can fail under DACL)
-    $procs = @(Get-Process -Name "asteria-client","honeypot-client" -ErrorAction SilentlyContinue)
+    $procs = @(Get-Process -Name "asteria-client","asteria-gui","honeypot-client" -ErrorAction SilentlyContinue)
     foreach ($proc in $procs) {
         $procId = [int]$proc.Id
         foreach ($access in @(0x0001, 0x00100001, 0x1F0FFF)) {
@@ -226,16 +231,16 @@ do {
             }
         }
     } catch {}
-    $left = @(Get-Process -Name "asteria-client","honeypot-client" -ErrorAction SilentlyContinue)
+    $left = @(Get-Process -Name "asteria-client","asteria-gui","honeypot-client" -ErrorAction SilentlyContinue)
     if ($left.Count -eq 0) { break }
     Start-Sleep -Milliseconds 120
 } while ($round -lt $maxRounds)
 
-$left = @(Get-Process -Name "asteria-client","honeypot-client" -ErrorAction SilentlyContinue)
+$left = @(Get-Process -Name "asteria-client","asteria-gui","honeypot-client" -ErrorAction SilentlyContinue)
 if ($left.Count -gt 0) {
     Write-Host "[KILL] WARNING: $($left.Count) process(es) still running"
     exit 1
 }
 
-Write-Host "[KILL] All asteria-client / honeypot-client processes stopped."
+Write-Host "[KILL] All asteria-client / asteria-gui / honeypot-client processes stopped."
 exit 0

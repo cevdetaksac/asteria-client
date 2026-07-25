@@ -1,3 +1,16 @@
+# v4.9.38
+- **C-BRICK-1:** Local critical auto (`disable_account` / auto logoff) requires fresh `account_linked` (cache ≤15 min, fail-closed). Skip + alert `skipped_unlinked`.
+- **C-BRICK-2:** Silent hours / time rules remain default OFF; cloud cannot force auto disable/logoff via silent-hours flags.
+- **C-BRICK-6:** Refuse disable of the last enabled local admin; rollback if zero admins remain.
+- **Wire:** `commands/result.status` = completed/failed… only; SAM active/disabled only in `result.data`.
+- **Token:** Failed rotate keeps identity; schema upgrade rewraps; unreadable `token.dat` never overwritten; leftover legacy tokens remapped via `POST /api/agent/rotate-token` (`legacy_supersede`).
+- **GUI:** Top-bar identity strip (host + masked token + copy).
+
+# v4.9.35
+- **Signing cutover (contract 1.4.32+):** Emit/verify command HMAC with `asteria-chp-v1`; heartbeat proof with `asteria-heartbeat-v1`. Verify still accepts legacy `yesnext-*` during fleet cutover.
+- **API class rename:** `HoneypotAPIClient` → `AsteriaAPIClient` (compat alias retained).
+- **Web Control Center parity:** Account link/unlink form, WinRM/NLA/Defender harden+fix, RDP move, IR logoff/disable, update banner, TR/EN i18n. Layers POST uses contract keys (`ransomware_protection_enabled`, `canary_files_enabled`, `protection.network_guard`).
+
 # v4.9.34
 - **Asteria rebrand (contract 1.4.30):** Display name, installer, Start Menu, and tray/GUI titles are **Asteria**. Default API host is `https://asteria.run/api` with one-shot failover to legacy `honeypot.yesnext.com.tr`. New installs go to `Program Files\Asteria\Asteria Client\` with `asteria-client.exe` (legacy `honeypot-client.exe` / YesNext path still probed).
 - **Wire identities unchanged:** ProgramData `YesNext\CloudHoneypotClient`, `CloudHoneypot-*` tasks, and `yesnext-chp-v1` signing context stay stable.

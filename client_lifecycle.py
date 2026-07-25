@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 Client lifecycle logger — crash / watchdog / memory-restart events.
 
@@ -268,8 +268,8 @@ def flush_queue_to_api(
     if api_client is None:
         try:
             from client_constants import API_URL
-            from client_api import HoneypotAPIClient
-            api_client = HoneypotAPIClient(API_URL, log_func=log_func or (lambda m: None))
+            from client_api import AsteriaAPIClient
+            api_client = AsteriaAPIClient(API_URL, log_func=log_func or (lambda m: None))
         except Exception:
             return 0
 
@@ -346,8 +346,8 @@ def report_now(
     try:
         if api_client is None:
             from client_constants import API_URL
-            from client_api import HoneypotAPIClient
-            api_client = HoneypotAPIClient(API_URL, log_func=log_func or (lambda m: None))
+            from client_api import AsteriaAPIClient
+            api_client = AsteriaAPIClient(API_URL, log_func=log_func or (lambda m: None))
         if hasattr(api_client, "report_lifecycle_event"):
             if api_client.report_lifecycle_event(token, event):
                 with _lock:

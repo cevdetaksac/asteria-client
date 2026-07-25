@@ -96,8 +96,8 @@ Durum: `[ ]` plan · `[~]` kısmi · `[x]` bitti · `[A]` araştırma
 
 | # | İş | Çıktı | Durum |
 |---|-----|--------|--------|
-| M0.1 | Program Files ACL: Users read-only exe; yazma yok | Installer icacls | `[~]` scripts ACL var; kök sıkılaştır |
-| M0.2 | `_internal` kullanıcıya kapalı **veya** kaldır | ACL-first interim → onefile/Nuitka | `[ ]` |
+| M0.1 | Program Files ACL: Users read-only exe; yazma yok | Installer icacls | `[x]` kök RX; SYSTEM/Admin full |
+| M0.2 | `_internal` kullanıcıya kapalı **veya** kaldır | ACL-first interim → onefile/Nuitka | `[~]` Users erişimi kapalı; kaldırma M2 |
 | M0.3 | Build gate: `client_*.py` sızıntı yok | `build.ps1` gate | `[x]` 4.9.25 |
 | M0.4 | Kill/update helper’lar Program Files’ta yok | NSIS PLUGINSDIR | `[x]` 4.9.24 |
 | M0.5 | Log/veri yalnız ProgramData | dokümante + audit | `[~]` |
@@ -160,7 +160,7 @@ Bu track’te **paketleme kararı güncellendi:** gömülü host değil, **ayrı
 | G0.1 | Bridge SoT taslağı | contract `agent/gui-webview-bridge.md` | `[ ]` |
 | G0.2 | `gui-control-center.md` → ayrı process notu | contract bump | `[ ]` |
 | G0.3 | Design tokens (dashboard sync) | `docs/design/tokens.md` | `[ ]` |
-| G0.4 | POC: `asteria-gui.exe` boş WebView + `PING`/`STATUS` | spike | `[ ]` |
+| G0.4 | POC: `asteria-gui.exe` boş WebView + `PING`/`STATUS` | spike | `[x]` React/WebView2 + PIN + tray |
 | G0.5 | IPC auth: yalnız local + optional shared secret / named pipe ACLs | taslak | `[ ]` |
 
 **Çıkış:** Tray “Show” → `asteria-gui.exe`; motor CTk’siz STATUS döner.
@@ -169,11 +169,11 @@ Bu track’te **paketleme kararı güncellendi:** gömülü host değil, **ayrı
 
 | # | İş |
 |---|-----|
-| G1.1 | `ui/` Vite + React + TS |
-| G1.2 | `asteria-gui` host (Python thin **veya** küçük native host) |
+| G1.1 | `ui/` Vite + React + TS — `[x]` shell/Status POC |
+| G1.2 | `asteria-gui` host (Python thin **veya** küçük native host) — `[x]` pywebview onefile |
 | G1.3 | Chrome: sidebar, toast, i18n, PIN (host doğrular) |
 | G1.4 | Feature flag: `ASTERIA_UI=gui_exe|ctk|off` |
-| G1.5 | NSIS: iki exe + WebView2 Evergreen bootstrapper |
+| G1.5 | NSIS: iki exe + WebView2 Evergreen bootstrapper — `[~]` iki exe tamam; runtime preflight/bootstrapper bekliyor |
 
 ### G2 — Sayfa parity
 
@@ -295,8 +295,8 @@ Installer çıktısı: `asteria-setup.exe` → motor + gui + uninstall.
 
 | Track | Faz | Durum |
 |-------|-----|--------|
-| M | M0 yüzey | `[~]` |
+| M | M0 yüzey | `[x]` (`_internal` SYSTEM/Admin-only) |
 | M | M1 imza/attest | `[ ]` |
 | M | M2 Nuitka/onefile | `[A]` (G3 sonrası) |
-| G | G0 sözleşme/POC | `[ ]` |
-| G | G1–G3 | `[ ]` (detay GUI roadmap) |
+| G | G0 sözleşme/POC | `[x]` |
+| G | G1–G3 | `[~]` shell/tray/Status tamam; sayfa parity bekliyor |

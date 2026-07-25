@@ -38,77 +38,75 @@ _TRAY_ICON_CACHE = {}
 
 
 def tray_make_image(active: bool) -> Image.Image:
-    """Load appropriate tray icon based on protection status (cached)."""
+    """Load Asteria tray icon from logo_set / certs (cached)."""
     try:
-        key = bool(active)
+        key = "online" if active else "offline"
         cached = _TRAY_ICON_CACHE.get(key)
         if cached is not None:
             return cached
 
         from client_utils import get_resource_path
-        
-        # Determine icon file based on state
-        if active:
-            icon_file = get_resource_path("certs/honeypot_active_16.ico")
-        else:
-            icon_file = get_resource_path("certs/honeypot_inactive_16.ico")
-        
-        # Try to load from file system first
-        if os.path.exists(icon_file):
-            from PIL import Image
-            img = Image.open(icon_file)
-            # Copy so pystray mutations cannot corrupt cache
-            img = img.copy()
-            _TRAY_ICON_CACHE[key] = img
-            return img
-        
+        from PIL import Image
+
+        candidates = [
+            get_resource_path(f"certs/asteria_{key}_64.png"),
+            get_resource_path(f"certs/asteria_{key}_64.ico"),
+            get_resource_path(f"certs/asteria_{key}_16.ico"),
+            get_resource_path(f"logo_set/icon_{key}.png"),
+            # Legacy aliases still regenerated from Asteria art
+            get_resource_path(
+                "certs/honeypot_active_16.ico" if active else "certs/honeypot_inactive_16.ico"
+            ),
+        ]
+        for icon_file in candidates:
+            if icon_file and os.path.exists(icon_file):
+                img = Image.open(icon_file).convert("RGBA")
+                if max(img.size) > 64:
+                    img = img.resize((64, 64), Image.Resampling.LANCZOS)
+                img = img.copy()
+                _TRAY_ICON_CACHE[key] = img
+                return img
+
         # Fallback to programmatic generation
-        from PIL import Image, ImageDraw
-        size = 16
-        bg_color = (76, 175, 80, 255) if active else (244, 67, 54, 255)  # Green or Red
-        
-        img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+        from PIL import ImageDraw
+
+        size = 64
+        bg_color = (46, 168, 209, 255) if active else (227, 93, 106, 255)
+        img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
-        
-        # Draw background circle
-        center = size // 2
-        radius = int(size * 0.4)
-        draw.ellipse([center - radius, center - radius, center + radius, center + radius], 
-                     fill=bg_color)
-        
-        # Draw simplified cloud shape
-        cloud_color = (255, 255, 255, 255)  # White
-        cloud_radius = int(size * 0.2)
-        draw.ellipse([center - cloud_radius, center - cloud_radius,
-                      center + cloud_radius, center + cloud_radius],
-                     fill=cloud_color)
-        
+        draw.ellipse((4, 4, size - 5, size - 5), fill=(8, 13, 20, 255), outline=bg_color, width=4)
         _TRAY_ICON_CACHE[key] = img
         return img
-        
-    except Exception as e:
-        # Ultimate fallback - simple colored circle
+
+    except Exception:
         from PIL import Image, ImageDraw
-        col = "green" if active else "red"
-        img = Image.new('RGB', (16, 16), "white")
+
+        col = (46, 168, 209) if active else (227, 93, 106)
+        img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
         d = ImageDraw.Draw(img)
-        d.ellipse((2, 2, 14, 14), fill=col)
+        d.ellipse((4, 4, 60, 60), fill=col)
         return img
+
 
 def update_window_icon(root, is_active: bool):
     """Update window icon based on protection status"""
-    if not root: return
+    if not root:
+        return
     try:
         from client_utils import get_resource_path
-        
+
         if is_active:
-            window_icon_path = get_resource_path('certs/honeypot_active_32.ico')
+            window_icon_path = get_resource_path("certs/asteria_online_32.ico")
+            if not os.path.exists(window_icon_path):
+                window_icon_path = get_resource_path("certs/honeypot_active_32.ico")
         else:
-            window_icon_path = get_resource_path('certs/honeypot_inactive_32.ico')
-        
+            window_icon_path = get_resource_path("certs/asteria_offline_32.ico")
+            if not os.path.exists(window_icon_path):
+                window_icon_path = get_resource_path("certs/honeypot_inactive_32.ico")
+
         if os.path.exists(window_icon_path):
             root.iconbitmap(window_icon_path)
-            
+
     except Exception as e:
         log(f"Window icon update error: {e}")
 

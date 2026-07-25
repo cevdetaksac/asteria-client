@@ -5,10 +5,20 @@ param(
     [switch]$Clean = $false,
     [switch]$WebRTC = $false,
     [switch]$Sign = $false,
+    [switch]$Release = $false,
     [string]$CertPath = $env:HONEYPOT_SIGN_CERT,
     [string]$CertPassword = $env:HONEYPOT_SIGN_CERT_PASSWORD,
     [string]$TimestampUrl = "http://timestamp.digicert.com"
 )
+
+if ($Release -and -not $Sign) {
+    Write-Host "ERROR: -Release requires -Sign; unsigned production artifacts are forbidden." -ForegroundColor Red
+    exit 1
+}
+if ($Release -and -not $WebRTC) {
+    Write-Host "ERROR: -Release requires -WebRTC for the production feature profile." -ForegroundColor Red
+    exit 1
+}
 
 # ===================== VERSION AUTO-DETECTION ===================== #
 # Read VERSION from client_constants.py — the ONLY place version is defined
@@ -117,6 +127,33 @@ try {
     exit 1
 }
 
+# Build the separate non-elevated WebView GUI. It is deliberately onefile so
+# Program Files does not gain a second exposed runtime tree.
+Write-Host "[1b/6] Building separate Asteria GUI..." -ForegroundColor Yellow
+$npm = Get-Command npm -ErrorAction SilentlyContinue
+if (-not $npm) {
+    Write-Host "   ERROR: npm is required to build ui/" -ForegroundColor Red
+    exit 1
+}
+Push-Location "ui"
+try {
+    & npm run build
+    if ($LASTEXITCODE -ne 0) { throw "Vite/TypeScript build failed" }
+} finally {
+    Pop-Location
+}
+& $PYTHON -c "import webview"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "   ERROR: pywebview missing; install requirements-gui.txt" -ForegroundColor Red
+    exit 1
+}
+& $PYTHON -m PyInstaller asteria-gui.spec --clean
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path "dist\asteria-gui.exe")) {
+    Write-Host "   ERROR: asteria-gui.exe build failed" -ForegroundColor Red
+    exit 1
+}
+Write-Host "   SUCCESS: dist\asteria-gui.exe (onefile)" -ForegroundColor Green
+
 # Step 2: Copy config files to dist (installer root + onedir folder)
 Write-Host "[2/5] Copying configuration files..." -ForegroundColor Yellow
 try {
@@ -134,8 +171,49 @@ try {
     exit 1
 }
 
-# Step 3: Check for NSIS
-Write-Host "[3/5] Checking for NSIS..." -ForegroundColor Yellow
+# Step 3: Sign PE payloads BEFORE NSIS so the installer embeds signed binaries.
+# Signing after makensis only Authenticodes the outer stub; installed exe stay unsigned.
+Write-Host "[3/6] Signing payload executables..." -ForegroundColor Yellow
+$installerPath = Join-Path (Get-Location) "cloud-client-installer.exe"
+$mainExe = Join-Path (Get-Location) "dist\asteria-client\asteria-client.exe"
+$guiExe = Join-Path (Get-Location) "dist\asteria-gui.exe"
+$signed = $false
+
+function Invoke-AsteriaSign([string[]]$Targets) {
+    if (-not $CertPath -or -not (Test-Path $CertPath)) {
+        Write-Host "   ERROR: -Sign requires CertPath / HONEYPOT_SIGN_CERT" -ForegroundColor Red
+        exit 1
+    }
+    $signtool = Get-Command signtool.exe -ErrorAction SilentlyContinue
+    if (-not $signtool) {
+        Write-Host "   ERROR: signtool.exe not found in PATH" -ForegroundColor Red
+        exit 1
+    }
+    foreach ($target in ($Targets | Where-Object { $_ -and (Test-Path $_) })) {
+        $signArgs = @(
+            "sign", "/fd", "SHA256", "/td", "SHA256", "/tr", $TimestampUrl,
+            "/f", $CertPath
+        )
+        if ($CertPassword) { $signArgs += @("/p", $CertPassword) }
+        $signArgs += $target
+        & signtool.exe @signArgs
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "   ERROR: failed to sign $target" -ForegroundColor Red
+            exit 1
+        }
+        Write-Host "   SIGNED: $target" -ForegroundColor Green
+    }
+}
+
+if ($Sign) {
+    Invoke-AsteriaSign @($mainExe, $guiExe)
+    $signed = $true
+} else {
+    Write-Host "   SKIP: Authenticode payloads (-Sign not set; unsigned build OK for dev)" -ForegroundColor DarkGray
+}
+
+# Step 4: Check for NSIS
+Write-Host "[4/6] Checking for NSIS..." -ForegroundColor Yellow
 $nsisPath = Get-Command makensis -ErrorAction SilentlyContinue
 if (-not $nsisPath) {
     Write-Host "   WARNING: NSIS not found, installing via Scoop..." -ForegroundColor Yellow
@@ -151,8 +229,8 @@ if (-not $nsisPath) {
     Write-Host "   SUCCESS: NSIS found at $($nsisPath.Source)" -ForegroundColor Green
 }
 
-# Step 4: Build installer
-Write-Host "[4/5] Building installer..." -ForegroundColor Yellow
+# Step 5: Build installer (embeds already-signed motor/GUI when -Sign was set)
+Write-Host "[5/6] Building installer..." -ForegroundColor Yellow
 try {
     & makensis installer.nsi
     if ($LASTEXITCODE -eq 0) {
@@ -165,39 +243,9 @@ try {
     exit 1
 }
 
-# Step 5: Optional Authenticode + provenance (SUP-001 / SUP-002)
-Write-Host "`n[5/6] Signing / provenance..." -ForegroundColor Yellow
-$installerPath = Join-Path (Get-Location) "cloud-client-installer.exe"
-$mainExe = Join-Path (Get-Location) "dist\asteria-client\asteria-client.exe"
-$signed = $false
 if ($Sign) {
-    if (-not $CertPath -or -not (Test-Path $CertPath)) {
-        Write-Host "   ERROR: -Sign requires CertPath / HONEYPOT_SIGN_CERT" -ForegroundColor Red
-        exit 1
-    }
-    $signtool = Get-Command signtool.exe -ErrorAction SilentlyContinue
-    if (-not $signtool) {
-        Write-Host "   ERROR: signtool.exe not found in PATH" -ForegroundColor Red
-        exit 1
-    }
-    $targets = @($mainExe, $installerPath) | Where-Object { $_ -and (Test-Path $_) }
-    foreach ($target in $targets) {
-        $signArgs = @(
-            "sign", "/fd", "SHA256", "/td", "SHA256", "/tr", $TimestampUrl,
-            "/f", $CertPath
-        )
-        if ($CertPassword) { $signArgs += @("/p", $CertPassword) }
-        $signArgs += $target
-        & signtool.exe @signArgs
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "   ERROR: failed to sign $target" -ForegroundColor Red
-            exit 1
-        }
-        Write-Host "   SIGNED: $target" -ForegroundColor Green
-    }
-    $signed = $true
-} else {
-    Write-Host "   SKIP: Authenticode (-Sign not set; unsigned build OK for dev)" -ForegroundColor DarkGray
+    Write-Host "[5b/6] Signing outer installer stub..." -ForegroundColor Yellow
+    Invoke-AsteriaSign @($installerPath)
 }
 
 # Step 6: Show results + emit provenance manifest
@@ -216,6 +264,10 @@ if ($installerFile) {
         size_bytes = $installerFile.Length
         built_at = (Get-Date).ToUniversalTime().ToString("o")
         webrtc = [bool]$WebRTC
+        separate_gui = [bool](Test-Path $guiExe)
+        gui_sha256 = if (Test-Path $guiExe) {
+            (Get-FileHash -Algorithm SHA256 -Path $guiExe).Hash.ToLowerInvariant()
+        } else { $null }
         authenticode_signed = [bool]$signed
         toolchain = @{
             python = (python --version 2>&1 | Out-String).Trim()

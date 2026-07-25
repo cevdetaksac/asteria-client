@@ -226,6 +226,13 @@ class TokenStore:
                 os.makedirs(parent, exist_ok=True)
             if os.path.isfile(token_file_new) and not overwrite:
                 existing = TokenStore.load(token_file_new)
+                if existing is None:
+                    # File present but unreadable — never clobber (ghost identity risk)
+                    print(
+                        f"token save refused: unreadable existing identity "
+                        f"(file={token_file_new})"
+                    )
+                    return
                 if existing and existing != token:
                     # Immutable identity: never clobber a different durable token
                     print(
@@ -1017,7 +1024,7 @@ def load_account_link_pref() -> dict:
 
 
 def is_account_linked() -> bool:
-    """True when API (or local cache) says this client is linked to a YesNext Account."""
+    """True when API (or local cache) says this client is linked to an Asteria Account."""
     try:
         data = load_account_link_pref()
         return bool(data.get("linked"))
@@ -2021,6 +2028,18 @@ def stage_update_install_helper(*, allow_emergency: bool = True) -> Optional[str
 
     def _harden_update_staging(path: str) -> None:
         folder = os.path.dirname(path)
+        # Never rewrite ACLs on an injected/test directory. Production helpers
+        # are staged only below ProgramData.
+        program_data = os.path.abspath(
+            os.environ.get("ProgramData", r"C:\ProgramData")
+        )
+        try:
+            if os.path.commonpath(
+                (program_data, os.path.abspath(folder))
+            ).lower() != program_data.lower():
+                return
+        except (OSError, ValueError):
+            return
         try:
             subprocess.run(
                 [

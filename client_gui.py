@@ -3772,7 +3772,7 @@ class ModernGUI:
                     return
                 auto_response = getattr(self.app, 'auto_response', None)
                 if auto_response:
-                    result = auto_response.disable_account(username)
+                    result = auto_response.disable_account(username, allow_privileged=True)
                     if result:
                         mbox.showinfo(self.t("info"), self.t("msgbox_user_disabled_ok").format(user=username))
                         import threading as _th
@@ -4321,7 +4321,7 @@ class ModernGUI:
             username = username.strip()
             auto_response = getattr(self.app, 'auto_response', None)
             if auto_response:
-                ok = auto_response.disable_account(username)
+                ok = auto_response.disable_account(username, allow_privileged=True)
                 self.show_toast(
                     self.t("toast_account_disabled") if ok else self.t("toast_disable_failed"),
                     self.t("toast_disable_ok_msg").format(user=username) if ok else self.t("toast_disable_fail_msg").format(user=username),

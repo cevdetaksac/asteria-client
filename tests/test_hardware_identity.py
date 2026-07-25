@@ -59,29 +59,22 @@ class TestHardwareBinding(unittest.TestCase):
         self.tmp.cleanup()
         tokens._FP_CACHE = None
 
-    def test_fingerprint_mismatch_triggers_reenroll(self):
+    def test_fingerprint_mismatch_preserves_identity_when_machine_is_ambiguous(self):
         with mock.patch.object(tokens, "_programdata_client_dir", return_value=self.pd), \
                 mock.patch.object(tokens, "get_canonical_token_path", return_value=self.token_path), \
                 mock.patch.object(tokens, "get_device_fingerprint", return_value="fp-now"), \
                 mock.patch.object(tokens, "get_windows_machine_guid", return_value="G"), \
                 mock.patch.object(tokens, "get_legacy_token_paths", return_value=[]), \
                 mock.patch.object(tokens.TokenStore, "load_meta", return_value=("old-token-uuid", "fp-old")), \
-                mock.patch.object(
-                    tokens, "rotate_token_api",
-                    return_value={
-                        "ok": True, "status_code": 200, "token": "rotated-uuid",
-                        "client_id": 1, "rotated": True, "idempotent": False,
-                    },
-                ), \
                 mock.patch.object(tokens.TokenManager, "_persist_token") as persist, \
                 mock.patch.object(tokens.TokenManager, "register_client") as reg:
             tm = tokens.TokenManager("https://example", "HOST", self.token_path, "token.txt")
             out = tm.ensure_hardware_binding()
-        self.assertEqual(out, "rotated-uuid")
-        persist.assert_called_once()
+        self.assertEqual(out, "old-token-uuid")
+        persist.assert_not_called()
         reg.assert_not_called()
 
-    def test_schema_v2_upgrade_reenrolls_once(self):
+    def test_schema_v2_upgrade_rewraps_same_token(self):
         bind = {
             "schema": 1,
             "fingerprint": "fp-now",
@@ -97,19 +90,13 @@ class TestHardwareBinding(unittest.TestCase):
                 mock.patch.object(tokens, "get_windows_machine_guid", return_value="G"), \
                 mock.patch.object(tokens, "get_legacy_token_paths", return_value=[]), \
                 mock.patch.object(tokens.TokenStore, "load_meta", return_value=("old-token-uuid", "fp-now")), \
-                mock.patch.object(
-                    tokens, "rotate_token_api",
-                    return_value={
-                        "ok": True, "status_code": 200, "token": "fresh-token",
-                        "client_id": 57, "rotated": True, "idempotent": False,
-                    },
-                ), \
                 mock.patch.object(tokens.TokenManager, "_persist_token") as persist, \
                 mock.patch.object(tokens.TokenManager, "register_client") as reg:
             tm = tokens.TokenManager("https://example", "HOST", self.token_path, "token.txt")
             out = tm.ensure_hardware_binding()
-        self.assertEqual(out, "fresh-token")
+        self.assertEqual(out, "old-token-uuid")
         persist.assert_called_once()
+        self.assertEqual(persist.call_args[0][0], "old-token-uuid")
         reg.assert_not_called()
 
 

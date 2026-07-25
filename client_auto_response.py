@@ -47,9 +47,19 @@ MAX_BLOCKS_PER_HOUR = 50
 MAX_BLOCKS_PER_DAY = 200
 AUTO_UNBLOCK_HOURS = 24
 
-# Protected resources — OS machine identities only (IR may touch Administrator)
+# Protected resources — OS machine identities (never touch)
 PROTECTED_ACCOUNTS: Set[str] = {
     "SYSTEM", "LOCAL SERVICE", "NETWORK SERVICE",
+    "WDAGUTILITYACCOUNT",
+}
+
+# Auto / silent-hours / alert-pipeline must not disable these without explicit
+# cloud confirm IR (allow_privileged=True). Prevents stuck servers.
+AUTO_SAFE_ACCOUNTS: Set[str] = {
+    "ADMINISTRATOR",
+    "ADMIN",
+    "GUEST",
+    "DEFAULTACCOUNT",
     "WDAGUTILITYACCOUNT",
 }
 
@@ -127,14 +137,21 @@ class AutoResponse:
         self._lockdown_active = False
         self._lockdown_management_ip: Optional[str] = None
 
+        # Optional alert pipeline for C-BRICK skip notices
+        self.alert_pipeline = None
+        self._last_disable_error: Optional[str] = None
+
         # Stats
         self._stats = {
             "blocks_applied": 0,
             "blocks_removed": 0,
-            "logoffs_executed": 0,
             "accounts_disabled": 0,
+            "logoffs_executed": 0,
             "rate_limited": 0,
             "whitelisted_skipped": 0,
+            "skipped_unlinked": 0,
+            "last_admin_refused": 0,
+            "last_admin_rollback": 0,
             "errors": 0,
         }
 
@@ -445,9 +462,16 @@ class AutoResponse:
 
     # ── Session Management ────────────────────────────────────────
 
-    def logoff_user(self, username: str) -> bool:
-        """Force logoff all sessions for user (Active + Disc), including Administrator."""
+    def logoff_user(self, username: str, *, auto: bool = False) -> bool:
+        """Force logoff all sessions for user (Active + Disc), including Administrator.
+
+        ``auto=True`` marks local critical auto paths (alerts / silent-hours /
+        logon-challenge). Those require a fresh account link (C-BRICK-1).
+        """
         if not (username or "").strip():
+            return False
+
+        if auto and not self._allow_local_critical_auto("logoff_user", username):
             return False
 
         try:
@@ -529,17 +553,114 @@ class AutoResponse:
 
     # ── Account Management ────────────────────────────────────────
 
-    def disable_account(self, username: str) -> bool:
-        """Disable a Windows user account."""
-        if username.upper() in PROTECTED_ACCOUNTS:
-            log(f"[AUTO-RESPONSE] ⚪ Cannot disable protected account: {username}")
+    def _allow_local_critical_auto(self, action: str, username: str = "") -> bool:
+        """C-BRICK-1: local critical auto only when account is freshly linked."""
+        try:
+            from client_brick_guard import (
+                account_linked_for_auto,
+                emit_skipped_unlinked,
+            )
+
+            tok = ""
+            try:
+                tok = (self.token_getter() or "") if self.token_getter else ""
+            except Exception:
+                tok = ""
+            if account_linked_for_auto(token=tok, api_client=self.api_client):
+                return True
+            self._stats["skipped_unlinked"] = self._stats.get("skipped_unlinked", 0) + 1
+            self._last_disable_error = "SKIPPED_UNLINKED"
+            emit_skipped_unlinked(
+                self.alert_pipeline,
+                action=action,
+                username=username,
+            )
+            return False
+        except Exception as e:
+            log(f"[AUTO-RESPONSE] linked gate error (fail-closed): {e}")
+            self._stats["skipped_unlinked"] = self._stats.get("skipped_unlinked", 0) + 1
+            self._last_disable_error = "SKIPPED_UNLINKED"
             return False
 
-        cmd = ["net", "user", username, "/active:no"]
+    def disable_account(
+        self,
+        username: str,
+        *,
+        allow_privileged: bool = False,
+        force_last_admin: bool = False,
+    ) -> bool:
+        """Disable a Windows user account.
+
+        ``allow_privileged=True`` is reserved for cloud IR with confirm:true.
+        Local alert / silent-hours auto paths must leave it False so
+        Administrator (and other safe accounts) cannot be auto-disabled.
+
+        C-BRICK-1: auto path requires fresh account_linked.
+        C-BRICK-6: refuse (or rollback) closing the last enabled admin.
+        """
+        self._last_disable_error = None
+        uname = (username or "").strip()
+        if not uname:
+            return False
+        upper = uname.upper()
+        if upper in PROTECTED_ACCOUNTS:
+            log(f"[AUTO-RESPONSE] ⚪ Cannot disable protected account: {uname}")
+            self._last_disable_error = "PROTECTED_ACCOUNT"
+            return False
+        if not allow_privileged:
+            if not self._allow_local_critical_auto("disable_account", uname):
+                return False
+            if upper in AUTO_SAFE_ACCOUNTS:
+                log(
+                    f"[AUTO-RESPONSE] ⛔ Refusing auto-disable of privileged account "
+                    f"{uname} (requires confirmed IR)"
+                )
+                self._last_disable_error = "PROTECTED_ACCOUNT"
+                return False
+
+        # C-BRICK-6: never close the last admin path
+        if not force_last_admin:
+            try:
+                from client_brick_guard import would_close_last_admin
+
+                if would_close_last_admin(uname):
+                    self._stats["last_admin_refused"] = (
+                        self._stats.get("last_admin_refused", 0) + 1
+                    )
+                    self._last_disable_error = "LAST_ADMIN"
+                    log(
+                        f"[AUTO-RESPONSE] ⛔ Refusing disable of last admin "
+                        f"{uname} (C-BRICK-6)"
+                    )
+                    return False
+            except Exception as e:
+                log(f"[AUTO-RESPONSE] last-admin check error (refuse): {e}")
+                self._last_disable_error = "LAST_ADMIN"
+                return False
+
+        cmd = ["net", "user", uname, "/active:no"]
         success = self._run_system_cmd(cmd)
         if success:
+            # Rollback if host left with zero enabled admins
+            if not force_last_admin:
+                try:
+                    from client_brick_guard import count_enabled_local_admins
+
+                    if count_enabled_local_admins() < 1:
+                        log(
+                            f"[AUTO-RESPONSE] ♻️ Rollback disable of {uname} — "
+                            f"no enabled admin left (C-BRICK-6)"
+                        )
+                        self.enable_account(uname)
+                        self._stats["last_admin_rollback"] = (
+                            self._stats.get("last_admin_rollback", 0) + 1
+                        )
+                        self._last_disable_error = "LAST_ADMIN"
+                        return False
+                except Exception as e:
+                    log(f"[AUTO-RESPONSE] last-admin rollback check error: {e}")
             self._stats["accounts_disabled"] += 1
-            log(f"[AUTO-RESPONSE] 🔒 Account disabled: {username}")
+            log(f"[AUTO-RESPONSE] 🔒 Account disabled: {uname}")
         return success
 
     def enable_account(self, username: str) -> bool:

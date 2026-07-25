@@ -12,7 +12,7 @@ OutFile "cloud-client-installer.exe"
 !define DESCRIPTION "Asteria Client - Deception Cloud Agent"
 !define VERSIONMAJOR 4
 !define VERSIONMINOR 9
-!define VERSIONBUILD 34
+!define VERSIONBUILD 38
 
 InstallDir "$PROGRAMFILES64\${COMPANYNAME}\${APPNAME}"
 
@@ -20,8 +20,8 @@ InstallDir "$PROGRAMFILES64\${COMPANYNAME}\${APPNAME}"
 RequestExecutionLevel admin
 
 ; Modern UI Configuration
-!define MUI_ICON "certs\honeypot_64.ico"
-!define MUI_UNICON "certs\honeypot_64.ico"
+!define MUI_ICON "certs\asteria_64.ico"
+!define MUI_UNICON "certs\asteria_64.ico"
 !define MUI_WELCOMEFINISHPAGE_BITMAP "certs\welcome.bmp"
 !define MUI_UNWELCOMEFINISHPAGE_BITMAP "certs\welcome.bmp"
 
@@ -110,6 +110,7 @@ Function LaunchAsCurrentUser
             Pop $0
             Goto LaunchAfterKill
     LaunchTaskkill:
+        nsExec::Exec 'taskkill /F /T /IM asteria-gui.exe >nul 2>&1'
         nsExec::Exec 'taskkill /F /T /IM asteria-client.exe >nul 2>&1'
         nsExec::Exec 'taskkill /F /T /IM honeypot-client.exe >nul 2>&1'
         Pop $0
@@ -120,8 +121,10 @@ Function LaunchAsCurrentUser
     ExpandEnvStrings $R9 "%ProgramData%\YesNext\CloudHoneypotClient\update_in_progress.lock"
     Delete /REBOOTOK "$R9"
 
-    ; Single launch — app __init__ installs Task Scheduler when elevated/needed
-    ExecShell "open" "$INSTDIR\asteria-client.exe" "--show-gui"
+    ; Start SYSTEM-capable motor setup from elevated installer, then open the
+    ; separate GUI as the interactive user.
+    Exec '"$INSTDIR\asteria-client.exe" --mode=daemon --create-tasks'
+    ExecShell "open" "$INSTDIR\asteria-gui.exe"
 FunctionEnd
 
 ; Simple log function
@@ -246,28 +249,88 @@ Function PreInstallKillFast
     SetOutPath "$PLUGINSDIR"
     File "scripts\kill-honeypot.ps1"
     File "scripts\prepare-install-dir.ps1"
+    File "scripts\remove-legacy-install.ps1"
 
     DetailPrint "[PRE-KILL] Stopping tasks + DACL-protected processes..."
+    ; Legacy guardian service otherwise respawns the old YesNext binary while
+    ; the Asteria files are being installed.
+    nsExec::Exec 'sc.exe stop CloudHoneypotGuardian >nul 2>&1'
+    nsExec::Exec 'sc.exe delete CloudHoneypotGuardian >nul 2>&1'
+    nsExec::Exec 'sc.exe stop CloudHoneypotMonitor >nul 2>&1'
+    nsExec::Exec 'sc.exe delete CloudHoneypotMonitor >nul 2>&1'
+    Sleep 500
+    nsExec::Exec 'taskkill /F /T /IM asteria-gui.exe >nul 2>&1'
     nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\kill-honeypot.ps1" -Force'
     Pop $0
     DetailPrint "[PRE-KILL] kill-honeypot.ps1 exit code: $0"
+    DetailPrint "[PRE-KILL] Removing legacy YesNext Program Files trees..."
+    ; Prefer 64-bit PowerShell (Sysnative) so WOW64 does not hide C:\Program Files\YesNext.
+    IfFileExists "$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe" 0 LegacyCleanWow64
+        nsExec::ExecToLog '"$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\remove-legacy-install.ps1" -KeepIfSameAs "$INSTDIR"'
+        Pop $0
+        Goto LegacyCleanDone
+    LegacyCleanWow64:
+        nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\remove-legacy-install.ps1" -KeepIfSameAs "$INSTDIR"'
+        Pop $0
+    LegacyCleanDone:
+    DetailPrint "[PRE-KILL] remove-legacy-install.ps1 exit code: $0"
+    ; Direct NSIS purge (64-bit Program Files) — do not rely on WOW64 view alone.
+    RMDir /r "$PROGRAMFILES64\YesNext\Cloud Honeypot Client"
+    RMDir /r "$PROGRAMFILES64\YesNext\CloudHoneypotClient"
+    RMDir /r "$PROGRAMFILES\YesNext\Cloud Honeypot Client"
+    RMDir /r "$PROGRAMFILES\YesNext\CloudHoneypotClient"
+    RMDir "$PROGRAMFILES64\YesNext"
+    RMDir "$PROGRAMFILES\YesNext"
 FunctionEnd
 
 ; Restrict scripts\ to SYSTEM + Administrators (deny interactive Users RX).
 Function HardenInstallScriptsAcl
     DetailPrint "[ACL] Hardening helper script folders ..."
     ; $INSTDIR\scripts (memory_restart) + onedir datas scripts (update helper in _internal)
-    nsExec::ExecToLog 'icacls "$INSTDIR\scripts" /inheritance:r /grant:r "NT AUTHORITY\SYSTEM:(OI)(CI)F" /grant:r "BUILTIN\Administrators:(OI)(CI)F" /remove:g "BUILTIN\Users" /remove:g "Everyone" /remove:g "NT AUTHORITY\Authenticated Users" /T /C /Q'
+    nsExec::ExecToLog 'icacls "$INSTDIR\scripts" /inheritance:r /grant:r "NT AUTHORITY\SYSTEM:(OI)(CI)F" /grant:r "BUILTIN\Administrators:(OI)(CI)F" /remove:g "BUILTIN\Users" /remove:g "Everyone" /remove:g "NT AUTHORITY\Authenticated Users" /C /Q'
     Pop $0
     DetailPrint "[ACL] scripts icacls exit: $0"
+    nsExec::ExecToLog 'icacls "$INSTDIR\scripts\*" /inheritance:e /T /C /Q'
+    Pop $0
     IfFileExists "$INSTDIR\_internal\scripts" 0 HardenAclDone
-        nsExec::ExecToLog 'icacls "$INSTDIR\_internal\scripts" /inheritance:r /grant:r "NT AUTHORITY\SYSTEM:(OI)(CI)F" /grant:r "BUILTIN\Administrators:(OI)(CI)F" /remove:g "BUILTIN\Users" /remove:g "Everyone" /remove:g "NT AUTHORITY\Authenticated Users" /T /C /Q'
+        nsExec::ExecToLog 'icacls "$INSTDIR\_internal\scripts" /inheritance:r /grant:r "NT AUTHORITY\SYSTEM:(OI)(CI)F" /grant:r "BUILTIN\Administrators:(OI)(CI)F" /remove:g "BUILTIN\Users" /remove:g "Everyone" /remove:g "NT AUTHORITY\Authenticated Users" /C /Q'
         Pop $0
         DetailPrint "[ACL] _internal\scripts icacls exit: $0"
+        nsExec::ExecToLog 'icacls "$INSTDIR\_internal\scripts\*" /inheritance:e /T /C /Q'
+        Pop $0
         ; Remove kill helper from onedir datas if present (installer-only tool)
         Delete "$INSTDIR\_internal\scripts\kill-honeypot.ps1"
         Delete "$INSTDIR\_internal\scripts\prepare-install-dir.ps1"
     HardenAclDone:
+FunctionEnd
+
+; Program Files is executable content only. Standard users may run/read the
+; current onedir runtime during migration, but can never modify or replace it.
+; Once tray/GUI no longer depend on the motor runtime, _internal is removed.
+Function HardenInstallRootAcl
+    DetailPrint "[ACL] Hardening Asteria install tree (no user writes) ..."
+    ; Set policy only on the root, then make children inherit it. Applying
+    ; (OI)(CI) ACEs directly to files via /T can create inherit-only/empty
+    ; effective DACLs and make the executables unlaunchable.
+    nsExec::ExecToLog 'icacls "$INSTDIR" /inheritance:r /grant:r "NT AUTHORITY\SYSTEM:(OI)(CI)F" /grant:r "BUILTIN\Administrators:(OI)(CI)F" /grant:r "BUILTIN\Users:(OI)(CI)RX" /remove:g "Everyone" /remove:g "NT AUTHORITY\Authenticated Users" /C /Q'
+    Pop $0
+    DetailPrint "[ACL] install root policy exit: $0"
+    nsExec::ExecToLog 'icacls "$INSTDIR\*" /inheritance:e /T /C /Q'
+    Pop $0
+    DetailPrint "[ACL] child inheritance exit: $0"
+FunctionEnd
+
+; Motor runtime contains executable implementation details and is never needed
+; by the non-admin GUI. Keep it SYSTEM/Admin-only during the onedir migration.
+Function HardenMotorRuntimeAcl
+    IfFileExists "$INSTDIR\_internal\*.*" 0 HardenMotorRuntimeDone
+        DetailPrint "[ACL] Restricting motor runtime to SYSTEM + Administrators ..."
+        nsExec::ExecToLog 'icacls "$INSTDIR\_internal" /inheritance:r /grant:r "NT AUTHORITY\SYSTEM:(OI)(CI)F" /grant:r "BUILTIN\Administrators:(OI)(CI)F" /remove:g "BUILTIN\Users" /remove:g "Everyone" /remove:g "NT AUTHORITY\Authenticated Users" /C /Q'
+        Pop $0
+        DetailPrint "[ACL] motor runtime icacls exit: $0"
+        nsExec::ExecToLog 'icacls "$INSTDIR\_internal\*" /inheritance:e /T /C /Q'
+        Pop $0
+    HardenMotorRuntimeDone:
 FunctionEnd
 
 ; Move locked onedir trees aside so File /r never hits Abort/Retry/Ignore.
@@ -277,9 +340,27 @@ Function PrepareInstallDirForOverwrite
     SetOutPath "$PLUGINSDIR"
     File "scripts\kill-honeypot.ps1"
     File "scripts\prepare-install-dir.ps1"
+    File "scripts\remove-legacy-install.ps1"
     nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\prepare-install-dir.ps1" -InstallDir "$INSTDIR" -KillScript "$PLUGINSDIR\kill-honeypot.ps1"'
     Pop $0
     DetailPrint "[PREP-DIR] prepare-install-dir.ps1 exit code: $0"
+    ; Belt-and-suspenders: purge legacy trees again after kill (in case PreInstall
+    ; ran before elevation finished stopping YesNext images).
+    IfFileExists "$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe" 0 PrepLegacyWow64
+        nsExec::ExecToLog '"$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\remove-legacy-install.ps1" -KeepIfSameAs "$INSTDIR"'
+        Pop $0
+        Goto PrepLegacyDone
+    PrepLegacyWow64:
+        nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\remove-legacy-install.ps1" -KeepIfSameAs "$INSTDIR"'
+        Pop $0
+    PrepLegacyDone:
+    DetailPrint "[PREP-DIR] remove-legacy-install.ps1 exit code: $0"
+    RMDir /r "$PROGRAMFILES64\YesNext\Cloud Honeypot Client"
+    RMDir /r "$PROGRAMFILES64\YesNext\CloudHoneypotClient"
+    RMDir /r "$PROGRAMFILES\YesNext\Cloud Honeypot Client"
+    RMDir /r "$PROGRAMFILES\YesNext\CloudHoneypotClient"
+    RMDir "$PROGRAMFILES64\YesNext"
+    RMDir "$PROGRAMFILES\YesNext"
     Sleep 200
 FunctionEnd
 
@@ -361,6 +442,7 @@ Function un.KillHoneypotProcesses
 
     nsExec::Exec 'taskkill /f /t /im "asteria-client.exe" >nul 2>&1'
     nsExec::Exec 'taskkill /f /t /im "honeypot-client.exe" >nul 2>&1'
+    nsExec::Exec 'taskkill /f /t /im "asteria-gui.exe" >nul 2>&1'
     Pop $0
     Sleep 300
 
@@ -373,6 +455,10 @@ FunctionEnd
 
 Function un.PreInstallKillFast
     DetailPrint "[PRE-KILL] Uninstall stop sequence..."
+    nsExec::Exec 'sc.exe stop CloudHoneypotGuardian >nul 2>&1'
+    nsExec::Exec 'sc.exe delete CloudHoneypotGuardian >nul 2>&1'
+    nsExec::Exec 'sc.exe stop CloudHoneypotMonitor >nul 2>&1'
+    nsExec::Exec 'sc.exe delete CloudHoneypotMonitor >nul 2>&1'
     nsExec::Exec 'cmd /c echo stop > "%TEMP%\honeypot_watchdog_token.txt"'
     nsExec::Exec 'cmd /c echo stop > "%APPDATA%\YesNext\CloudHoneypot\watchdog_token.txt"'
     nsExec::Exec 'cmd /c mkdir "%ProgramData%\YesNext\CloudHoneypot" 2>nul'
@@ -458,10 +544,12 @@ Section "Asteria Client (Required)" SEC_MAIN
     ; already relocates the hot trees; try is belt-and-suspenders for AV/handle races.
     SetOverwrite try
 
-    ; Install main files (onedir: exe + _internal next to it)
+    ; Install motor files (temporary onedir: exe + _internal next to it)
     !insertmacro LOG "[FILES] Installing application files (onedir)..."
     SetOutPath $INSTDIR
     File /r "dist\asteria-client\*.*"
+    ; Separate interactive GUI host (onefile; no motor secrets in WebView).
+    File "dist\asteria-gui.exe"
     ; Extra config copies at install root (also inside _internal via PyInstaller datas)
     File /oname=client_config.json "dist\client_config.json"
     File /oname=client_lang.json "dist\client_lang.json"
@@ -480,7 +568,10 @@ Section "Asteria Client (Required)" SEC_MAIN
     !insertmacro LOG "[FILES] Staging memory_restart.ps1 (lock-safe)..."
     Call InstallMemoryRestartScript
     !insertmacro LOG "[FILES] Application files installed (exe + _internal)."
+    Call HardenInstallRootAcl
+    ; Helper scripts remain SYSTEM/Admin-only after the root RX policy.
     Call HardenInstallScriptsAcl
+    Call HardenMotorRuntimeAcl
 
     ; =================================================================
     ; PHASE 3: POST-INSTALLATION CONFIGURATION
@@ -513,7 +604,7 @@ Section "Asteria Client (Required)" SEC_MAIN
     ; Start Menu shortcuts (always)
     !insertmacro LOG "[CONFIG] Creating Start Menu shortcuts..."
     CreateDirectory "$SMPROGRAMS\${COMPANYNAME}"
-    CreateShortCut "$SMPROGRAMS\${COMPANYNAME}\Asteria.lnk" "$INSTDIR\asteria-client.exe" "--show-gui"
+    CreateShortCut "$SMPROGRAMS\${COMPANYNAME}\Asteria.lnk" "$INSTDIR\asteria-gui.exe"
     CreateShortCut "$SMPROGRAMS\${COMPANYNAME}\Uninstall.lnk" "$INSTDIR\Uninstall.exe"
 
     ; =================================================================
@@ -524,7 +615,10 @@ Section "Asteria Client (Required)" SEC_MAIN
     ; (new process locks files / Defender / finalize never returns).
     ; =================================================================
     IfSilent 0 InteractiveOnboarding
-        !insertmacro LOG "[AUTO-START] Silent install — skip daemon (helper restarts app)."
+        ; Self-update helper also restarts, but direct /S installs have no
+        ; helper. Async launch occurs after all files/ACL/registry work.
+        !insertmacro LOG "[AUTO-START] Silent install — create tasks/start Asteria motor."
+        Exec '"$INSTDIR\asteria-client.exe" --mode=daemon --create-tasks'
         Goto SkipAutoStart
     InteractiveOnboarding:
         ; Force visible GUI until user registers / links account (no tray hide)
@@ -548,7 +642,7 @@ SectionEnd
 ; Start Menu shortcut is always created in SEC_MAIN.
 Section /o "Desktop Shortcut" SEC_DESKTOP
     !insertmacro LOG "[CONFIG] Creating desktop shortcut..."
-    CreateShortCut "$DESKTOP\Asteria.lnk" "$INSTDIR\asteria-client.exe" "--show-gui"
+    CreateShortCut "$DESKTOP\Asteria.lnk" "$INSTDIR\asteria-gui.exe"
 SectionEnd
 
 ; ===================================================================
@@ -578,6 +672,7 @@ Section "Uninstall"
     DetailPrint "Removing application files..."
     RMDir /r "$INSTDIR\_internal"
     RMDir /r "$INSTDIR\runtime"
+    Delete "$INSTDIR\asteria-gui.exe"
     Delete "$INSTDIR\asteria-client.exe"
     Delete "$INSTDIR\client_config.json"
     Delete "$INSTDIR\client_lang.json"

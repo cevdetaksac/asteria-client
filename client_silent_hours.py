@@ -10,7 +10,7 @@ Akış:
   1. EventLogWatcher başarılı logon tespit eder
   2. SilentHoursGuard.check(event) çağrılır
   3. is_silent_now() → Evet ise ve IP whitelist'te değilse
-  4. → block_ip + logoff_user + disable_account + send_alert
+  4. → alert only (no HP-BLOCK / logoff / disable — operator onayına bırakılır)
 
 Modlar:
   DISABLED         — Kapalı
@@ -59,7 +59,8 @@ class SilentHoursMode(Enum):
 class SilentHoursConfig:
     """Dashboard'dan ayarlanabilir Silent Hours konfigürasyonu."""
 
-    enabled: bool = True
+    # Defaults match Settings/contract: OFF until operator enables in cloud.
+    enabled: bool = False
     mode: SilentHoursMode = SilentHoursMode.NIGHT_ONLY
 
     # Night mode bounds
@@ -74,13 +75,14 @@ class SilentHoursConfig:
     # Custom schedule  e.g. {"monday": [{"start": "00:00", "end": "08:00"}, ...]}
     custom_schedule: Dict[str, list] = field(default_factory=dict)
 
-    # Weekend policy
-    weekend_all_day_silent: bool = True
+    # Weekend policy — off by default (was causing weekend false positives)
+    weekend_all_day_silent: bool = False
 
-    # Auto-actions
+    # Auto-actions — NEVER disable/logoff automatically (stuck servers / false alarms).
+    # Cloud may still send these flags; client forces them off in from_dict / check().
     auto_block_ip: bool = False  # Bare successful logon must not HP-BLOCK (alert/challenge only)
-    auto_logoff: bool = True
-    auto_disable_account: bool = True
+    auto_logoff: bool = False
+    auto_disable_account: bool = False
     block_duration_hours: int = 0  # 0 = permanent (until admin clears)
 
     # Whitelist (managed from dashboard)
@@ -90,7 +92,7 @@ class SilentHoursConfig:
     # Alert settings
     alert_on_block: bool = True
     alert_severity: str = "critical"
-    timezone: str = "Europe/Istanbul"
+    timezone: str = "UTC"
 
     @classmethod
     def from_dict(cls, data: dict) -> "SilentHoursConfig":
@@ -115,16 +117,43 @@ class SilentHoursConfig:
         cfg.custom_schedule = data.get("custom_schedule", cfg.custom_schedule)
         cfg.weekend_all_day_silent = data.get("weekend_all_day_silent", cfg.weekend_all_day_silent)
         cfg.auto_block_ip = data.get("auto_block_ip", cfg.auto_block_ip)
-        cfg.auto_logoff = data.get("auto_logoff", cfg.auto_logoff)
-        cfg.auto_disable_account = data.get("auto_disable_account", cfg.auto_disable_account)
+        # Safety hard-stop: silent-hours must never auto logoff/disable regardless of cloud flags.
+        # Destructive IR stays on dashboard confirm commands only.
+        cfg.auto_logoff = False
+        cfg.auto_disable_account = False
+        _ = data.get("auto_logoff")  # accepted for schema compat, ignored
+        _ = data.get("auto_disable_account")
         cfg.block_duration_hours = data.get("block_duration_hours", cfg.block_duration_hours)
         cfg.whitelist_ips = data.get("whitelist_ips", cfg.whitelist_ips)
         cfg.whitelist_subnets = data.get("whitelist_subnets", cfg.whitelist_subnets)
         cfg.alert_on_block = data.get("alert_on_block", cfg.alert_on_block)
         cfg.alert_severity = data.get("alert_severity", cfg.alert_severity)
-        cfg.timezone = data.get("timezone", cfg.timezone) or "Europe/Istanbul"
+        # Prefer machine-local TZ when cloud omits / sends Istanbul default on non-TR hosts.
+        tz = (data.get("timezone") or "").strip()
+        cfg.timezone = tz or _default_timezone()
 
         return cfg
+
+
+def _default_timezone() -> str:
+    try:
+        import time
+
+        name = time.tzname[0] if time.tzname else ""
+        # Windows often reports abbreviations; keep Istanbul only as last resort.
+        if name:
+            return time.tzname[time.daylight] if time.daylight else name
+    except Exception:
+        pass
+    try:
+        local = datetime.datetime.now().astimezone().tzinfo
+        if local is not None:
+            key = getattr(local, "key", None)
+            if key:
+                return str(key)
+    except Exception:
+        pass
+    return "UTC"
 
 
 # ── Day name mapping for custom schedule ──────────────────────────
@@ -293,54 +322,28 @@ class SilentHoursGuard:
 
         log(
             f"[SILENT-HOURS] 🔇 VIOLATION: {source_ip} → {service} "
-            f"({username}) — alert only (no HP-BLOCK)"
+            f"({username}) — alert only (no block/logoff/disable)"
         )
 
-        actions_taken = []
+        actions_taken: List[str] = []
+        # Destructive actions intentionally removed. False-positive silent-hours
+        # previously disabled Administrator and stuck servers. Use dashboard IR
+        # with confirm:true for disable/logoff.
 
-        # 1. Firewall block — DISABLED for bare successful logon.
-        # Office RDP / silent-hours access → alert + optional challenge, not HP-BLOCK.
-        # (auto_block_ip kept for config compat but ignored on success path.)
-        if False and self.config.auto_block_ip and self.auto_response:
-            try:
-                self.auto_response.block_ip(
-                    source_ip,
-                    reason=f"Silent hours violation: {service}",
-                    duration_hours=self.config.block_duration_hours,
-                )
-                actions_taken.append("block_ip")
-            except Exception as e:
-                log(f"[SILENT-HOURS] block_ip error: {e}")
-
-        # 2. Logoff active session
-        if self.config.auto_logoff and self.auto_response:
-            try:
-                self.auto_response.logoff_user(username)
-                actions_taken.append("logoff_user")
-            except Exception as e:
-                log(f"[SILENT-HOURS] logoff error: {e}")
-
-        # 3. Disable account
-        if self.config.auto_disable_account and self.auto_response:
-            try:
-                self.auto_response.disable_account(username)
-                actions_taken.append("disable_account")
-            except Exception as e:
-                log(f"[SILENT-HOURS] disable_account error: {e}")
-
-        # 4. Send critical alert
+        # Send alert (severity still critical so ops see it)
         if self.config.alert_on_block and self.alert_pipeline:
             try:
                 alert_data = {
                     "severity": self.config.alert_severity,
                     "threat_type": "silent_hours_violation",
                     "title": (
-                        f"🔇 Sessiz Saat İhlali — {service} girişi engellendi"
+                        f"Sessiz Saat İhlali — {service} girişi (yalnızca uyarı)"
                     ),
                     "description": (
                         f"Sessiz saatlerde {source_ip} adresinden {service} "
-                        f"servisine başarılı giriş tespit edildi. "
-                        f"Firewall engeli uygulanmadı — bildirim / logon challenge tercih edilir.\n\n"
+                        f"servisine başarılı giriş tespit edildi.\n"
+                        f"Otomatik engelleme / logoff / hesap kapatma YOK — "
+                        f"onaylı IR komutu gerekir.\n\n"
                         f"Kullanıcı: {username}\n"
                         f"Bu siz miydiniz? Dashboard'dan IP'nizi beyaz listeye ekleyin."
                     ),

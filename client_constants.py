@@ -17,7 +17,9 @@ Key Intervals (optimized for performance):
 Notes:
 - Intervals are tuned to reduce CPU/network usage
 - All intervals can be overridden in client_config.json
-- Wire identities (ProgramData, CloudHoneypot-* tasks, yesnext-chp-v1) stay stable
+- Wire identities (ProgramData, CloudHoneypot-* tasks) stay stable; signing
+  context emits ``asteria-chp-v1`` / ``asteria-heartbeat-v1`` (contract ≥1.4.32).
+  Verify still accepts legacy ``yesnext-*`` during fleet cutover.
   per contract agent/rebrand-asteria.md — display brand is Asteria.
 """
 
@@ -38,7 +40,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.34"  # Asteria rebrand (display/path/API); wire ProgramData/tasks unchanged
+VERSION = "4.9.38"  # C-BRICK + durable token / legacy_supersede rotate-token
 
 CLIENT_VERSION = VERSION  # Main version constant
 __version__ = VERSION  # Export for compatibility
@@ -439,14 +441,14 @@ REMOTE_CMD_IR_STICKY_SECONDS = 45         # Stay on IR cadence after urgent cmd
 REMOTE_CMD_EXPIRY_SECONDS = 300           # Commands expire after 5 minutes
 REMOTE_CMD_MAX_PER_MINUTE = 30            # Rate limit for non-IR cmds (IR exempt)
 
-# Silent Hours — defaults
-SILENT_HOURS_ENABLED = get_from_config("silent_hours.enabled", True)
+# Silent Hours — defaults (OFF; alert-only when enabled — never auto-disable)
+SILENT_HOURS_ENABLED = get_from_config("silent_hours.enabled", False)
 SILENT_HOURS_DEFAULT_MODE = "night_only"  # night_only | outside_working | always | custom
 SILENT_HOURS_NIGHT_START = "00:00"
 SILENT_HOURS_NIGHT_END = "07:00"
 SILENT_HOURS_WORK_START = "08:00"
 SILENT_HOURS_WORK_END = "18:00"
-SILENT_HOURS_WEEKEND_SILENT = True        # All-day silent on weekends
+SILENT_HOURS_WEEKEND_SILENT = False       # Was True → weekend false positives
 
 # Config sync — pull threat/silent hours config from backend
 THREAT_CONFIG_SYNC_INTERVAL = 300         # Re-fetch threat config every 5 min (V4)

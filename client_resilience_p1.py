@@ -28,6 +28,9 @@ ACL_BASELINE_FILE = os.path.join(MACHINE_DATA_DIR, "acl_baseline_v1.json")
 _DEFAULT_PATHS = (
     MACHINE_DATA_DIR,
     os.path.abspath(sys.executable),
+    # Install surface observe (M0): catch ACL drift on Program Files root + motor runtime.
+    os.path.dirname(os.path.abspath(sys.executable)),
+    os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "_internal"),
 )
 
 
@@ -47,8 +50,8 @@ def acl_drift_enabled() -> bool:
     return _enabled("security.acl_drift_observe", False)
 
 
-def _heartbeat_key(token: str, hostname: str) -> bytes:
-    material = f"{token}|{hostname.lower()}|yesnext-heartbeat-v1"
+def _heartbeat_key(token: str, hostname: str, context: str = "asteria-heartbeat-v1") -> bytes:
+    material = f"{token}|{hostname.lower()}|{context}"
     return hashlib.sha256(material.encode("utf-8")).digest()
 
 
@@ -130,7 +133,19 @@ def verify_heartbeat_proof(
         running=running,
         issued_at=issued_at,
     )
-    if not hmac.compare_digest(signature, expected["signature"]):
+    message = (
+        f"v1|{hostname.lower()}|{status}|{1 if running else 0}|{issued_at}"
+    ).encode("utf-8")
+    sig_ok = hmac.compare_digest(signature, expected["signature"])
+    if not sig_ok:
+        # Accept legacy verify during fleet cutover labs.
+        legacy = hmac.new(
+            _heartbeat_key(token, hostname, "yesnext-heartbeat-v1"),
+            message,
+            hashlib.sha256,
+        ).hexdigest()
+        sig_ok = hmac.compare_digest(signature, legacy)
+    if not sig_ok:
         result["reason"] = "bad_signature"
         return result
     try:

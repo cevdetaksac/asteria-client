@@ -8,7 +8,7 @@ saldırı bildirim (credential capture) ve saldırı sayısı sorgulama işlemle
 merkezileştirir.
 
 Sınıflar:
-    - HoneypotAPIClient: API ile etkileşim kurmak için ana sınıf.
+    - AsteriaAPIClient: API ile etkileşim kurmak için ana sınıf.
 
 Fonksiyonlar:
     - api_request_with_token: Token ile API isteği wrapper.
@@ -35,7 +35,7 @@ from client_security_utils import (
     use_legacy_token_query,
 )
 
-class HoneypotAPIClient:
+class AsteriaAPIClient:
     """Asteria API bağlantı yönetimi sınıfı"""
     
     def __init__(self, base_url: str, log_func=None, legacy_base_url: str = ""):
@@ -1097,7 +1097,7 @@ def link_account_with_credentials(
     api_url: str = "",
     log_func=None,
 ) -> Dict[str, Any]:
-    """Link this agent token to a YesNext Account using email+password.
+    """Link this agent token to an Asteria Account using email+password.
 
     Prefer JSON: POST /api/agent/link-account
     Fallback: form login + /account/link-server (session cookie).
@@ -1294,7 +1294,7 @@ def unlink_account_with_credentials(
     api_url: str = "",
     log_func=None,
 ) -> Dict[str, Any]:
-    """Unlink this agent token from a YesNext Account (email+password confirm).
+    """Unlink this agent token from an Asteria Account (email+password confirm).
 
     Prefer JSON: POST /api/agent/unlink-account
     Fallback: open-web instruction if endpoint missing (caller shows /servers).
@@ -1561,3 +1561,7 @@ def rotate_token_api(
         out["status_code"] = 0
         _log(f"[TOKEN] rotate-token error: {e}")
         return out
+
+
+# Backward-compatible alias (pre-Asteria brand). Prefer AsteriaAPIClient.
+HoneypotAPIClient = AsteriaAPIClient

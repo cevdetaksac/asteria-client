@@ -35,7 +35,7 @@ class TestCanaryUrgentWire(unittest.TestCase):
         pipeline = _AlertPipeline(order)
         shield = RansomwareShield(alert_pipeline=pipeline)
 
-        def contain(trigger, focus_path=""):
+        def contain(trigger, focus_path="", mode="kill"):
             order.append("contain")
             return {
                 "trigger": trigger,
@@ -58,14 +58,24 @@ class TestCanaryUrgentWire(unittest.TestCase):
             size=10,
         )
 
-        shield._on_canary_triggered(canary, "MODIFIED")
+        with mock.patch(
+            "client_defense_policy.process_action_plan",
+            return_value={
+                "action": "kill_quarantine",
+                "contain": True,
+                "kill": True,
+                "alert_only": False,
+                "force_urgent": True,
+            },
+        ):
+            shield._on_canary_triggered(canary, "MODIFIED")
 
         self.assertEqual(order, ["contain", "urgent"])
         self.assertEqual(len(pipeline.alerts), 1)
         alert = pipeline.alerts[0]
         self.assertEqual(alert["threat_score"], 100)
         self.assertEqual(alert["target_service"], "SYSTEM")
-        self.assertEqual(alert["recommended_action"], "isolate_host")
+        self.assertEqual(alert["recommended_action"], "review_quarantine")
         self.assertTrue(alert.get("suppress_local_notify"))
         context = alert["system_context"]["ransomware"]
         self.assertEqual(context["file"], canary.path)

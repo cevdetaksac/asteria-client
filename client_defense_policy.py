@@ -202,10 +202,14 @@ def _read_token() -> str:
         return ""
 
 
-def _signing_secret(token: Optional[str] = None) -> bytes:
+_DEFENSE_SIGNING_CONTEXT = "asteria-chp-v1"
+_DEFENSE_SIGNING_LEGACY = "yesnext-chp-v1"
+
+
+def _signing_secret(token: Optional[str] = None, context: str = _DEFENSE_SIGNING_CONTEXT) -> bytes:
     token = _read_token() if token is None else (token or "")
     machine = os.environ.get("COMPUTERNAME", "unknown")
-    material = f"{token}|{machine}|yesnext-chp-v1"
+    material = f"{token}|{machine}|{context}"
     return hashlib.sha256(material.encode("utf-8")).digest()
 
 
@@ -227,7 +231,16 @@ def verify_payload(payload: dict, token: Optional[str] = None) -> bool:
     if not sig:
         return False
     try:
-        return hmac.compare_digest(str(sig), sign_payload(payload, token=token))
+        body = json.dumps(_strip_sig(payload), sort_keys=True, ensure_ascii=False).encode(
+            "utf-8"
+        )
+        for context in (_DEFENSE_SIGNING_CONTEXT, _DEFENSE_SIGNING_LEGACY):
+            expected = hmac.new(
+                _signing_secret(token, context), body, hashlib.sha256
+            ).hexdigest()
+            if hmac.compare_digest(str(sig), expected):
+                return True
+        return False
     except Exception:
         return False
 

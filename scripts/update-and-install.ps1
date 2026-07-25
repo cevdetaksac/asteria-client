@@ -411,7 +411,8 @@ public class HpTokUp {
 
 function Get-HoneypotPids {
     $list = @()
-    Get-Process -Name "honeypot-client" -ErrorAction SilentlyContinue | ForEach-Object { $list += $_.Id }
+    Get-Process -Name "asteria-client","asteria-gui","honeypot-client" -ErrorAction SilentlyContinue |
+        ForEach-Object { $list += $_.Id }
     return $list
 }
 
@@ -431,6 +432,8 @@ public class HpKillUp {
     try { Add-Type -TypeDefinition $kdef -ErrorAction Stop | Out-Null } catch {}
 
     try { & taskkill.exe /F /T /IM asteria-client.exe 2>$null | Out-Null } catch {}
+    try { & taskkill.exe /F /T /IM asteria-gui.exe 2>$null | Out-Null } catch {}
+    try { & taskkill.exe /F /T /IM honeypot-client.exe 2>$null | Out-Null } catch {}
     $pids = Get-HoneypotPids
     foreach ($procId in $pids) {
         try {
@@ -637,7 +640,12 @@ if (-not $Silent) {
     # Interactive NSIS path - visible onboarding/GUI
     Write-UpLog "Launching GUI..."
     try {
-        Start-Process -FilePath $exe -ArgumentList "--show-gui" -WorkingDirectory $InstallDir
+        $gui = Join-Path $InstallDir "asteria-gui.exe"
+        if (Test-Path -LiteralPath $gui) {
+            Start-Process -FilePath $gui -WorkingDirectory $InstallDir
+        } else {
+            Start-Process -FilePath $exe -ArgumentList "--show-gui" -WorkingDirectory $InstallDir
+        }
     } catch {
         Write-UpLog "WARN: GUI launch failed: $($_.Exception.Message)"
     }
@@ -659,8 +667,14 @@ if (-not $Silent) {
             schtasks /change /tn "CloudHoneypot-Tray" /enable 2>$null | Out-Null
             schtasks /run /tn "CloudHoneypot-Tray" 2>$null | Out-Null
             if ($LASTEXITCODE -ne 0) {
-                Write-UpLog "WARN: CloudHoneypot-Tray /run failed (exit=$LASTEXITCODE) - trying --mode=tray"
-                Start-Process -FilePath $exe -ArgumentList "--mode=tray" -WorkingDirectory $InstallDir
+                $gui = Join-Path $InstallDir "asteria-gui.exe"
+                if (Test-Path -LiteralPath $gui) {
+                    Write-UpLog "WARN: CloudHoneypot-Tray /run failed (exit=$LASTEXITCODE) - trying asteria-gui --tray"
+                    Start-Process -FilePath $gui -ArgumentList "--tray" -WorkingDirectory $InstallDir
+                } else {
+                    Write-UpLog "WARN: CloudHoneypot-Tray /run failed (exit=$LASTEXITCODE) - trying --mode=tray"
+                    Start-Process -FilePath $exe -ArgumentList "--mode=tray" -WorkingDirectory $InstallDir
+                }
             }
         } catch {
             Write-UpLog "WARN: Tray handoff after silent update: $($_.Exception.Message)"

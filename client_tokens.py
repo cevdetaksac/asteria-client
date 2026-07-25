@@ -9,14 +9,15 @@ Token is the server's durable identity. It must:
     hardware rebind / clone split)
   - Never auto-re-register merely because load/decrypt failed
 
-Hardware binding (schema v2) + in-place rotate (contract 1.4.29):
+Hardware binding (schema v2) + optional in-place rotate (contract 1.4.29):
   machine_id / hwid sent to /register is a SHA-256 over MachineGuid + NIC MACs
-  + SMBIOS UUID. When regenerating token.dat (identity v2 / rekey), call
-  POST /api/agent/rotate-token BEFORE writing disk — never bare /register while
-  the old token is still known (ghost Client rows).
+  + SMBIOS UUID. Routine schema upgrades and same-MachineGuid hardware drift
+  rewrap the SAME token locally. If an explicit rekey is ever required, call
+  POST /api/agent/rotate-token before writing disk. Never bare /register while
+  an old token is known (ghost Client rows / broken dashboard links).
 
-Create (/register) only when NO token file exists after migration - or when
-hardware binding requires a controlled re-enroll.
+Create (/register) only when NO token file exists after migration. Clone
+identity split is an explicit operator action via reset-agent-identity.ps1.
 """
 
 from __future__ import annotations
@@ -595,6 +596,93 @@ class TokenManager:
                 return None
         return None
 
+    def _aside_token_path(self, path: str, reason: str) -> None:
+        """Best-effort move leftover token file aside after cloud remap."""
+        try:
+            if not path or not os.path.isfile(path):
+                return
+            stamp = time.strftime("%Y%m%d%H%M%S")
+            dest = f"{path}.stale_{reason}_{stamp}"
+            os.replace(path, dest)
+            log(f"[TOKEN] Aside leftover {path} -> {dest}")
+        except OSError as e:
+            log(f"[TOKEN] Aside failed for {path}: {e}")
+
+    def reconcile_superseded_tokens(self, current: str) -> int:
+        """Notify cloud of leftover legacy tokens so rows remap old→current (1.4.29).
+
+        When ProgramData holds the live token but AppData/SYSTEM/install leftovers
+        still carry a *different* uuid, POST /api/agent/rotate-token with
+        ``old_token=<legacy>`` + ``new_token=<current>`` so the server can update
+        that Client row (attacks / Account link) onto the durable token.
+        """
+        current = (current or "").strip()
+        if not current:
+            return 0
+
+        seen: set = {current}
+        remapped = 0
+        fp = get_device_fingerprint()
+        mid_candidates = [fp, "", get_windows_machine_guid()]
+
+        for path in get_legacy_token_paths(self._app_dir_hint):
+            try:
+                can = get_canonical_token_path()
+                if os.path.normcase(os.path.abspath(path)) == os.path.normcase(
+                    os.path.abspath(can)
+                ):
+                    continue
+            except Exception:
+                pass
+            legacy = _read_token_from_path(path)
+            if not legacy or legacy in seen:
+                if legacy == current:
+                    # Same identity leftover — safe to aside plaintext / dupes
+                    self._aside_token_path(path, "dup_current")
+                continue
+            seen.add(legacy)
+            log(
+                f"[TOKEN] Legacy token differs from canonical "
+                f"({path}) - notifying cloud old->new"
+            )
+            ok = False
+            hard_gone = False
+            for mid in mid_candidates:
+                result = rotate_token_api(
+                    self.api_url,
+                    legacy,
+                    current,
+                    machine_id=mid,
+                    reason="legacy_supersede",
+                    log_func=log,
+                )
+                if result.get("ok"):
+                    ok = True
+                    remapped += 1
+                    log(
+                        f"[TOKEN] Cloud remapped legacy->current "
+                        f"(client_id={result.get('client_id')})"
+                    )
+                    break
+                code = int(result.get("status_code") or 0)
+                if code == 404:
+                    hard_gone = True
+                    break
+                if code == 403:
+                    continue
+                if code == 409:
+                    log("[TOKEN] legacy_supersede 409 — current already bound elsewhere")
+                    break
+                # Network / 5xx — leave file for a later boot
+                break
+
+            if ok or hard_gone:
+                self._aside_token_path(
+                    path, "superseded" if ok else "legacy_404"
+                )
+
+        return remapped
+
     def _reenroll(self, reason: str, root_window=None, t_func=None) -> Optional[str]:
         """Rekey identity: prefer in-place rotate; bare register only if old token gone.
 
@@ -607,14 +695,17 @@ class TokenManager:
             rotated = self._rotate_in_place(old, reason=reason)
             if rotated:
                 return rotated
-            # 404 / hard failure: forget local old token, then register reclaim
+            # Never discard a readable identity on network/5xx/404 ambiguity.
+            # Previous behavior quarantined token.dat after any failed rotate and
+            # then /register created a new dashboard Client row.
             log(
                 f"[TOKEN] rotate failed for reason={reason} — "
-                "quarantine local then register (old no longer usable)"
+                "keeping old token/client identity; manual reset required if invalid"
             )
-            quarantine_local_identity(reason=reason)
-            return self.register_client(root_window, t_func)
+            return old
 
+        # No readable token: quarantine stale files, but register_client still
+        # refuses to mint while an unreadable canonical token exists.
         quarantine_local_identity(reason=reason)
         return self.register_client(root_window, t_func)
 
@@ -636,26 +727,47 @@ class TokenManager:
         bind_fp = str(binding.get("fingerprint") or "").strip()
         schema = int(binding.get("schema") or 0)
 
+        current_guid = get_windows_machine_guid()
+        stored_guid = str(binding.get("machine_guid") or "").strip()
+        same_machine = bool(current_guid and stored_guid and current_guid == stored_guid)
+
         if bound_fp and bound_fp != fp:
             log(
                 f"[TOKEN] CHP2 fingerprint mismatch "
                 f"(bound={bound_fp[:12]}... now={fp[:12]}...) - clone/hardware change"
             )
-            return self._reenroll("fp_mismatch", root_window, t_func)
+            if same_machine:
+                # NIC/SMBIOS drift on the same Windows install: preserve the
+                # server token and only refresh the local DPAPI envelope.
+                self._persist_token(tok, fp, overwrite=True, reason="hardware_drift")
+                return tok
+            log(
+                "[TOKEN] Machine identity ambiguous/changed — preserving token.dat "
+                "and refusing automatic re-register (run reset-agent-identity manually for a clone)"
+            )
+            return tok
 
         if bind_fp and bind_fp != fp:
             log(
                 f"[TOKEN] device_binding fingerprint mismatch "
                 f"(bound={bind_fp[:12]}... now={fp[:12]}...) - clone/hardware change"
             )
-            return self._reenroll("binding_mismatch", root_window, t_func)
+            if same_machine:
+                self._persist_token(tok, fp, overwrite=True, reason="binding_repair")
+                return tok
+            log(
+                "[TOKEN] Binding mismatch on a different/unknown MachineGuid — "
+                "preserving existing identity; no automatic token rotation"
+            )
+            return tok
 
         if schema < IDENTITY_SCHEMA_VERSION:
             log(
-                "[TOKEN] Identity schema upgrade -> in-place rotate-token "
-                "(contract 1.4.29; preserves client_id / Account link)"
+                "[TOKEN] Identity schema upgrade -> rewrap existing token "
+                "(no cloud rotate; preserves token/client/account link)"
             )
-            return self._reenroll("identity_v2", root_window, t_func)
+            self._persist_token(tok, fp, overwrite=True, reason="identity_v2_rewrap")
+            return tok
 
         # Already bound - refresh CHP2 envelope if still CHP1 on disk
         if not bound_fp:
@@ -672,7 +784,13 @@ class TokenManager:
         """Load durable token; register only if no token file exists anywhere."""
         tok = self.get_token()
         if tok:
-            return self.ensure_hardware_binding(root_window, t_func)
+            bound = self.ensure_hardware_binding(root_window, t_func)
+            if bound:
+                try:
+                    self.reconcile_superseded_tokens(bound)
+                except Exception as e:
+                    log(f"[TOKEN] legacy reconcile error (non-fatal): {e}")
+            return bound
 
         # Corrupt/unreadable canonical file → do not register
         if os.path.isfile(self.token_file_new):

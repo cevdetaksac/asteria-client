@@ -248,16 +248,20 @@ class ProcessProtection:
     def _create_restart_task(self):
         """Create a Task Scheduler entry for auto-restart on process death."""
         try:
-            # Determine executable path
+            # Prefer asteria-gui so Users never LoadLibrary motor _internal.
             exe_path = sys.executable
-            if getattr(sys, 'frozen', False):
-                exe_path = sys.executable  # PyInstaller frozen
+            tr = f'"{exe_path}" --mode=tray'
+            if getattr(sys, "frozen", False):
+                gui = os.path.join(os.path.dirname(sys.executable), "asteria-gui.exe")
+                if os.path.isfile(gui):
+                    exe_path = gui
+                    tr = f'"{gui}" --tray'
 
             result = subprocess.run(
                 [
                     "schtasks", "/create",
                     "/tn", TASK_NAME,
-                    "/tr", f'"{exe_path}" --mode=tray',
+                    "/tr", tr,
                     "/sc", "ONLOGON",
                     "/rl", "HIGHEST",
                     "/f",  # Force overwrite

@@ -28,6 +28,7 @@ function Invoke-KillHelper {
         } catch {}
     }
     try { & taskkill.exe /F /T /IM asteria-client.exe 2>$null | Out-Null } catch {}
+    try { & taskkill.exe /F /T /IM asteria-gui.exe 2>$null | Out-Null } catch {}
     try { & taskkill.exe /F /T /IM honeypot-client.exe 2>$null | Out-Null } catch {}
 }
 
@@ -93,6 +94,7 @@ function Move-Aside([string]$path) {
             Start-Sleep -Milliseconds (150 * ($i + 1))
             Stop-ProcessesUnderInstallDir
             try { & taskkill.exe /F /T /IM asteria-client.exe 2>$null | Out-Null } catch {}
+            try { & taskkill.exe /F /T /IM asteria-gui.exe 2>$null | Out-Null } catch {}
             try { & taskkill.exe /F /T /IM honeypot-client.exe 2>$null | Out-Null } catch {}
         }
     }
@@ -194,8 +196,9 @@ Add-DefenderExclusionFast
 
 $okInternal = Move-Aside (Join-Path $InstallDir "_internal")
 $okExeA = Move-Aside (Join-Path $InstallDir "asteria-client.exe")
+$okExeG = Move-Aside (Join-Path $InstallDir "asteria-gui.exe")
 $okExeH = Move-Aside (Join-Path $InstallDir "honeypot-client.exe")
-$okExe = ($okExeA -or $okExeH)
+$okExe = ($okExeA -or $okExeH -or $okExeG)
 
 # Also clear common lock-prone helpers next to exe
 Move-Aside (Join-Path $InstallDir "asteria-client.exe.manifest") | Out-Null
