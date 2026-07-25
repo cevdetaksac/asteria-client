@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { motorBridge, type MotorStatus } from '../bridge'
+import { IconBtn, icons } from '../components/IconBtn'
 import { t } from '../i18n'
 import { asRecord, boolLabel, formatBps, pick } from '../lib'
 
@@ -170,6 +171,23 @@ export function StatusPage({ status, online, updatedAt, onRefresh, onToast, onNa
     }
   }
 
+  const removeWhitelist = async (ip: string) => {
+    setBusy(true)
+    try {
+      const cloud = await motorBridge.cloud('GET', 'threats/config')
+      const data = cloud.ok && cloud.data && typeof cloud.data === 'object'
+        ? (cloud.data as Record<string, unknown>)
+        : {}
+      const current = Array.isArray(data.whitelist_ips) ? data.whitelist_ips.map(String) : []
+      const next = current.filter((x) => x !== ip)
+      const result = await motorBridge.cloud('POST', 'threats/config', { whitelist_ips: next })
+      onToast(result.ok ? t('toast_wl_ok') : String(result.error || 'Whitelist'), result.ok ? 'ok' : 'err')
+      await loadExtras()
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const hostCpu = pick(resources, 'host_cpu_percent', 'cpu_percent', 'cpu')
   const hostRam = pick(resources, 'host_memory_percent', 'ram_percent', 'memory_percent')
   const procCpu = pick(resources, 'process_cpu_percent')
@@ -213,23 +231,44 @@ export function StatusPage({ status, online, updatedAt, onRefresh, onToast, onNa
             <div className="ip-row-actions">
               {kind === 'watching' && (
                 <>
-                  <button type="button" className="btn danger sm" disabled={busy} onClick={() => void mutateIp('BLOCK_IP', row.ip)}>
-                    {t('btn_block')}
-                  </button>
-                  <button type="button" className="btn ghost sm" disabled={busy} onClick={() => void addWhitelist(row.ip)}>
-                    {t('iplist_wl_short')}
-                  </button>
+                  <IconBtn
+                    icon={icons.block}
+                    title={t('btn_block')}
+                    danger
+                    disabled={busy}
+                    onClick={() => void mutateIp('BLOCK_IP', row.ip)}
+                  />
+                  <IconBtn
+                    icon={icons.whitelist}
+                    title={t('btn_whitelist_add')}
+                    disabled={busy}
+                    onClick={() => void addWhitelist(row.ip)}
+                  />
                 </>
               )}
               {kind === 'blocked' && (
                 <>
-                  <button type="button" className="btn ghost sm" disabled={busy} onClick={() => void mutateIp('UNBLOCK_IP', row.ip)}>
-                    {t('btn_unblock')}
-                  </button>
-                  <button type="button" className="btn ghost sm" disabled={busy} onClick={() => void addWhitelist(row.ip)}>
-                    {t('iplist_wl_short')}
-                  </button>
+                  <IconBtn
+                    icon={icons.unblock}
+                    title={t('btn_unblock')}
+                    disabled={busy}
+                    onClick={() => void mutateIp('UNBLOCK_IP', row.ip)}
+                  />
+                  <IconBtn
+                    icon={icons.whitelist}
+                    title={t('btn_whitelist_add')}
+                    disabled={busy}
+                    onClick={() => void addWhitelist(row.ip)}
+                  />
                 </>
+              )}
+              {kind === 'whitelist' && (
+                <IconBtn
+                  icon={icons.removeWhitelist}
+                  title={t('iplist_exclude')}
+                  disabled={busy}
+                  onClick={() => void removeWhitelist(row.ip)}
+                />
               )}
             </div>
           </div>
