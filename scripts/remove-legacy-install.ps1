@@ -60,7 +60,7 @@ $keep = Normalize-Dir $KeepIfSameAs
 $roots = @()
 foreach ($pf in $pfCandidates) {
     $roots += (Join-Path $pf "YesNext\Cloud Honeypot Client")
-    $roots += (Join-Path $pf "YesNext\CloudHoneypotClient")
+    $roots += (Join-Path $pf "Asteria")
 }
 $roots = @($roots | Where-Object { $_ } | Select-Object -Unique)
 

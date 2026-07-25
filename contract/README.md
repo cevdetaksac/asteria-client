@@ -6,7 +6,7 @@
 ../asteria-contract
 ```
 
-Remote: https://github.com/cevdetaksac/asteria-contract · **VERSION ≥ 1.4.31** · production floor client ≥ **4.9.0** ([`FLEET.md`](https://github.com/cevdetaksac/asteria-contract/blob/main/FLEET.md))
+Remote: https://github.com/cevdetaksac/asteria-contract · **VERSION ≥ 1.4.35** · production floor client ≥ **4.9.0** ([`FLEET.md`](https://github.com/cevdetaksac/asteria-contract/blob/main/FLEET.md))
 
 Legacy clone URL redirects: `honeypot-contract` → `asteria-contract`.
 

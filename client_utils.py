@@ -636,7 +636,7 @@ def watchdog_main(parent_pid: int, log_func=None):
         stop_locations = [
             os.path.join(os.environ.get('TEMP', ''), 'honeypot_watchdog_token.txt'),
             os.path.join(os.environ.get('APPDATA', ''), 'YesNext', 'CloudHoneypot', 'watchdog_token.txt'),
-            os.path.join(os.environ.get('APPDATA', ''), 'YesNext', 'CloudHoneypotClient', 'watchdog.token'),
+            os.path.join(os.environ.get('APPDATA', ''), 'Asteria', 'watchdog.token'),
             os.path.join(os.environ.get('ProgramData', 'C:\\ProgramData'), 'YesNext', 'CloudHoneypot', 'watchdog_stop.flag'),
         ]
         for loc in stop_locations:
@@ -945,8 +945,7 @@ def update_language_config(language: str, selected_by_user: bool = True) -> bool
     try:
         prefs_dir = os.path.join(
             os.environ.get("ProgramData", r"C:\ProgramData"),
-            "YesNext",
-            "CloudHoneypotClient",
+            "Asteria",
         )
         os.makedirs(prefs_dir, exist_ok=True)
         prefs_path = os.path.join(prefs_dir, "language_pref.json")
@@ -984,8 +983,7 @@ def _load_language_pref() -> Optional[dict]:
     try:
         prefs_path = os.path.join(
             os.environ.get("ProgramData", r"C:\ProgramData"),
-            "YesNext",
-            "CloudHoneypotClient",
+            "Asteria",
             "language_pref.json",
         )
         if os.path.isfile(prefs_path):
@@ -1024,16 +1022,21 @@ def resolve_app_language() -> str:
 
 
 def _programdata_client_dir() -> str:
-    base = os.path.join(
-        os.environ.get("ProgramData", r"C:\ProgramData"),
-        "YesNext",
-        "CloudHoneypotClient",
-    )
+    """%ProgramData%\\Asteria — durable client state (brand SoT ≥4.9.41)."""
     try:
-        os.makedirs(base, exist_ok=True)
-    except OSError:
-        pass
-    return base
+        from client_paths import programdata_client_dir
+
+        return programdata_client_dir()
+    except Exception:
+        base = os.path.join(
+            os.environ.get("ProgramData", r"C:\ProgramData"),
+            "Asteria",
+        )
+        try:
+            os.makedirs(base, exist_ok=True)
+        except OSError:
+            pass
+        return base
 
 
 def _account_link_pref_path() -> str:
@@ -1371,7 +1374,7 @@ class InstallerUpdateManager:
                 pass
 
             downloads_dir = _update_helper_staging_dir()
-            installer_filename = f"cloud-client-installer-v{version}.exe"
+            installer_filename = f"asteria-client-installer-v{version}.exe"
             installer_path = os.path.join(downloads_dir, installer_filename)
             try:
                 os.makedirs(downloads_dir, exist_ok=True)
@@ -1418,8 +1421,7 @@ class InstallerUpdateManager:
 def onboarding_flag_path() -> str:
     base = os.path.join(
         os.environ.get("ProgramData", r"C:\ProgramData"),
-        "YesNext",
-        "CloudHoneypotClient",
+        "Asteria",
     )
     try:
         os.makedirs(base, exist_ok=True)
@@ -1459,12 +1461,11 @@ def _update_lock_path() -> str:
     """Machine-wide lock — SYSTEM SilentUpdater and user GUI must share the same file.
 
     Previous APPDATA path failed: interactive download locked user profile, while
-    CloudHoneypot-SilentUpdater (S-1-5-18) looked at SystemProfile AppData → race kill.
+    Asteria-SilentUpdater (S-1-5-18) looked at SystemProfile AppData → race kill.
     """
     base = os.path.join(
         os.environ.get("ProgramData", r"C:\ProgramData"),
-        "YesNext",
-        "CloudHoneypotClient",
+        "Asteria",
     )
     try:
         os.makedirs(base, exist_ok=True)
@@ -1504,7 +1505,7 @@ def is_update_in_progress(max_age_sec: float = 7200.0) -> bool:
             # Migrate: also honour legacy per-user lock if present
             legacy = os.path.join(
                 os.environ.get("APPDATA", os.path.expanduser("~")),
-                "YesNext", "CloudHoneypotClient", "update_in_progress.lock",
+                "Asteria", "update_in_progress.lock",
             )
             if os.path.isfile(legacy):
                 path = legacy
@@ -1620,7 +1621,7 @@ def heal_update_machinery(log_func=None) -> None:
                 from client_update_hardening import detect_launcher_only_storm
                 log_path = os.path.join(
                     os.environ.get("ProgramData", r"C:\ProgramData"),
-                    "YesNext", "CloudHoneypotClient", "update-install.log",
+                    "Asteria", "update-install.log",
                 )
                 if detect_launcher_only_storm(log_path) and phase.startswith("install"):
                     try:
@@ -1655,7 +1656,14 @@ def heal_update_machinery(log_func=None) -> None:
 
 def _is_our_installer_filename(name: str) -> bool:
     n = (name or "").strip().lower()
-    return n.startswith("cloud-client-installer") and n.endswith(".exe")
+    if not n.endswith(".exe"):
+        return False
+    try:
+        from client_constants import INSTALLER_FILE_PREFIXES
+        prefixes = INSTALLER_FILE_PREFIXES
+    except Exception:
+        prefixes = ("asteria-client-installer", "cloud-client-installer")
+    return any(n.startswith(p) for p in prefixes)
 
 
 def _is_our_update_launcher_filename(name: str) -> bool:
@@ -1808,10 +1816,11 @@ def stage_installer_for_update(src_path: str, version: str = "") -> Optional[str
             r"(\d+\.\d+\.\d+)", os.path.basename(src_path)
         )
         ver = m.group(1) if m else (raw.strip("-_") or "latest")
-        # Avoid cloud-client-installer-cloud-client-installer-X.Y.Z.exe
-        if ver.lower().startswith("cloud-client-installer"):
-            ver = re.sub(r"(?i)^cloud-client-installer-?", "", ver) or "latest"
-        dest = os.path.join(dest_dir, f"cloud-client-installer-{ver}.exe")
+        # Avoid asteria-client-installer-asteria-client-installer-X.Y.Z.exe
+        ver = (
+            re.sub(r"(?i)^(?:asteria|cloud)-client-installer-?", "", ver) or "latest"
+        )
+        dest = os.path.join(dest_dir, f"asteria-client-installer-{ver}.exe")
         shutil.copy2(src_path, dest)
         if not os.path.isfile(dest):
             return None
@@ -1847,7 +1856,7 @@ def stage_installer_for_update(src_path: str, version: str = "") -> Optional[str
 def pause_competing_updaters() -> None:
     """Stop respawners mid-download — never /end SilentUpdater or Updater.
 
-    Ending CloudHoneypot-SilentUpdater from inside --silent-update-check kills
+    Ending Asteria-SilentUpdater from inside --silent-update-check kills
     THIS process before the install helper starts (lock stuck, tasks disabled).
     """
     import subprocess
@@ -1855,8 +1864,8 @@ def pause_competing_updaters() -> None:
     # Only force-stop tasks that would restart/kill us during download.
     # Do NOT schtasks /end SilentUpdater or Updater (suicide).
     for task in (
-        "CloudHoneypot-MemoryRestart",
-        "CloudHoneypot-Watchdog",
+        "Asteria-MemoryRestart",
+        "Asteria-Watchdog",
     ):
         try:
             subprocess.run(
@@ -1869,10 +1878,10 @@ def pause_competing_updaters() -> None:
             pass
 
     for task in (
-        "CloudHoneypot-SilentUpdater",
-        "CloudHoneypot-Updater",
-        "CloudHoneypot-MemoryRestart",
-        "CloudHoneypot-Watchdog",
+        "Asteria-SilentUpdater",
+        "Asteria-Updater",
+        "Asteria-MemoryRestart",
+        "Asteria-Watchdog",
     ):
         try:
             subprocess.run(
@@ -1890,10 +1899,10 @@ def resume_competing_updaters() -> None:
     import subprocess
 
     for task in (
-        "CloudHoneypot-SilentUpdater",
-        "CloudHoneypot-Updater",
-        "CloudHoneypot-MemoryRestart",
-        "CloudHoneypot-Watchdog",
+        "Asteria-SilentUpdater",
+        "Asteria-Updater",
+        "Asteria-MemoryRestart",
+        "Asteria-Watchdog",
     ):
         try:
             subprocess.run(
@@ -1943,7 +1952,7 @@ def prepare_client_for_installer(*, kill_processes: bool = True) -> None:
     flag_paths = [
         os.path.join(os.environ.get("TEMP", ""), "honeypot_watchdog_token.txt"),
         os.path.join(os.environ.get("APPDATA", ""), "YesNext", "CloudHoneypot", "watchdog_token.txt"),
-        os.path.join(os.environ.get("APPDATA", ""), "YesNext", "CloudHoneypotClient", "watchdog.token"),
+        os.path.join(os.environ.get("APPDATA", ""), "Asteria", "watchdog.token"),
         os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"), "YesNext", "CloudHoneypot", "watchdog_stop.flag"),
     ]
     for path in flag_paths:
@@ -1957,21 +1966,21 @@ def prepare_client_for_installer(*, kill_processes: bool = True) -> None:
             pass
 
     for task in (
-        "CloudHoneypot-Background",
-        "CloudHoneypot-Tray",
-        "CloudHoneypot-Watchdog",
-        "CloudHoneypot-Updater",
-        "CloudHoneypot-SilentUpdater",
-        "CloudHoneypot-MemoryRestart",
-        "HoneypotClientGuard",
+        "Asteria-Background",
+        "Asteria-Tray",
+        "Asteria-Watchdog",
+        "Asteria-Updater",
+        "Asteria-SilentUpdater",
+        "Asteria-MemoryRestart",
+        "AsteriaClientGuard",
     ):
         try:
             # Never /end SilentUpdater/Updater from the update process itself —
             # that suicides --silent-update-check before the helper can start.
             # The detached helper will /end everything after it is running.
             if kill_processes or task not in (
-                "CloudHoneypot-SilentUpdater",
-                "CloudHoneypot-Updater",
+                "Asteria-SilentUpdater",
+                "Asteria-Updater",
             ):
                 subprocess.run(
                     ["schtasks", "/end", "/tn", task],
@@ -2030,8 +2039,7 @@ def prepare_client_for_installer(*, kill_processes: bool = True) -> None:
 def _update_helper_staging_dir() -> str:
     base = os.path.join(
         os.environ.get("ProgramData", r"C:\ProgramData"),
-        "YesNext",
-        "CloudHoneypotClient",
+        "Asteria",
         "update",
     )
     os.makedirs(base, exist_ok=True)
@@ -2101,7 +2109,7 @@ def stage_update_install_helper(*, allow_emergency: bool = True) -> Optional[str
         try:
             log_path = os.path.join(
                 os.environ.get("ProgramData", r"C:\ProgramData"),
-                "YesNext", "CloudHoneypotClient", "update-install.log",
+                "Asteria", "update-install.log",
             )
             with open(log_path, "a", encoding="ascii", errors="replace") as fh:
                 fh.write(
@@ -2128,7 +2136,7 @@ def stage_update_install_helper(*, allow_emergency: bool = True) -> Optional[str
             try:
                 log_path = os.path.join(
                     os.environ.get("ProgramData", r"C:\ProgramData"),
-                    "YesNext", "CloudHoneypotClient", "update-install.log",
+                    "Asteria", "update-install.log",
                 )
                 with open(log_path, "a", encoding="ascii", errors="replace") as fh:
                     fh.write(
@@ -2196,13 +2204,19 @@ def launch_safe_update_install(
         elevate = not already_admin
 
     # Stable installer copy (TEMP dirs vanish / get cleaned)
-    # Prefer clean version tag — avoid cloud-client-installer-cloud-client-installer-*.exe
+    # Prefer clean version tag — avoid asteria-client-installer-asteria-client-installer-*.exe
     ver_hint = ""
     try:
         import re
         base = os.path.splitext(os.path.basename(installer_path))[0]
         m = re.search(r"(\d+\.\d+\.\d+)", base)
-        ver_hint = m.group(1) if m else base.replace("cloud-client-installer-", "").strip("-_")
+        ver_hint = (
+            m.group(1)
+            if m
+            else re.sub(
+                r"(?i)^(?:asteria|cloud)-client-installer-?", "", base
+            ).strip("-_")
+        )
     except Exception:
         ver_hint = "latest"
     stable = stage_installer_for_update(installer_path, version=ver_hint or "latest")
@@ -2216,7 +2230,7 @@ def launch_safe_update_install(
             try:
                 log_path = os.path.join(
                     os.environ.get("ProgramData", r"C:\ProgramData"),
-                    "YesNext", "CloudHoneypotClient", "update-install.log",
+                    "Asteria", "update-install.log",
                 )
                 with open(log_path, "a", encoding="ascii", errors="replace") as fh:
                     fh.write(
@@ -2237,7 +2251,7 @@ def launch_safe_update_install(
         try:
             log_path = os.path.join(
                 os.environ.get("ProgramData", r"C:\ProgramData"),
-                "YesNext", "CloudHoneypotClient", "update-install.log",
+                "Asteria", "update-install.log",
             )
             with open(log_path, "a", encoding="ascii", errors="replace") as fh:
                 fh.write(
@@ -2325,7 +2339,7 @@ def launch_safe_update_install(
         # exited → child died in job object → no install log → stuck "installing".
         log_path = os.path.join(
             os.environ.get("ProgramData", r"C:\ProgramData"),
-            "YesNext", "CloudHoneypotClient", "update-install.log",
+            "Asteria", "update-install.log",
         )
         try:
             log_size0 = os.path.getsize(log_path) if os.path.isfile(log_path) else 0
@@ -2366,7 +2380,7 @@ def launch_safe_update_install(
             with open(launcher, "w", encoding="utf-8", newline="\n") as fh:
                 fh.write(
                     "$ErrorActionPreference = 'Continue'\n"
-                    "$logDir = Join-Path $env:ProgramData 'YesNext\\CloudHoneypotClient'\n"
+                    "$logDir = Join-Path $env:ProgramData 'Asteria'\n"
                     "try {\n"
                     "  if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }\n"
                     f"  Add-Content -Path (Join-Path $logDir 'update-install.log') "
@@ -2434,7 +2448,7 @@ def launch_safe_update_install(
 
         # --- Method 3: schtasks UpdateOnce — do NOT delete until fresh log ---
         try:
-            task = f"CloudHoneypot-UpdateOnce-{pid}"
+            task = f"Asteria-UpdateOnce-{pid}"
             subprocess.run(
                 [
                     "schtasks", "/Create", "/TN", task, "/TR", ps_cmd,
@@ -2499,7 +2513,7 @@ def launch_safe_update_install(
                 with open(launcher, "w", encoding="ascii", newline="\n") as fh:
                     fh.write(
                         "$ErrorActionPreference = 'Continue'\n"
-                        "$logDir = Join-Path $env:ProgramData 'YesNext\\CloudHoneypotClient'\n"
+                        "$logDir = Join-Path $env:ProgramData 'Asteria'\n"
                         "try {\n"
                         "  if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }\n"
                         f"  Add-Content -Path (Join-Path $logDir 'update-install.log') "
@@ -2510,7 +2524,7 @@ def launch_safe_update_install(
                         "exit $LASTEXITCODE\n"
                     )
                 # Prefer schtasks SYSTEM one-shot for Session-0 immortality
-                task = f"CloudHoneypot-UpdateEmg-{pid}"
+                task = f"Asteria-UpdateEmg-{pid}"
                 subprocess.run(
                     [
                         "schtasks", "/Create", "/TN", task, "/TR", ps_cmd,
@@ -2545,7 +2559,7 @@ def launch_safe_update_install(
         # --- Method 6: last-resort direct emergency bootstrap via schtasks ---
         try:
             from client_update_hardening import write_emergency_bootstrap
-            task = f"CloudHoneypot-NsisOnce-{pid}"
+            task = f"Asteria-NsisOnce-{pid}"
             nsis_launcher = os.path.join(staging, f"run-nsis-{pid}.ps1")
             if write_emergency_bootstrap(nsis_launcher):
                 nsis_cmd = (

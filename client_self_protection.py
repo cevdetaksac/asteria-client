@@ -41,8 +41,9 @@ from client_helpers import log
 
 CREATE_NO_WINDOW = 0x08000000
 
-TASK_NAME = "HoneypotClientGuard"
-TASK_DESCRIPTION = "YesNext Honeypot Client — otomatik yeniden başlatma koruyucusu"
+TASK_NAME = "AsteriaClientGuard"
+TASK_NAME_LEGACY = "HoneypotClientGuard"
+TASK_DESCRIPTION = "Asteria Client — otomatik yeniden başlatma koruyucusu"
 
 # Last breath: only consider threats within this window
 LAST_BREATH_THREAT_WINDOW = 60  # seconds
@@ -210,7 +211,18 @@ class ProcessProtection:
                 ["schtasks", "/change", "/tn", TASK_NAME, "/disable"],
                 capture_output=True, timeout=5, creationflags=CREATE_NO_WINDOW,
             )
-            log("[SELF-PROTECT] HoneypotClientGuard disabled for update")
+            log("[SELF-PROTECT] AsteriaClientGuard disabled for update")
+            try:
+                subprocess.run(
+                    ["schtasks", "/end", "/tn", TASK_NAME_LEGACY],
+                    capture_output=True, timeout=10, creationflags=CREATE_NO_WINDOW,
+                )
+                subprocess.run(
+                    ["schtasks", "/delete", "/tn", TASK_NAME_LEGACY, "/f"],
+                    capture_output=True, timeout=10, creationflags=CREATE_NO_WINDOW,
+                )
+            except Exception:
+                pass
         except Exception as e:
             log(f"[SELF-PROTECT] Guard disable error: {e}")
 
@@ -256,6 +268,15 @@ class ProcessProtection:
                 if os.path.isfile(gui):
                     exe_path = gui
                     tr = f'"{gui}" --tray'
+
+            # Drop pre-Asteria guard name if still registered.
+            try:
+                subprocess.run(
+                    ["schtasks", "/delete", "/tn", TASK_NAME_LEGACY, "/f"],
+                    capture_output=True, timeout=10, creationflags=CREATE_NO_WINDOW,
+                )
+            except Exception:
+                pass
 
             result = subprocess.run(
                 [

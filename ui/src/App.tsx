@@ -211,41 +211,6 @@ export default function App() {
     }
   }, [accountEmail, enterLockScreen, refreshSession, showToast])
 
-  const onMenuAction = useCallback(
-    (action: MenuAction) => {
-      if (action === 'link_account') {
-        setPage('settings')
-        return
-      }
-      if (action === 'unlink_account') {
-        setAccountError('')
-        setUnlinkOpen(true)
-        return
-      }
-      if (action === 'about') {
-        void openAbout()
-        return
-      }
-      if (action === 'check_updates') {
-        void checkUpdates()
-        return
-      }
-      const map: Record<
-        Exclude<MenuAction, 'link_account' | 'unlink_account' | 'about' | 'check_updates'>,
-        [string, string]
-      > = {
-        copy_token: ['copy_token', t('toast_token')],
-        open_servers: ['open_servers', t('toast_servers')],
-        open_logs: ['open_logs', t('toast_logs')],
-        open_website: ['open_website', t('toast_website')],
-        open_github: ['open_github', t('toast_github')],
-      }
-      const [shell, toast] = map[action]
-      void runShell(shell, toast)
-    },
-    [checkUpdates, openAbout, runShell],
-  )
-
   const refresh = useCallback(async () => {
     try {
       const session = await refreshSession()
@@ -273,6 +238,46 @@ export default function App() {
       setError(reason instanceof Error ? reason.message : String(reason))
     }
   }, [enterLockScreen, refreshBanner, refreshSession])
+
+  const onMenuAction = useCallback(
+    (action: MenuAction) => {
+      if (action === 'refresh') {
+        void refresh()
+        return
+      }
+      if (action === 'link_account') {
+        setPage('settings')
+        return
+      }
+      if (action === 'unlink_account') {
+        setAccountError('')
+        setUnlinkOpen(true)
+        return
+      }
+      if (action === 'about') {
+        void openAbout()
+        return
+      }
+      if (action === 'check_updates') {
+        void checkUpdates()
+        return
+      }
+      const map: Record<
+        Exclude<MenuAction, 'refresh' | 'link_account' | 'unlink_account' | 'about' | 'check_updates'>,
+        [string, string]
+      > = {
+        open_dashboard: ['open_dashboard', t('toast_dashboard')],
+        copy_token: ['copy_token', t('toast_token')],
+        open_servers: ['open_servers', t('toast_servers')],
+        open_logs: ['open_logs', t('toast_logs')],
+        open_website: ['open_website', t('toast_website')],
+        open_github: ['open_github', t('toast_github')],
+      }
+      const [shell, toast] = map[action]
+      void runShell(shell, toast)
+    },
+    [checkUpdates, openAbout, refresh, runShell],
+  )
 
   useEffect(() => {
     const syncGate = () => {
@@ -425,23 +430,26 @@ export default function App() {
           </div>
         )}
 
-        {/* Identity (host/token) left — actions + Help right (old GUI top-bar parity). */}
+        {/* Left: identity row + live meters; right: action buttons (single row). */}
         <header className="topbar topbar-actions">
-          <IdentityStrip
-            serverName={serverName}
-            tokenPreview={tokenPreview}
-            tokenPresent={tokenPresent}
-            clientId={clientId}
-            onCopyToken={() => void runShell('copy_token', t('toast_token'))}
-          />
-          <LiveMeters status={status} />
+          <div className="topbar-left">
+            <IdentityStrip
+              serverName={serverName}
+              tokenPreview={tokenPreview}
+              tokenPresent={tokenPresent}
+              clientId={clientId}
+              publicIp={String(status?.public_ip || '')}
+              onCopyToken={() => void runShell('copy_token', t('toast_token'))}
+            />
+            <LiveMeters status={status} />
+          </div>
           <div className="btn-row">
             {accountLinked && (
               <button
                 type="button"
                 className="account-chip"
-                title={accountEmail}
-                onClick={() => setPage('settings')}
+                title={t('account_chip_dashboard')}
+                onClick={() => void runShell('open_dashboard', t('toast_dashboard'))}
               >
                 <span className="account-chip-icon" aria-hidden="true">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
@@ -452,12 +460,6 @@ export default function App() {
                 <span>{accountEmail || t('lock_linked_badge')}</span>
               </button>
             )}
-            <button type="button" className="btn ghost sm" onClick={() => void runShell('open_dashboard', t('toast_dashboard'))}>
-              {t('btn_dashboard')}
-            </button>
-            <button type="button" className="btn sm" onClick={() => void refresh()}>
-              {t('btn_refresh')}
-            </button>
             <HeaderMenu
               version={String(status?.version || '')}
               accountLinked={accountLinked}

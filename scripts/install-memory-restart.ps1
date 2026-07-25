@@ -44,7 +44,7 @@ try {
 } catch {}
 
 # Best-effort: end/disable task even if installer already deleted it.
-foreach ($tn in @("CloudHoneypot-MemoryRestart", "\CloudHoneypot-MemoryRestart")) {
+foreach ($tn in @("Asteria-MemoryRestart", "\Asteria-MemoryRestart")) {
     try { & schtasks.exe /end /tn $tn 2>$null | Out-Null } catch {}
     try { & schtasks.exe /change /tn $tn /disable 2>$null | Out-Null } catch {}
 }

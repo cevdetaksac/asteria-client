@@ -74,6 +74,7 @@ function statusPayload(): MotorStatus {
     running_services: Array.from(running),
     ransomware_running: Boolean(config.ransomware_protection_enabled),
     token_present: true,
+    public_ip: '203.0.113.42',
     defense_policy: {
       present: true,
       defense_policy: (config.protection as { defense_policy?: string })?.defense_policy || 'observe',

@@ -3,8 +3,8 @@
 Client lifecycle logger — crash / watchdog / memory-restart events.
 
 Writes to:
-  %ProgramData%\\YesNext\\CloudHoneypotClient\\lifecycle-YYYY-MM-DD.log
-  %ProgramData%\\YesNext\\CloudHoneypotClient\\lifecycle_queue.jsonl  (pending API)
+  %ProgramData%\\Asteria\\lifecycle-YYYY-MM-DD.log
+  %ProgramData%\\Asteria\\lifecycle_queue.jsonl  (pending API)
 
 Best-effort POST /api/alerts/lifecycle when token + API available.
 Never blocks restart paths on network failure.
@@ -24,8 +24,7 @@ from client_log_retention import cleanup_daily_logs, current_local_date, daily_l
 
 _MACHINE_DIR = os.path.join(
     os.environ.get("ProgramData", r"C:\ProgramData"),
-    "YesNext",
-    "CloudHoneypotClient",
+    "Asteria",
 )
 LIFECYCLE_LOG = os.path.join(_MACHINE_DIR, "lifecycle.log")
 LIFECYCLE_QUEUE = os.path.join(_MACHINE_DIR, "lifecycle_queue.jsonl")

@@ -20,7 +20,7 @@ from typing import Optional, Tuple
 
 # Minimal ASCII-only orchestrator used when the full helper fails to stage/parse.
 # Must stay 7-bit ASCII. Marker line MUST match launch success gate.
-EMERGENCY_UPDATE_BOOTSTRAP_PS1 = r"""# Cloud Honeypot - EMERGENCY update bootstrap (ASCII only)
+EMERGENCY_UPDATE_BOOTSTRAP_PS1 = r"""# Asteria Client - EMERGENCY update bootstrap (ASCII only)
 # Used when full update-and-install.ps1 cannot be staged/parsed.
 param(
     [Parameter(Mandatory = $true)][string]$InstallerPath,
@@ -38,7 +38,7 @@ function Write-UpLog([string]$Message) {
     $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $line = "[$ts] $Message"
     try {
-        $dir = Join-Path $env:ProgramData "YesNext\CloudHoneypotClient"
+        $dir = Join-Path $env:ProgramData "Asteria"
         if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
         Add-Content -Path (Join-Path $dir "update-install.log") -Value $line -Encoding ASCII
     } catch {}
@@ -51,7 +51,7 @@ if (-not (Test-Path -LiteralPath $InstallerPath)) {
     exit 2
 }
 # Disable respawn
-foreach ($n in @("HoneypotClientGuard","CloudHoneypot-Watchdog","CloudHoneypot-Background","CloudHoneypot-Tray","CloudHoneypot-MemoryRestart","CloudHoneypot-Updater","CloudHoneypot-SilentUpdater")) {
+foreach ($n in @("AsteriaClientGuard","Asteria-Watchdog","Asteria-Background","Asteria-Tray","Asteria-MemoryRestart","Asteria-Updater","Asteria-SilentUpdater")) {
     try { schtasks /end /tn $n 2>$null | Out-Null } catch {}
     try { schtasks /change /tn $n /disable 2>$null | Out-Null } catch {}
 }
@@ -109,10 +109,10 @@ try {
     exit 4
 }
 # Re-enable + start motor
-foreach ($n in @("CloudHoneypot-Background","CloudHoneypot-Watchdog","CloudHoneypot-Updater","CloudHoneypot-SilentUpdater","CloudHoneypot-Tray")) {
+foreach ($n in @("Asteria-Background","Asteria-Watchdog","Asteria-Updater","Asteria-SilentUpdater","Asteria-Tray")) {
     try { schtasks /change /tn $n /enable 2>$null | Out-Null } catch {}
 }
-try { schtasks /run /tn "CloudHoneypot-Background" 2>$null | Out-Null } catch {}
+try { schtasks /run /tn "Asteria-Background" 2>$null | Out-Null } catch {}
 $exe = Join-Path ${env:ProgramFiles} "Asteria\Asteria Client\asteria-client.exe"
 if (Test-Path -LiteralPath $exe) {
     try {

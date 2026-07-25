@@ -1,7 +1,7 @@
-"""CloudHoneypotGuardian — Windows service watchdog (contract ≥4.6.0).
+"""AsteriaGuardian — Windows service watchdog (contract ≥4.6.0).
 
 Runs as LocalSystem. Does NOT duplicate the motor — only ensures the Session 0
-daemon (CloudHoneypot-Background task / :58632 motor_ok) stays alive.
+daemon (Asteria-Background task / :58632 motor_ok) stays alive.
 
 Cross-watchdog: motor also ensures this service exists and is running.
 
@@ -17,7 +17,8 @@ import threading
 import time
 
 CREATE_NO_WINDOW = 0x08000000
-SERVICE_NAME = "CloudHoneypotGuardian"
+SERVICE_NAME = "AsteriaGuardian"
+SERVICE_NAME_LEGACY = "CloudHoneypotGuardian"
 SERVICE_DISPLAY = "Asteria Guardian"
 SERVICE_DESC = (
     "Asteria watchdog — keeps the SYSTEM security motor alive. "
@@ -46,7 +47,7 @@ except Exception:  # pragma: no cover
 try:
     from client_task_scheduler import TASK_NAME_BACKGROUND
 except Exception:
-    TASK_NAME_BACKGROUND = "CloudHoneypot-Background"
+    TASK_NAME_BACKGROUND = "Asteria-Background"
 
 
 def _exe_path() -> str:
@@ -93,6 +94,18 @@ def install_guardian_service(exe_path: str = None) -> bool:
     if not os.path.isfile(exe):
         log(f"[GUARDIAN] install failed — exe not found: {exe}")
         return False
+    # Drop pre-Asteria SCM name so only AsteriaGuardian remains.
+    try:
+        subprocess.run(
+            ["sc", "stop", SERVICE_NAME_LEGACY],
+            capture_output=True, timeout=15, creationflags=CREATE_NO_WINDOW,
+        )
+        subprocess.run(
+            ["sc", "delete", SERVICE_NAME_LEGACY],
+            capture_output=True, timeout=15, creationflags=CREATE_NO_WINDOW,
+        )
+    except Exception:
+        pass
     binpath = f'"{exe}" --mode=guardian'
     try:
         state = query_guardian_service_state()
@@ -150,13 +163,18 @@ def install_guardian_service(exe_path: str = None) -> bool:
 
 def uninstall_guardian_service() -> bool:
     try:
-        subprocess.run(["sc", "stop", SERVICE_NAME],
-                       capture_output=True, timeout=20, creationflags=CREATE_NO_WINDOW)
+        for name in (SERVICE_NAME, SERVICE_NAME_LEGACY):
+            subprocess.run(["sc", "stop", name],
+                           capture_output=True, timeout=20, creationflags=CREATE_NO_WINDOW)
         time.sleep(1.0)
-        r = subprocess.run(["sc", "delete", SERVICE_NAME],
-                             capture_output=True, timeout=15, creationflags=CREATE_NO_WINDOW)
-        log(f"[GUARDIAN] service removed ok={r.returncode == 0}")
-        return r.returncode == 0
+        ok = True
+        for name in (SERVICE_NAME, SERVICE_NAME_LEGACY):
+            r = subprocess.run(["sc", "delete", name],
+                                 capture_output=True, timeout=15, creationflags=CREATE_NO_WINDOW)
+            if name == SERVICE_NAME:
+                ok = r.returncode == 0
+        log(f"[GUARDIAN] service removed ok={ok}")
+        return ok
     except Exception as e:
         log(f"[GUARDIAN] uninstall error: {e}")
         return False

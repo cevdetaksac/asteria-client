@@ -299,8 +299,7 @@ def ensure_tls_cert_files(cert_cn: str = "WIN-HONEYPOT") -> Tuple[str, str]:
 
         base = os.path.join(
             os.environ.get("ProgramData", r"C:\ProgramData"),
-            "YesNext",
-            "CloudHoneypotClient",
+            "Asteria",
             "rdp_nla",
         )
         try:

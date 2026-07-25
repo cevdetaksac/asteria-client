@@ -1,4 +1,4 @@
-# Cloud Honeypot - safe update/install orchestrator
+# Asteria Client - safe update/install orchestrator
 # Runs elevated (UAC). Survives killing asteria-client.exe because it is a separate powershell.exe.
 #
 # Flow:
@@ -10,7 +10,7 @@
 #   6) Re-create tasks / launch GUI
 #
 # Usage (elevated):
-#   update-and-install.ps1 -InstallerPath "C:\Users\..\Downloads\cloud-client-installer-vX.exe" `
+#   update-and-install.ps1 -InstallerPath "C:\Users\..\Downloads\asteria-client-installer-vX.exe" `
 #       -ExpectExitPid 1234 -Silent -ShowGuiAfter
 # NOTE: Keep this file ASCII-only (Windows PowerShell encoding).
 
@@ -57,7 +57,7 @@ function Write-UpLog([string]$Message) {
     $line = "[$ts] $Message"
     Write-Host $line
     try {
-        $dir = Join-Path $env:ProgramData "YesNext\CloudHoneypotClient"
+        $dir = Join-Path $env:ProgramData "Asteria"
         if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
         Add-Content -Path (Join-Path $dir "update-install.log") -Value $line -Encoding UTF8
     } catch {}
@@ -65,7 +65,7 @@ function Write-UpLog([string]$Message) {
 
 function Initialize-UpLogRetention {
     try {
-        $dir = Join-Path $env:ProgramData "YesNext\CloudHoneypotClient"
+        $dir = Join-Path $env:ProgramData "Asteria"
         if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
         $active = Join-Path $dir "update-install.log"
         if (Test-Path $active) {
@@ -98,7 +98,7 @@ function Initialize-UpLogRetention {
 
 function Set-UpdateLock([string]$Reason) {
     try {
-        $dir = Join-Path $env:ProgramData "YesNext\CloudHoneypotClient"
+        $dir = Join-Path $env:ProgramData "Asteria"
         if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
         $path = Join-Path $dir "update_in_progress.lock"
         Set-Content -Path $path -Value "$Reason`n$PID`n$((Get-Date).ToFileTimeUtc())" -Encoding ASCII -Force
@@ -107,27 +107,27 @@ function Set-UpdateLock([string]$Reason) {
 
 function Clear-UpdateLock {
     try {
-        $path = Join-Path $env:ProgramData "YesNext\CloudHoneypotClient\update_in_progress.lock"
+        $path = Join-Path $env:ProgramData "Asteria\update_in_progress.lock"
         if (Test-Path $path) { Remove-Item $path -Force }
     } catch {}
 }
 
 function Clear-UpdateArtifacts {
     # After a successful install, delete the used installer and prune orphan
-    # cloud-client-installer*.exe / run-update-*.ps1 under ProgramData\...\update
-    # and matching Downloads copies. Keep update-and-install.ps1 itself.
+    # (asteria|cloud)-client-installer*.exe / run-update-*.ps1 under
+    # ProgramData\...\update and matching Downloads copies. Keep this script.
     param([string]$UsedInstaller = "")
     $script:UaRemoved = 0
     try {
         if ($UsedInstaller -and (Test-Path -LiteralPath $UsedInstaller)) {
             # Only delete the used EXE when it lives under known staging/TEMP/Downloads.
-            # Never wipe a developer build path (e.g. repo cloud-client-installer.exe).
+            # Never wipe a developer build path (e.g. repo asteria-client-installer.exe).
             $norm = [string]$UsedInstaller
-            $stagingRoot = Join-Path $env:ProgramData "YesNext\CloudHoneypotClient\update"
+            $stagingRoot = Join-Path $env:ProgramData "Asteria\update"
             $safe = $false
             if ($norm.StartsWith($stagingRoot, [StringComparison]::OrdinalIgnoreCase)) { $safe = $true }
             elseif ($env:TEMP -and $norm.StartsWith($env:TEMP, [StringComparison]::OrdinalIgnoreCase)) { $safe = $true }
-            elseif ($norm -match '(?i)\\Downloads\\cloud-client-installer') { $safe = $true }
+            elseif ($norm -match '(?i)\\Downloads\\(asteria|cloud)-client-installer') { $safe = $true }
             if ($safe) {
                 Remove-Item -LiteralPath $UsedInstaller -Force -ErrorAction SilentlyContinue
                 if (-not (Test-Path -LiteralPath $UsedInstaller)) {
@@ -144,12 +144,12 @@ function Clear-UpdateArtifacts {
         Write-UpLog "WARN: used-installer delete: $($_.Exception.Message)"
     }
 
-    $staging = Join-Path $env:ProgramData "YesNext\CloudHoneypotClient\update"
+    $staging = Join-Path $env:ProgramData "Asteria\update"
     if (Test-Path -LiteralPath $staging) {
         Get-ChildItem -LiteralPath $staging -File -ErrorAction SilentlyContinue | ForEach-Object {
             $n = $_.Name
             $kill = $false
-            if ($n -match '(?i)^cloud-client-installer.*\.exe$') { $kill = $true }
+            if ($n -match '(?i)^(asteria|cloud)-client-installer.*\.exe$') { $kill = $true }
             elseif ($n -match '(?i)^(run-update-|run-nsis-|force-restart-).+\.ps1$') { $kill = $true }
             if (-not $kill) { return }
             try {
@@ -184,7 +184,8 @@ function Clear-UpdateArtifacts {
             }
     } catch {}
     foreach ($dl in ($dlRoots | Select-Object -Unique)) {
-        Get-ChildItem -LiteralPath $dl -File -Filter "cloud-client-installer*.exe" -ErrorAction SilentlyContinue |
+        Get-ChildItem -LiteralPath $dl -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '(?i)^(asteria|cloud)-client-installer.*\.exe$' } |
             ForEach-Object {
                 try {
                     Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
@@ -216,7 +217,7 @@ function Write-StopFlags {
     $paths = @(
         (Join-Path $env:TEMP "honeypot_watchdog_token.txt"),
         (Join-Path $env:APPDATA "YesNext\CloudHoneypot\watchdog_token.txt"),
-        (Join-Path $env:APPDATA "YesNext\CloudHoneypotClient\watchdog.token"),
+        (Join-Path $env:APPDATA "Asteria\watchdog.token"),
         (Join-Path $env:ProgramData "YesNext\CloudHoneypot\watchdog_stop.flag")
     )
     foreach ($p in $paths) {
@@ -230,6 +231,14 @@ function Write-StopFlags {
 
 function Stop-HoneypotTasks {
     $names = @(
+        "AsteriaClientGuard",
+        "Asteria-Watchdog",
+        "Asteria-Background",
+        "Asteria-Tray",
+        "Asteria-MemoryRestart",
+        "Asteria-Updater",
+        "Asteria-SilentUpdater",
+        # Pre-4.9.41 wire names
         "HoneypotClientGuard",
         "CloudHoneypot-Watchdog",
         "CloudHoneypot-Background",
@@ -248,12 +257,12 @@ function Restore-HoneypotTasks {
     # Re-enable core tasks - MUST run after every update (success OR fail).
     # Stop-HoneypotTasks disables these; leaving them disabled = no daemon forever.
     $names = @(
-        "CloudHoneypot-SilentUpdater",
-        "CloudHoneypot-Updater",
-        "CloudHoneypot-Watchdog",
-        "CloudHoneypot-Background",
-        "CloudHoneypot-MemoryRestart",
-        "CloudHoneypot-Tray"
+        "Asteria-SilentUpdater",
+        "Asteria-Updater",
+        "Asteria-Watchdog",
+        "Asteria-Background",
+        "Asteria-MemoryRestart",
+        "Asteria-Tray"
     )
     foreach ($n in $names) {
         schtasks /change /tn $n /enable 2>$null | Out-Null
@@ -267,12 +276,12 @@ function Ensure-DaemonMotor {
     Restore-HoneypotTasks
     $started = $false
     try {
-        schtasks /change /tn "CloudHoneypot-Background" /enable 2>$null | Out-Null
-        schtasks /change /tn "CloudHoneypot-Watchdog" /enable 2>$null | Out-Null
-        schtasks /run /tn "CloudHoneypot-Background" 2>$null | Out-Null
+        schtasks /change /tn "Asteria-Background" /enable 2>$null | Out-Null
+        schtasks /change /tn "Asteria-Watchdog" /enable 2>$null | Out-Null
+        schtasks /run /tn "Asteria-Background" 2>$null | Out-Null
         if ($LASTEXITCODE -eq 0) {
             $started = $true
-            Write-UpLog "Ensure-DaemonMotor: CloudHoneypot-Background /run ok"
+            Write-UpLog "Ensure-DaemonMotor: Asteria-Background /run ok"
         }
     } catch {
         Write-UpLog "Ensure-DaemonMotor: Background /run error: $($_.Exception.Message)"
@@ -301,7 +310,10 @@ function Ensure-DaemonMotor {
         } catch {}
         # Re-kick Background halfway if still silent
         if ($i -eq 20 -and -not $ready) {
-            schtasks /run /tn "CloudHoneypot-Background" 2>$null | Out-Null
+            schtasks /run /tn "Asteria-Background" 2>$null | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                schtasks /run /tn "CloudHoneypot-Background" 2>$null | Out-Null
+            }
             Write-UpLog "Ensure-DaemonMotor: re-kick Background (no :58632 yet)"
         }
     }
@@ -318,7 +330,7 @@ function Write-UpdateUiStatus {
         [string]$ToVersion = ""
     )
     try {
-        $dir = Join-Path $env:ProgramData "YesNext\CloudHoneypotClient"
+        $dir = Join-Path $env:ProgramData "Asteria"
         if (-not (Test-Path -LiteralPath $dir)) {
             New-Item -ItemType Directory -Path $dir -Force | Out-Null
         }
@@ -359,7 +371,7 @@ function Fail-Update([int]$Code, [string]$Message) {
         $exe = Join-Path ${env:ProgramFiles} "YesNext\Cloud Honeypot Client\honeypot-client.exe"
     }
     if (-not (Test-Path -LiteralPath $exe)) {
-        $exe = Join-Path ${env:ProgramFiles} "YesNext\CloudHoneypotClient\honeypot-client.exe"
+        $exe = Join-Path ${env:ProgramFiles} "Asteria\honeypot-client.exe"
     }
     [void](Ensure-DaemonMotor -ExePath $exe)
     exit $Code
@@ -587,7 +599,7 @@ if (-not (Test-Path -LiteralPath $exe)) {
     if (Test-Path -LiteralPath $alt) { $exe = $alt; $InstallDir = Split-Path $alt -Parent }
 }
 if (-not (Test-Path -LiteralPath $exe)) {
-    $alt = Join-Path ${env:ProgramFiles} "YesNext\CloudHoneypotClient\honeypot-client.exe"
+    $alt = Join-Path ${env:ProgramFiles} "Asteria\honeypot-client.exe"
     if (Test-Path -LiteralPath $alt) { $exe = $alt; $InstallDir = Split-Path $alt -Parent }
 }
 
@@ -664,15 +676,15 @@ if (-not $Silent) {
     if ($wantTray) {
         Write-UpLog "Interactive session - starting Tray after silent update..."
         try {
-            schtasks /change /tn "CloudHoneypot-Tray" /enable 2>$null | Out-Null
-            schtasks /run /tn "CloudHoneypot-Tray" 2>$null | Out-Null
+            schtasks /change /tn "Asteria-Tray" /enable 2>$null | Out-Null
+            schtasks /run /tn "Asteria-Tray" 2>$null | Out-Null
             if ($LASTEXITCODE -ne 0) {
                 $gui = Join-Path $InstallDir "asteria-gui.exe"
                 if (Test-Path -LiteralPath $gui) {
-                    Write-UpLog "WARN: CloudHoneypot-Tray /run failed (exit=$LASTEXITCODE) - trying asteria-gui --tray"
+                    Write-UpLog "WARN: Asteria-Tray /run failed (exit=$LASTEXITCODE) - trying asteria-gui --tray"
                     Start-Process -FilePath $gui -ArgumentList "--tray" -WorkingDirectory $InstallDir
                 } else {
-                    Write-UpLog "WARN: CloudHoneypot-Tray /run failed (exit=$LASTEXITCODE) - trying --mode=tray"
+                    Write-UpLog "WARN: Asteria-Tray /run failed (exit=$LASTEXITCODE) - trying --mode=tray"
                     Start-Process -FilePath $exe -ArgumentList "--mode=tray" -WorkingDirectory $InstallDir
                 }
             }

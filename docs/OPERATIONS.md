@@ -12,10 +12,15 @@ cd asteria-client
 # or: .\build.ps1 -Clean     # JPEG/WS only
 ```
 
-Artifact: `cloud-client-installer.exe` (repo root, not `dist\`).
+Artifact: `asteria-client-installer.exe` (repo root, not `dist\`). `build.ps1`
+also drops an identical `cloud-client-installer.exe` copy.
+
+Both assets must be uploaded: agents up to 4.9.40 hardcode the legacy name as
+their fallback download URL, so dropping it breaks their self-update.
 
 ```powershell
-gh release create vX.Y.Z cloud-client-installer.exe --title "vX.Y.Z" --notes-file release_notes_vX.Y.Z.md
+gh release create vX.Y.Z asteria-client-installer.exe cloud-client-installer.exe `
+  --title "vX.Y.Z" --notes-file release_notes_vX.Y.Z.md
 ```
 
 Repo: `cevdetaksac/asteria-client` (legacy slug `yesnext-cloud-honeypot-client` redirects).
@@ -30,14 +35,14 @@ Repo: `cevdetaksac/asteria-client` (legacy slug `yesnext-cloud-honeypot-client` 
 
 1. **Cloud API** — urgent/batch alerts — contract `agent/threat-engine.md`
 2. **Optional webhook** — `notifications.webhook_url` in `client_config.json`
-3. **Local logs** — `%ProgramData%\YesNext\CloudHoneypotClient\` (`client-*.log`, `threats-*.log`, `lifecycle-*.log`); ~7-day retention
+3. **Local logs** — `%ProgramData%\Asteria\` (`client-*.log`, `threats-*.log`, `lifecycle-*.log`); ~7-day retention
 
 ## Token rotation
 
 If a log with a token was exposed:
 
 1. Revoke token in the dashboard
-2. Delete `%ProgramData%\YesNext\CloudHoneypotClient\token.dat`
+2. Delete `%ProgramData%\Asteria\token.dat`
 3. Restart the client to re-register
 
 ## Clone / shared token (two IPs, one token)
@@ -54,10 +59,10 @@ then **Settings → Account link** on each server.
 **Manual reset (any version):** elevated
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File "C:\Program Files\YesNext\Asteria Client\scripts\reset-agent-identity.ps1" -AlsoKill
+powershell -NoProfile -ExecutionPolicy Bypass -File "C:\Program Files\Asteria\Asteria Client\scripts\reset-agent-identity.ps1" -AlsoKill
 ```
 
-(If the script is not installed yet, run it from the repo `cloud-client\scripts\`.)
+(If the script is not installed yet, run it from the repo `asteria-client\scripts\`.)
 Also rename the hostname if both still show the same `WIN-*` name; prefer sysprep
 `/generalize` before sealing templates. Never bake `token.dat` into images.
 

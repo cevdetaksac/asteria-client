@@ -16,6 +16,9 @@ from client_utils import (
 
 class TestUpdateArtifactCleanup(unittest.TestCase):
     def test_installer_filename_detect(self):
+        self.assertTrue(_is_our_installer_filename("asteria-client-installer-4.9.41.exe"))
+        self.assertTrue(_is_our_installer_filename("asteria-client-installer.exe"))
+        # Legacy-named installers stay recognized so staged files still get pruned.
         self.assertTrue(_is_our_installer_filename("cloud-client-installer-4.9.5.exe"))
         self.assertTrue(_is_our_installer_filename("cloud-client-installer-v4.9.5.exe"))
         self.assertFalse(_is_our_installer_filename("update-and-install.ps1"))

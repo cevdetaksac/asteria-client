@@ -17,7 +17,8 @@ Key Intervals (optimized for performance):
 Notes:
 - Intervals are tuned to reduce CPU/network usage
 - All intervals can be overridden in client_config.json
-- Wire identities (ProgramData, CloudHoneypot-* tasks) stay stable; signing
+- Wire identities: ProgramData\\Asteria, Asteria-* tasks, AsteriaGuardian;
+  legacy YesNext / CloudHoneypot-* cleaned on install/update. Signing
   context emits ``asteria-chp-v1`` / ``asteria-heartbeat-v1`` (contract ≥1.4.32).
   Verify still accepts legacy ``yesnext-*`` during fleet cutover.
   per contract agent/rebrand-asteria.md — display brand is Asteria.
@@ -40,7 +41,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.40"  # GUI helpers shim + full error capture logging; tray brick fix follow-up
+VERSION = "4.9.41"  # ProgramData\\Asteria brand path + YesNext migrate; dashboard deep-links 1.4.35
 
 CLIENT_VERSION = VERSION  # Main version constant
 __version__ = VERSION  # Export for compatibility
@@ -61,6 +62,13 @@ LEGACY_INSTALL_DIR_NAME = "Cloud Honeypot Client"
 GITHUB_OWNER = "cevdetaksac"
 GITHUB_REPO = "asteria-client"
 GITHUB_REPO_LEGACY = "yesnext-cloud-honeypot-client"
+
+# Release installer asset names. Agents <= 4.9.40 hardcode the legacy name as
+# their fallback download URL, so every release must keep publishing both until
+# the fleet has moved past that build.
+INSTALLER_ASSET_NAME = "asteria-client-installer.exe"
+INSTALLER_ASSET_NAME_LEGACY = "cloud-client-installer.exe"
+INSTALLER_FILE_PREFIXES = ("asteria-client-installer", "cloud-client-installer")
 
 # ===================== NETWORK CONFIGURATION ===================== #
 
@@ -164,42 +172,41 @@ def _ensure_directory(path: str) -> bool:
 
 
 def get_app_directory() -> str:
-    """Application data directory.
+    """Application data directory — always %ProgramData%\\Asteria (brand SoT).
 
-    SYSTEM / Session 0 daemon → ProgramData (shared, stable).
-    Interactive user GUI → %APPDATA%\\YesNext\\CloudHoneypotClient.
-    Never crash import on WinError 183 under systemprofile.
+    SYSTEM daemon and interactive GUI share one machine-wide tree so token,
+    consent, logs, and lock state stay aligned. Legacy YesNext trees are
+    migrated on first use (see client_paths.migrate_legacy_programdata).
     """
-    program_data = os.environ.get("ProgramData", r"C:\ProgramData")
-    machine_dir = os.path.join(program_data, "YesNext", "CloudHoneypotClient")
+    try:
+        from client_paths import MACHINE_DATA_DIR, ensure_machine_data_dir, migrate_legacy_programdata
 
-    if _is_system_profile_context():
+        ensure_machine_data_dir()
+        try:
+            migrate_legacy_programdata()
+        except Exception:
+            pass
+        return MACHINE_DATA_DIR
+    except Exception:
+        program_data = os.environ.get("ProgramData", r"C:\ProgramData")
+        machine_dir = os.path.join(program_data, "Asteria")
         if _ensure_directory(machine_dir):
             return machine_dir
-        # Extreme fallback
         return program_data
-
-    app_dir = os.path.join(
-        os.environ.get("APPDATA", os.path.expanduser("~")),
-        "YesNext",
-        "CloudHoneypotClient",
-    )
-    if _ensure_directory(app_dir):
-        return app_dir
-    # Roaming broken (file-in-path / ACL) → machine-wide
-    if _ensure_directory(machine_dir):
-        return machine_dir
-    return app_dir
 
 # Application directories
 APP_DIR = get_app_directory()
 
 # Machine-wide identity (SYSTEM daemon + user GUI share the same token)
-MACHINE_DATA_DIR = os.path.join(
-    os.environ.get("ProgramData", r"C:\ProgramData"),
-    "YesNext",
-    "CloudHoneypotClient",
-)
+try:
+    from client_paths import MACHINE_DATA_DIR as _MACHINE_DATA_DIR
+
+    MACHINE_DATA_DIR = _MACHINE_DATA_DIR
+except Exception:
+    MACHINE_DATA_DIR = os.path.join(
+        os.environ.get("ProgramData", r"C:\ProgramData"),
+        "Asteria",
+    )
 try:
     _ensure_directory(MACHINE_DATA_DIR)
 except Exception:
@@ -308,11 +315,16 @@ HEARTBEAT_FILE = "heartbeat.json"
 FILE_HEARTBEAT_INTERVAL = 60  # File heartbeat interval (was 10s, optimized to 60s for performance)
 
 # Singleton mutex — DAEMON only (GUI frontends do not take this)
-SINGLETON_MUTEX_NAME = "Global\\CloudHoneypotClient_Singleton"
-DAEMON_MUTEX_NAME = "Global\\CloudHoneypotClient_Daemon"
+SINGLETON_MUTEX_NAME = "Global\\AsteriaClient_Singleton"
+DAEMON_MUTEX_NAME = "Global\\AsteriaClient_Daemon"
 # Per-session GUI/tray singleton (Local\\ = one frontend per Windows session)
-GUI_MUTEX_NAME = "Local\\CloudHoneypotClient_GUI"
-GUI_SHOW_EVENT_NAME = "Local\\CloudHoneypotClient_ShowGUI"
+GUI_MUTEX_NAME = "Local\\AsteriaClient_GUI"
+GUI_SHOW_EVENT_NAME = "Local\\AsteriaClient_ShowGUI"
+# Pre-4.9.41 names (kill/upgrade still ends old processes holding these)
+LEGACY_SINGLETON_MUTEX_NAME = "Global\\CloudHoneypotClient_Singleton"
+LEGACY_DAEMON_MUTEX_NAME = "Global\\CloudHoneypotClient_Daemon"
+LEGACY_GUI_MUTEX_NAME = "Local\\CloudHoneypotClient_GUI"
+LEGACY_GUI_SHOW_EVENT_NAME = "Local\\CloudHoneypotClient_ShowGUI"
 
 # ===================== TIMING CONFIGURATION ===================== #
 
@@ -356,7 +368,7 @@ SECURITY_METADATA = {
 # RDP registry key path (without HKEY_LOCAL_MACHINE prefix for reg add command)
 RDP_REGISTRY_KEY_PATH = r"HKLM\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp"
 # App registry key path (wire identity — do not relocate)
-REGISTRY_KEY_PATH = r"SOFTWARE\YesNext\CloudHoneypotClient"
+REGISTRY_KEY_PATH = r"SOFTWARE\Asteria"
 
 # Legitimate domains for network behavior
 LEGITIMATE_DOMAINS = [
@@ -545,6 +557,7 @@ __all__ = [
     # Application metadata
     '__version__', 'APP_NAME', 'BRAND_NAME', 'VENDOR_NAME',
     'GITHUB_OWNER', 'GITHUB_REPO', 'GITHUB_REPO_LEGACY',
+    'INSTALLER_ASSET_NAME', 'INSTALLER_ASSET_NAME_LEGACY', 'INSTALLER_FILE_PREFIXES',
     'CLIENT_EXE_NAME', 'CLIENT_EXE_ALIASES',
     
     # Network configuration  

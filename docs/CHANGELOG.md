@@ -1,3 +1,11 @@
+# v4.9.41
+- **ProgramData brand path:** durable state moves to `%ProgramData%\Asteria\` (flat). First run / installer copies YesNext `CloudHoneypotClient` + `CloudHoneypot` (+ AppData legacy) without overwriting newer Asteria files.
+- **Installer artifact renamed:** `asteria-client-installer.exe` is now the primary release asset. Releases also publish an identical `cloud-client-installer.exe` alias because agents ≤4.9.40 hardcode that name as their fallback download URL; self-update tries the Asteria name first, then the legacy one. Staging/cleanup recognizes both prefixes.
+- **Wire identity rebrand:** new installs create `Asteria-Background|Tray|Watchdog|Updater|SilentUpdater|MemoryRestart`, `AsteriaGuardian`, `AsteriaClientGuard`, and `AsteriaClient_*` mutex/events. Install/uninstall still end+delete all pre-4.9.41 `CloudHoneypot-*` / `HoneypotClient*` / `CloudHoneypotGuardian` names. Registry LastMode writes `HKCU\Software\Asteria`.
+- **Uninstall completeness:** uninstaller embeds `kill-honeypot.ps1` (no longer shipped under Program Files), kills `asteria-gui.exe` as well as the motor, deletes GUI/motor with `/REBOOTOK`, recursively wipes `$INSTDIR` (incl. `.stale_*`), cleans Defender exclusions for both exes, Start Menu/Desktop (Asteria + legacy), ARP/HKCU brand keys, and update staging under ProgramData.
+- **Header:** Dashboard + Refresh moved into the Help menu; the account chip now opens the dashboard.
+- Carries 4.9.40 GUI helpers shim, exception capture, dashboard deep-links (contract 1.4.35).
+
 # v4.9.40
 - **GUI:** Tk-free `client_helpers` runtime shim (fixes `No module named client_helpers`); richer GUI exception/tray logging; expanded gui hiddenimports.
 - Carries 4.9.39 tray brick fix, presence/WS harden, Control Center UX.

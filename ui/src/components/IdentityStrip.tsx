@@ -5,6 +5,7 @@ type Props = {
   tokenPreview: string
   tokenPresent: boolean
   clientId?: string
+  publicIp?: string
   onCopyToken: () => void
 }
 
@@ -13,16 +14,32 @@ export function IdentityStrip({
   tokenPreview,
   tokenPresent,
   clientId,
+  publicIp,
   onCopyToken,
 }: Props) {
   const host = serverName.trim() || '—'
+  const ip = (publicIp || '').trim() || '—'
   const tokenLabel = tokenPresent
     ? tokenPreview || t('identity_token_present')
     : t('identity_token_missing')
 
   return (
     <div className="identity-strip" title={clientId ? `client_id ${clientId}` : undefined}>
-      <span className="identity-host">{host}</span>
+      {clientId ? (
+        <>
+          <span className="identity-cid mono" title={t('identity_id')}>
+            #{clientId}
+          </span>
+          <span className="identity-sep" aria-hidden="true" />
+        </>
+      ) : null}
+      <span className="identity-host" title={t('identity_device')}>
+        {host}
+      </span>
+      <span className="identity-sep" aria-hidden="true" />
+      <span className="identity-ip mono" title={t('identity_ip')}>
+        {ip}
+      </span>
       <span className="identity-sep" aria-hidden="true" />
       <span className={`identity-token mono ${tokenPresent ? '' : 'missing'}`}>
         {t('identity_token')}: {tokenLabel}
@@ -40,7 +57,6 @@ export function IdentityStrip({
           <path d="M5 15V7a2 2 0 0 1 2-2h8" />
         </svg>
       </button>
-      {clientId ? <span className="identity-cid mono">#{clientId}</span> : null}
     </div>
   )
 }

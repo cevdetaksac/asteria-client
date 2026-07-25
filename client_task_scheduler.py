@@ -25,13 +25,32 @@ from datetime import datetime
 
 from client_constants import TASK_STATE_FILE
 
-# Configuration
-TASK_NAME_BACKGROUND = "CloudHoneypot-Background"
-TASK_NAME_TRAY = "CloudHoneypot-Tray"
-TASK_NAME_WATCHDOG = "CloudHoneypot-Watchdog"
-TASK_NAME_UPDATER = "CloudHoneypot-Updater"
-TASK_NAME_SILENT_UPDATER = "CloudHoneypot-SilentUpdater"
-TASK_NAME_MEMORY_RESTART = "CloudHoneypot-MemoryRestart"
+# Configuration — Asteria brand (legacy CloudHoneypot-* purged on install/uninstall)
+TASK_NAME_BACKGROUND = "Asteria-Background"
+TASK_NAME_TRAY = "Asteria-Tray"
+TASK_NAME_WATCHDOG = "Asteria-Watchdog"
+TASK_NAME_UPDATER = "Asteria-Updater"
+TASK_NAME_SILENT_UPDATER = "Asteria-SilentUpdater"
+TASK_NAME_MEMORY_RESTART = "Asteria-MemoryRestart"
+
+# Pre-4.9.41 wire names — end/delete only; never recreate.
+LEGACY_TASK_NAMES = (
+    "CloudHoneypot-Background",
+    "CloudHoneypot-Tray",
+    "CloudHoneypot-Watchdog",
+    "CloudHoneypot-Updater",
+    "CloudHoneypot-SilentUpdater",
+    "CloudHoneypot-MemoryRestart",
+    "CloudHoneypotClientBoot",
+    "CloudHoneypotClientLogon",
+    "Cloud Honeypot Client",
+    "HoneypotClientAutostart",
+    "HoneypotClientGuard",
+    "CloudHoneypotTray",
+    "CloudHoneypotWatchdog",
+    "CloudHoneypotUpdater",
+    "CloudHoneypotSilentUpdater",
+)
 
 def get_client_exe_path():
     """Get the current executable path dynamically"""
@@ -506,10 +525,60 @@ def verify_tasks():
         except Exception as e:
             print(f"[X] Error checking task {task_name}: {e}")
 
+def purge_legacy_tasks(log_func=None) -> int:
+    """End/delete pre-Asteria CloudHoneypot / HoneypotClient scheduled tasks."""
+    removed = 0
+    for name in LEGACY_TASK_NAMES:
+        try:
+            subprocess.run(
+                ["schtasks", "/end", "/tn", name],
+                capture_output=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        except Exception:
+            pass
+        try:
+            r = subprocess.run(
+                ["schtasks", "/delete", "/tn", name, "/f"],
+                capture_output=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            if r.returncode == 0:
+                removed += 1
+                _log_or_print(log_func, f"[MIGRATE] Removed legacy task: {name}")
+        except Exception:
+            pass
+    try:
+        powershell_cmd = [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            (
+                "Get-ScheduledTask -ErrorAction SilentlyContinue | "
+                "Where-Object { $_.TaskName -like 'CloudHoneypot*' "
+                "-or $_.TaskName -like 'HoneypotClient*' } | "
+                "ForEach-Object { "
+                "Unregister-ScheduledTask -TaskName $_.TaskName "
+                "-Confirm:$false -ErrorAction SilentlyContinue }"
+            ),
+        ]
+        subprocess.run(
+            powershell_cmd,
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    except Exception:
+        pass
+    return removed
+
+
 def install_all_tasks(include_silent_updater: bool = False) -> bool:
     """Install all Task Scheduler tasks - used by installer and updates"""
     try:
         print("Installing Task Scheduler tasks...")
+        purge_legacy_tasks()
         success = True
         for name in TASK_CONFIGS:
             if name == TASK_NAME_SILENT_UPDATER and not include_silent_updater:
@@ -519,7 +588,7 @@ def install_all_tasks(include_silent_updater: bool = False) -> bool:
         try:
             from client_guardian_service import install_guardian_service
             if install_guardian_service(CLIENT_EXE):
-                print("[OK] CloudHoneypotGuardian service installed")
+                print("[OK] AsteriaGuardian service installed")
             else:
                 print("[WARN] Guardian service install failed (non-fatal)")
         except Exception as ge:
@@ -572,9 +641,9 @@ def main():
         status_summary = check_tasks_status(update_cache=True)
         
         print("\nTask Scheduler setup completed!")
-        print("- Background task will start honeypot at boot time")
+        print("- Background task will start the motor at boot time")
         print("- Tray task will start GUI when user logs in")
-        print("- Watchdog task will check and restart services hourly")
+        print("- Watchdog task will check and restart services every 2 minutes")
         print("- All tasks have automatic restart on failure")
         print(f"- Verification summary: {status_summary}")
         
@@ -589,25 +658,26 @@ def install_tasks():
     return main()
 
 def uninstall_tasks():
-    """Uninstall all CloudHoneypot Task Scheduler tasks using PowerShell wildcard"""
+    """Uninstall Asteria + legacy CloudHoneypot Task Scheduler tasks."""
     if not is_admin():
         print("Please run as Administrator to uninstall tasks")
         return False
     
-    print("Removing all CloudHoneypot scheduled tasks...")
+    print("Removing all Asteria / legacy CloudHoneypot scheduled tasks...")
+    purge_legacy_tasks()
     
     try:
-        # Use PowerShell to remove all CloudHoneypot* tasks
+        # PowerShell wildcard — Asteria* current + CloudHoneypot* / HoneypotClient* legacy
         powershell_cmd = [
             'powershell', '-ExecutionPolicy', 'Bypass', '-Command',
-            'Get-ScheduledTask | Where-Object { $_.TaskName -like "CloudHoneypot*" } | ForEach-Object { Write-Host "Removing task: $($_.TaskName)"; Unregister-ScheduledTask -TaskName $_.TaskName -Confirm:$false -ErrorAction SilentlyContinue }'
+            'Get-ScheduledTask | Where-Object { $_.TaskName -like "Asteria-*" -or $_.TaskName -like "CloudHoneypot*" -or $_.TaskName -like "HoneypotClient*" } | ForEach-Object { Write-Host "Removing task: $($_.TaskName)"; Unregister-ScheduledTask -TaskName $_.TaskName -Confirm:$false -ErrorAction SilentlyContinue }'
         ]
         
         result = subprocess.run(powershell_cmd, capture_output=True, text=True, encoding='utf-8', errors='ignore',
                                 creationflags=subprocess.CREATE_NO_WINDOW)
         
         if result.returncode == 0:
-            print("[OK] All CloudHoneypot tasks removed successfully")
+            print("[OK] All Asteria / legacy tasks removed successfully")
             
             # Also check if any tasks still exist
             remaining = check_remaining_tasks()
@@ -629,9 +699,16 @@ def fallback_individual_removal():
     """Fallback method - remove tasks individually"""
     print("Using fallback method - removing tasks individually...")
     success = True
-    success &= uninstall_task(TASK_NAME_BACKGROUND)
-    success &= uninstall_task(TASK_NAME_TRAY)
-    success &= uninstall_task(TASK_NAME_WATCHDOG)
+    for name in (
+        TASK_NAME_BACKGROUND,
+        TASK_NAME_TRAY,
+        TASK_NAME_WATCHDOG,
+        TASK_NAME_UPDATER,
+        TASK_NAME_SILENT_UPDATER,
+        TASK_NAME_MEMORY_RESTART,
+        *LEGACY_TASK_NAMES,
+    ):
+        success &= uninstall_task(name)
     
     if success:
         print("[OK] Individual task removal completed")
@@ -641,11 +718,11 @@ def fallback_individual_removal():
         return False
 
 def check_remaining_tasks():
-    """Check if any CloudHoneypot tasks still exist"""
+    """Check if any Asteria / CloudHoneypot tasks still exist"""
     try:
         result = subprocess.run([
             'powershell', '-ExecutionPolicy', 'Bypass', '-Command',
-            'Get-ScheduledTask | Where-Object { $_.TaskName -like "CloudHoneypot*" } | Select-Object -ExpandProperty TaskName'
+            'Get-ScheduledTask | Where-Object { $_.TaskName -like "Asteria-*" -or $_.TaskName -like "CloudHoneypot*" -or $_.TaskName -like "HoneypotClient*" } | Select-Object -ExpandProperty TaskName'
         ], capture_output=True, text=True, encoding='utf-8', errors='ignore',
         creationflags=subprocess.CREATE_NO_WINDOW)
         
@@ -800,8 +877,7 @@ def refresh_watchdog_and_memory_restart(log_func=None) -> bool:
 def _task_refresh_marker_path() -> str:
     return os.path.join(
         os.environ.get("ProgramData", r"C:\ProgramData"),
-        "YesNext",
-        "CloudHoneypotClient",
+        "Asteria",
         "tasks_refresh_version.txt",
     )
 

@@ -431,7 +431,7 @@ class TrayManager:
                 if not msg_id:
                     return
 
-                class_name = f"CloudHoneypotTrayTB{os.getpid()}"
+                class_name = f"AsteriaTrayTB{os.getpid()}"
 
                 def _wndproc(h, msg, wparam, lparam):
                     if msg == msg_id:

@@ -12,7 +12,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$pd = Join-Path $env:ProgramData "YesNext\CloudHoneypotClient"
+$pd = Join-Path $env:ProgramData "Asteria"
 $stamp = Get-Date -Format "yyyyMMddHHmmss"
 
 function Write-IdLog([string]$msg) {
@@ -28,12 +28,21 @@ function Move-Aside([string]$path) {
 
 # End/disable tasks that would race a restart
 foreach ($tn in @(
+        "Asteria-Background",
+        "Asteria-Tray",
+        "Asteria-Watchdog",
+        "Asteria-Updater",
+        "Asteria-SilentUpdater",
+        "Asteria-MemoryRestart",
+        "AsteriaClientGuard",
+        # Pre-4.9.41
         "CloudHoneypot-Background",
         "CloudHoneypot-Tray",
         "CloudHoneypot-Watchdog",
         "CloudHoneypot-Updater",
         "CloudHoneypot-SilentUpdater",
-        "CloudHoneypot-MemoryRestart"
+        "CloudHoneypot-MemoryRestart",
+        "HoneypotClientGuard"
     )) {
     try { & schtasks.exe /end /tn $tn 2>$null | Out-Null } catch {}
     try { & schtasks.exe /change /tn $tn /disable 2>$null | Out-Null } catch {}
@@ -55,8 +64,8 @@ Move-Aside (Join-Path $pd "account_link.json")
 
 # Legacy locations that migrate back into ProgramData
 $legacy = @(
-    (Join-Path $env:APPDATA "YesNext\CloudHoneypotClient\token.dat"),
-    (Join-Path $env:WINDIR "System32\config\systemprofile\AppData\Roaming\YesNext\CloudHoneypotClient\token.dat")
+    (Join-Path $env:APPDATA "Asteria\token.dat"),
+    (Join-Path $env:WINDIR "System32\config\systemprofile\AppData\Roaming\Asteria\token.dat")
 )
 foreach ($p in $legacy) { Move-Aside $p }
 

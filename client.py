@@ -693,19 +693,23 @@ class CloudHoneypotClient:
         try:
             current_mode = self._detect_current_mode()
             
-            # Registry key oluştur/aç
             import winreg
-            key_path = r"Software\YesNext\CloudHoneypot"
+            key_path = r"Software\Asteria"
+            legacy_path = r"Software\YesNext\CloudHoneypot"
             
             try:
                 key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE)
             except FileNotFoundError:
-                # Key yoksa oluştur
                 key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path)
             
-            # Mode'u kaydet
             winreg.SetValueEx(key, "LastMode", 0, winreg.REG_SZ, current_mode)
             winreg.CloseKey(key)
+
+            # Best-effort mirror removal of pre-Asteria LastMode key
+            try:
+                winreg.DeleteKey(winreg.HKEY_CURRENT_USER, legacy_path)
+            except OSError:
+                pass
             
             log(f"📋 Registry mode updated: {current_mode}")
             
@@ -1617,6 +1621,7 @@ class CloudHoneypotClient:
             "defense_policy": self._ipc_defense_policy_summary(),
             "api": self._ipc_api_health_summary(),
             "commands_recent": self._ipc_commands_recent(limit=5),
+            "public_ip": str(self.state.get("public_ip") or "") or None,
         }
 
     def _ipc_rs_running(self) -> bool:
@@ -2366,7 +2371,7 @@ class CloudHoneypotClient:
         """Write consent data to storage"""
         try:
             data = {"accepted": bool(accepted), "rdp_move": bool(rdp_move), 
-                   "autostart": bool(autostart), "ts": int(time.time()), "app": "CloudHoneypotClient"}
+                   "autostart": bool(autostart), "ts": int(time.time()), "app": "AsteriaClient"}
             with open(CONSENT_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False)
         except Exception as e:
@@ -4028,7 +4033,7 @@ if __name__ == "__main__":
 
     # Determine operation mode
     operation_mode = get_operation_mode(args)
-    log(f"=== CLOUD HONEYPOT CLIENT STARTUP ===")
+    log(f"=== ASTERIA CLIENT STARTUP ===")
     log(f"Operation mode: {operation_mode}")
     log(f"Process PID: {os.getpid()}")
     log(f"Command line: {' '.join(sys.argv)}")
@@ -4092,7 +4097,7 @@ if __name__ == "__main__":
         if is_session_zero():
             log(
                 "Refusing GUI in Session 0 (invisible to user). "
-                "Handing off to CloudHoneypot-Tray in interactive session."
+                "Handing off to Asteria-Tray in interactive session."
             )
             try:
                 launch_interactive_tray_gui()
@@ -4101,7 +4106,9 @@ if __name__ == "__main__":
             sys.exit(0)
         
         # Initialize basic logging FIRST
-        log_dir = os.path.join(os.environ.get('APPDATA', ''), 'YesNext', 'CloudHoneypotClient')
+        from client_paths import ensure_machine_data_dir
+
+        log_dir = ensure_machine_data_dir()
         os.makedirs(log_dir, exist_ok=True)
         setup_logging()
         
@@ -4312,7 +4319,7 @@ if __name__ == "__main__":
         app = None
         try:
             log("=== DAEMON MODE STARTUP ===")
-            log_dir = os.path.join(os.environ.get('PROGRAMDATA', ''), 'YesNext', 'CloudHoneypotClient', 'logs')
+            log_dir = os.path.join(os.environ.get('PROGRAMDATA', ''), 'Asteria', 'logs')
             os.makedirs(log_dir, exist_ok=True)
             setup_logging()
             log("Setting up daemon mode application...")

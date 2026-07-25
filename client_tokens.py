@@ -288,7 +288,7 @@ def get_legacy_token_paths(app_dir: str = "") -> List[str]:
     if app_dir:
         _add(os.path.join(app_dir, "token.dat"))
 
-    # SYSTEM profile used by CloudHoneypot-Background / SilentUpdater
+    # SYSTEM profile used by Asteria-Background / SilentUpdater
     windir = os.environ.get("WINDIR", r"C:\Windows")
     _add(
         os.path.join(

@@ -19,8 +19,7 @@ def _store_path() -> str:
     except Exception:
         base = os.path.join(
             os.environ.get("ProgramData", r"C:\ProgramData"),
-            "YesNext",
-            "CloudHoneypotClient",
+            "Asteria",
         )
     return os.path.join(base, _STORE_NAME)
 

@@ -20,7 +20,7 @@ try:
 except Exception:  # pragma: no cover
     MACHINE_DATA_DIR = os.path.join(
         os.environ.get("ProgramData", r"C:\ProgramData"),
-        "YesNext", "CloudHoneypotClient",
+        "Asteria",
     )
     VERSION = "0.0.0"
 
@@ -146,7 +146,7 @@ def set_binary_integrity(value: str) -> None:
         _save_state()
 
 
-def query_guardian_exit_code(service_name: str = "CloudHoneypotGuardian") -> Optional[int]:
+def query_guardian_exit_code(service_name: str = "AsteriaGuardian") -> Optional[int]:
     """Best-effort WIN32_EXIT_CODE from `sc queryex` (None if unavailable)."""
     try:
         import subprocess
@@ -309,7 +309,7 @@ def snapshot(
         return out
 
 
-def refresh_guardian_exit_code(service_name: str = "CloudHoneypotGuardian") -> Optional[int]:
+def refresh_guardian_exit_code(service_name: str = "AsteriaGuardian") -> Optional[int]:
     code = query_guardian_exit_code(service_name)
     with _lock:
         _state["guardian_exit_code"] = code

@@ -588,8 +588,7 @@ class RansomwareShield:
         except Exception:
             base = os.path.join(
                 os.environ.get("ProgramData", r"C:\ProgramData"),
-                "YesNext",
-                "CloudHoneypotClient",
+                "Asteria",
             )
         try:
             os.makedirs(base, exist_ok=True)
@@ -1734,8 +1733,7 @@ class RansomwareShield:
         except Exception:
             base = os.path.join(
                 os.environ.get("ProgramData", r"C:\ProgramData"),
-                "YesNext",
-                "CloudHoneypotClient",
+                "Asteria",
             )
         return os.path.join(base, _QUARANTINE_FILE)
 

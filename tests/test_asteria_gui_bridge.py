@@ -104,11 +104,23 @@ class MotorBridgeTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"], "shell_denied")
 
+    @mock.patch.object(asteria_gui.MotorBridge, "_load_token", return_value="tok-uuid-1")
     @mock.patch("asteria_gui.webbrowser.open")
-    def test_shell_open_dashboard_allowlisted_path(self, mocked_open):
-        result = self.bridge.shell("open_dashboard", "alerts")
+    def test_shell_open_dashboard_allowlisted_path(self, mocked_open, _tok):
+        result = self.bridge.shell("open_dashboard", "blocks_auto")
         self.assertTrue(result["ok"], result)
-        mocked_open.assert_called_once_with("https://asteria.run/dashboard?view=alerts")
+        mocked_open.assert_called_once_with(
+            "https://asteria.run/dashboard/blocks?token=tok-uuid-1#tab-auto"
+        )
+
+    @mock.patch.object(asteria_gui.MotorBridge, "_load_token", return_value="tok-uuid-1")
+    @mock.patch("asteria_gui.webbrowser.open")
+    def test_shell_open_dashboard_home_with_token(self, mocked_open, _tok):
+        result = self.bridge.shell("open_dashboard", "")
+        self.assertTrue(result["ok"], result)
+        mocked_open.assert_called_once_with(
+            "https://asteria.run/dashboard?token=tok-uuid-1"
+        )
 
     @mock.patch("asteria_gui.webbrowser.open")
     def test_shell_open_dashboard_denies_unknown_path(self, mocked_open):

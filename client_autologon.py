@@ -32,7 +32,7 @@ try:
 except Exception:  # pragma: no cover
     MACHINE_DATA_DIR = os.path.join(
         os.environ.get("ProgramData", r"C:\ProgramData"),
-        "YesNext", "CloudHoneypotClient",
+        "Asteria",
     )
 
 _WINLOGON = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"

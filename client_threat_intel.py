@@ -31,8 +31,7 @@ def _programdata_dir() -> str:
     except Exception:
         return os.path.join(
             os.environ.get("ProgramData", r"C:\ProgramData"),
-            "YesNext",
-            "CloudHoneypotClient",
+            "Asteria",
         )
 
 

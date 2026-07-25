@@ -27,8 +27,7 @@ try:
 except Exception:  # pragma: no cover
     MACHINE_DATA_DIR = os.path.join(
         os.environ.get("ProgramData", r"C:\ProgramData"),
-        "YesNext",
-        "CloudHoneypotClient",
+        "Asteria",
     )
     TOKEN_FILE = os.path.join(MACHINE_DATA_DIR, "token.dat")
 

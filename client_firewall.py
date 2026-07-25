@@ -71,7 +71,7 @@ def block_rule_name(value: str) -> str:
 def _firewall_brand_state_path() -> Path:
     return Path(
         os.environ.get("ProgramData", r"C:\ProgramData")
-    ) / "YesNext" / "CloudHoneypotClient" / "firewall_brand.json"
+    ) / "Asteria" / "firewall_brand.json"
 
 
 # ---------------------------- Logging ---------------------------- #

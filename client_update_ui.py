@@ -39,8 +39,7 @@ _PHASE_STALE_SEC = {
 def _status_path() -> str:
     base = os.path.join(
         os.environ.get("ProgramData", r"C:\ProgramData"),
-        "YesNext",
-        "CloudHoneypotClient",
+        "Asteria",
     )
     try:
         os.makedirs(base, exist_ok=True)

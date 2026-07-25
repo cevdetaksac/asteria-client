@@ -29,8 +29,7 @@ _MAX_RECORDS = 5000
 def _store_path() -> str:
     base = os.path.join(
         os.environ.get("ProgramData", r"C:\ProgramData"),
-        "YesNext",
-        "CloudHoneypotClient",
+        "Asteria",
     )
     try:
         os.makedirs(base, exist_ok=True)

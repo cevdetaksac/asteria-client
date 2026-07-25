@@ -1,5 +1,5 @@
 # ===============================================================================
-# Honeypot Memory Restart Script
+# Asteria Memory Restart Script
 # Task Scheduler every 8h: kill client, restart in correct mode, log lifecycle.
 # ===============================================================================
 
@@ -24,7 +24,7 @@ try {
 } catch {
     exit 5
 }
-$ProgramDataDir = Join-Path $env:ProgramData "YesNext\CloudHoneypotClient"
+$ProgramDataDir = Join-Path $env:ProgramData "Asteria"
 $LogDate = Get-Date -Format "yyyy-MM-dd"
 $LifecycleLog = Join-Path $ProgramDataDir "lifecycle-$LogDate.log"
 $LifecycleQueue = Join-Path $ProgramDataDir "lifecycle_queue.jsonl"
@@ -94,7 +94,7 @@ function Resolve-InstallPath {
         "C:\Program Files (x86)\Asteria\Asteria Client",
         "C:\Program Files\YesNext\Cloud Honeypot Client",
         "C:\Program Files (x86)\YesNext\Cloud Honeypot Client",
-        "C:\Program Files\YesNext\CloudHoneypotClient",
+        "C:\Program Files\Asteria",
         (Split-Path -Parent $PSScriptRoot),
         $PSScriptRoot,
         (Get-Location).Path
@@ -111,7 +111,11 @@ function Resolve-InstallPath {
 
 function Get-LastModeFromRegistry {
     try {
-        $regPath = "HKCU:\Software\YesNext\CloudHoneypot"
+        $regPath = "HKCU:\Software\Asteria"
+        if (-not (Test-Path $regPath)) {
+            $legacy = "HKCU:\Software\YesNext\CloudHoneypot"
+            if (Test-Path $legacy) { $regPath = $legacy }
+        }
         if (Test-Path $regPath) {
             $lastMode = Get-ItemProperty -Path $regPath -Name "LastMode" -ErrorAction SilentlyContinue
             if ($lastMode -and $lastMode.LastMode) {
@@ -153,8 +157,8 @@ Write-Lifecycle -EventType "memory_restart_path" -Reason "resolved" -Severity "i
 
 # Skip while update lock present
 $updateLocks = @(
-    (Join-Path $env:ProgramData "YesNext\CloudHoneypotClient\update_in_progress.lock"),
-    (Join-Path $env:APPDATA "YesNext\CloudHoneypotClient\update_in_progress.lock")
+    (Join-Path $env:ProgramData "Asteria\update_in_progress.lock"),
+    (Join-Path $env:APPDATA "Asteria\update_in_progress.lock")
 )
 foreach ($ul in $updateLocks) {
     if (Test-Path $ul) {
@@ -249,7 +253,7 @@ try {
     Write-Lifecycle -EventType "memory_restart_fallback" -Reason "process_not_alive_after_start" -Severity "warning" -Details @{
         target_mode = "--mode=daemon"
     }
-    schtasks /run /tn "CloudHoneypot-Background" 2>$null | Out-Null
+    schtasks /run /tn "Asteria-Background" 2>$null | Out-Null
     Start-Sleep -Seconds 5
     $alive2 = Get-Process -Name "honeypot-client" -ErrorAction SilentlyContinue
     if ($alive2) {

@@ -75,8 +75,7 @@ def get_tls_ca_bundle() -> Optional[str]:
 def _stable_ca_bundle_path() -> str:
     return os.path.join(
         os.environ.get("ProgramData", r"C:\ProgramData"),
-        "YesNext",
-        "CloudHoneypotClient",
+        "Asteria",
         "cacert.pem",
     )
 

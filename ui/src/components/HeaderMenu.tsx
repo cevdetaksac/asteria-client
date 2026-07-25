@@ -2,6 +2,8 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { t } from '../i18n'
 
 export type MenuAction =
+  | 'open_dashboard'
+  | 'refresh'
   | 'copy_token'
   | 'link_account'
   | 'unlink_account'
@@ -44,6 +46,9 @@ export function HeaderMenu({ version, accountLinked, onAction }: Props) {
   }, [open])
 
   const items: Item[] = [
+    { type: 'item', id: 'open_dashboard', label: t('btn_dashboard') },
+    { type: 'item', id: 'refresh', label: t('btn_refresh') },
+    { type: 'sep', id: 'sep-actions' },
     { type: 'item', id: 'copy_token', label: t('btn_copy_token') },
     {
       type: 'item',

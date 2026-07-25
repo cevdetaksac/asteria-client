@@ -70,7 +70,7 @@ Write-Host "   SUCCESS: Version v$VERSION propagated to all files" -ForegroundCo
 if ($Clean) {
     Write-Host "Cleaning previous builds..." -ForegroundColor Yellow
     Remove-Item -Path "build", "dist", "__pycache__" -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item -Path "cloud-client-installer.exe" -Force -ErrorAction SilentlyContinue
+    Remove-Item -Path "asteria-client-installer.exe", "cloud-client-installer.exe" -Force -ErrorAction SilentlyContinue
     Write-Host "   Cleanup completed" -ForegroundColor Green
 }
 
@@ -174,7 +174,9 @@ try {
 # Step 3: Sign PE payloads BEFORE NSIS so the installer embeds signed binaries.
 # Signing after makensis only Authenticodes the outer stub; installed exe stay unsigned.
 Write-Host "[3/6] Signing payload executables..." -ForegroundColor Yellow
-$installerPath = Join-Path (Get-Location) "cloud-client-installer.exe"
+$installerPath = Join-Path (Get-Location) "asteria-client-installer.exe"
+# Agents <= 4.9.40 hardcode this asset name as their fallback download URL.
+$legacyInstallerPath = Join-Path (Get-Location) "cloud-client-installer.exe"
 $mainExe = Join-Path (Get-Location) "dist\asteria-client\asteria-client.exe"
 $guiExe = Join-Path (Get-Location) "dist\asteria-gui.exe"
 $signed = $false
@@ -248,18 +250,26 @@ if ($Sign) {
     Invoke-AsteriaSign @($installerPath)
 }
 
+# Legacy-named duplicate: upload it alongside the Asteria asset so agents that
+# still resolve cloud-client-installer.exe can self-update to this release.
+if (Test-Path $installerPath) {
+    Copy-Item -LiteralPath $installerPath -Destination $legacyInstallerPath -Force
+    Write-Host "   Legacy alias: cloud-client-installer.exe (upload both assets)" -ForegroundColor Cyan
+}
+
 # Step 6: Show results + emit provenance manifest
 Write-Host "`n[6/6] Build completed successfully!" -ForegroundColor Green
 Write-Host "===============================================" -ForegroundColor Green
 
-$installerFile = Get-Item "cloud-client-installer.exe" -ErrorAction SilentlyContinue
+$installerFile = Get-Item "asteria-client-installer.exe" -ErrorAction SilentlyContinue
 if ($installerFile) {
     $sizeMB = [math]::Round($installerFile.Length / 1MB, 1)
     $sha = (Get-FileHash -Algorithm SHA256 -Path $installerFile.FullName).Hash.ToLowerInvariant()
     $provenance = [ordered]@{
         product = "asteria-client"
         version = $VERSION
-        artifact = "cloud-client-installer.exe"
+        artifact = "asteria-client-installer.exe"
+        artifact_legacy_alias = "cloud-client-installer.exe"
         sha256 = $sha
         size_bytes = $installerFile.Length
         built_at = (Get-Date).ToUniversalTime().ToString("o")
@@ -279,7 +289,7 @@ if ($installerFile) {
     New-Item -ItemType Directory -Force -Path "dist" | Out-Null
     $provenance | ConvertTo-Json -Depth 5 | Set-Content -Path $provPath -Encoding UTF8
     Write-Host ("Version:   v{0}" -f $VERSION) -ForegroundColor Cyan
-    Write-Host ("Installer: cloud-client-installer.exe ({0} MB)" -f $sizeMB) -ForegroundColor Cyan
+    Write-Host ("Installer: asteria-client-installer.exe ({0} MB)" -f $sizeMB) -ForegroundColor Cyan
     Write-Host ("SHA256:    {0}" -f $sha) -ForegroundColor Cyan
     Write-Host ("Signed:    {0}" -f $signed) -ForegroundColor Cyan
     Write-Host ("Provenance:{0}" -f $provPath) -ForegroundColor Cyan
@@ -291,7 +301,7 @@ if ($installerFile) {
 }
 
 Write-Host "`nUsage Instructions:" -ForegroundColor White
-Write-Host "   - Run cloud-client-installer.exe as Administrator" -ForegroundColor Gray
+Write-Host "   - Run asteria-client-installer.exe as Administrator" -ForegroundColor Gray
 Write-Host "   - Automatic UAC elevation will prompt for admin rights" -ForegroundColor Gray
 Write-Host "   - Application will self-configure on first run" -ForegroundColor Gray
 

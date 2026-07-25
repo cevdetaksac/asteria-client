@@ -23,7 +23,7 @@ def check_previous_restart_state():
         # Registry'den mode alınacak, bu sadece log için
         appdata = os.environ.get('APPDATA', '')
         if appdata:
-            state_file = os.path.join(appdata, 'YesNext', 'CloudHoneypotClient', 'restart_mode.json')
+            state_file = os.path.join(appdata, 'Asteria', 'restart_mode.json')
         else:
             state_file = 'restart_mode.json'
             

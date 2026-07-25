@@ -56,8 +56,7 @@ export function LockScreen({
           </button>
         </div>
 
-        <BrandLockup mode="wide" />
-        <p className="eyebrow lock-eyebrow">{t('control_center')}</p>
+        <BrandLockup mode="square" />
 
         {!ready ? (
           <div className="lock-body">
@@ -68,20 +67,6 @@ export function LockScreen({
             <h2>{t('lock_title')}</h2>
             <p className="lock-prompt">{t('lock_prompt')}</p>
             <p className="lock-meta muted">{t('lock_pin_hint')}</p>
-
-            {accountLinked ? (
-              <div className="lock-callout linked" role="status">
-                <span className="lock-callout-badge">{badge}</span>
-                <p>{t('lock_pin_dashboard_hint')}</p>
-                <button type="button" className="btn ghost sm" onClick={onOpenDashboard}>
-                  {t('lock_open_dashboard')}
-                </button>
-              </div>
-            ) : (
-              <div className="lock-callout warn" role="note">
-                <p>{t('lock_unlinked_note')}</p>
-              </div>
-            )}
 
             <form className="lock-form" onSubmit={onUnlock}>
               <PasswordInput
@@ -101,6 +86,20 @@ export function LockScreen({
               <aside className="lock-error" role="alert">
                 {error}
               </aside>
+            )}
+
+            {accountLinked ? (
+              <div className="lock-callout linked" role="status">
+                <span className="lock-callout-badge">{badge}</span>
+                <p>{t('lock_pin_dashboard_hint')}</p>
+                <button type="button" className="btn ghost sm" onClick={onOpenDashboard}>
+                  {t('lock_open_dashboard')}
+                </button>
+              </div>
+            ) : (
+              <div className="lock-callout warn" role="note">
+                <p>{t('lock_unlinked_note')}</p>
+              </div>
             )}
           </div>
         )}

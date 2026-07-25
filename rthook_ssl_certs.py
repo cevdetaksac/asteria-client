@@ -9,8 +9,7 @@ def _bootstrap_ca():
         mei = getattr(sys, "_MEIPASS", "") or ""
         stable_dir = os.path.join(
             os.environ.get("ProgramData", r"C:\ProgramData"),
-            "YesNext",
-            "CloudHoneypotClient",
+            "Asteria",
         )
         stable = os.path.join(stable_dir, "cacert.pem")
         candidates = []

@@ -12,4 +12,4 @@ Before changing API / agent behavior, follow **asteria-contract** (SoT):
 
 Cursor rule: `.cursor/rules/honeypot-contract.mdc`  
 Pointer: [`contract/README.md`](contract/README.md)  
-Remote: https://github.com/cevdetaksac/asteria-contract (pin = `VERSION` file, currently **1.4.31**)
+Remote: https://github.com/cevdetaksac/asteria-contract (pin = `VERSION` file, currently **1.4.35**)

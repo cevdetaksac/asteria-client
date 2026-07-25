@@ -33,8 +33,8 @@ try {
 function Test-UpdateLockBlocksKill {
     if ($Force) { return $false }
     $candidates = @(
-        (Join-Path $env:ProgramData "YesNext\CloudHoneypotClient\update_in_progress.lock"),
-        (Join-Path $env:APPDATA "YesNext\CloudHoneypotClient\update_in_progress.lock")
+        (Join-Path $env:ProgramData "Asteria\update_in_progress.lock"),
+        (Join-Path $env:APPDATA "Asteria\update_in_progress.lock")
     )
     foreach ($lock in $candidates) {
         if (-not (Test-Path $lock)) { continue }
@@ -64,7 +64,7 @@ function Write-StopFlags {
     $paths = @(
         (Join-Path $env:TEMP "honeypot_watchdog_token.txt"),
         (Join-Path $env:APPDATA "YesNext\CloudHoneypot\watchdog_token.txt"),
-        (Join-Path $env:APPDATA "YesNext\CloudHoneypotClient\watchdog.token"),
+        (Join-Path $env:APPDATA "Asteria\watchdog.token"),
         (Join-Path $env:ProgramData "YesNext\CloudHoneypot\watchdog_stop.flag")
     )
     foreach ($p in $paths) {
@@ -80,6 +80,12 @@ function Stop-HoneypotTasksFast {
     # End + disable only the respawn-critical tasks (fast).
     # Full task deletion is handled by installer DeleteAllHoneypotTasks.
     $names = @(
+        "AsteriaClientGuard",
+        "Asteria-Watchdog",
+        "Asteria-Background",
+        "Asteria-Tray",
+        "Asteria-MemoryRestart",
+        # Pre-4.9.41
         "HoneypotClientGuard",
         "CloudHoneypot-Watchdog",
         "CloudHoneypot-Background",
@@ -218,7 +224,7 @@ do {
         $roots = @(
             (Join-Path ${env:ProgramFiles} "Asteria\Asteria Client"),
             (Join-Path ${env:ProgramFiles} "YesNext\Cloud Honeypot Client"),
-            (Join-Path ${env:ProgramFiles} "YesNext\CloudHoneypotClient")
+            (Join-Path ${env:ProgramFiles} "Asteria")
         )
         foreach ($root in $roots) {
             if (-not $root -or -not (Test-Path $root)) { continue }

@@ -5,7 +5,7 @@
 !include "LogicLib.nsh"
 
 Name "Asteria Client"
-OutFile "cloud-client-installer.exe"
+OutFile "asteria-client-installer.exe"
 
 !define APPNAME "Asteria Client"
 !define COMPANYNAME "Asteria"
@@ -85,6 +85,11 @@ Function un.onInit
         unGateAbortQuiet:
         Abort
     ${EndIf}
+    ; Install no longer ships kill-honeypot.ps1 under Program Files — embed it
+    ; into the uninstaller payload so GUI/motor DACL kill still works.
+    InitPluginsDir
+    SetOutPath "$PLUGINSDIR"
+    File "scripts\kill-honeypot.ps1"
 FunctionEnd
 
 ; ===================================================================
@@ -96,7 +101,10 @@ FunctionEnd
 Function LaunchAsCurrentUser
     SetOutPath "$INSTDIR"
 
-    DetailPrint "[LAUNCH] Stopping leftover honeypot processes before GUI start..."
+    DetailPrint "[LAUNCH] Stopping leftover Asteria processes before GUI start..."
+    nsExec::Exec 'schtasks /end /tn "Asteria-Tray" >nul 2>&1'
+    nsExec::Exec 'schtasks /end /tn "Asteria-Background" >nul 2>&1'
+    nsExec::Exec 'schtasks /end /tn "Asteria-Watchdog" >nul 2>&1'
     nsExec::Exec 'schtasks /end /tn "CloudHoneypot-Tray" >nul 2>&1'
     nsExec::Exec 'schtasks /end /tn "CloudHoneypot-Background" >nul 2>&1'
     nsExec::Exec 'schtasks /end /tn "CloudHoneypot-Watchdog" >nul 2>&1'
@@ -118,7 +126,7 @@ Function LaunchAsCurrentUser
     Sleep 1500
 
     ; Clear stale update lock so kill/watchdog and GUI are not blocked
-    ExpandEnvStrings $R9 "%ProgramData%\YesNext\CloudHoneypotClient\update_in_progress.lock"
+    ExpandEnvStrings $R9 "%ProgramData%\Asteria\update_in_progress.lock"
     Delete /REBOOTOK "$R9"
 
     ; Start SYSTEM-capable motor setup from elevated installer, then open the
@@ -153,14 +161,23 @@ FunctionEnd
 !macroend
 
 ; ===================================================================
-; DELETE ALL CLOUDHONEYPOT SCHEDULED TASKS
+; DELETE ALL ASTERIA + LEGACY CLOUDHONEYPOT SCHEDULED TASKS
 ; Uses PowerShell wildcard to catch ALL task name variants
 ; ===================================================================
 Function DeleteAllHoneypotTasks
     Push $0
 
-    DetailPrint "[TASKS] Stopping all CloudHoneypot scheduled tasks..."
-    ; End running task instances first (both naming conventions)
+    DetailPrint "[TASKS] Stopping Asteria / legacy scheduled tasks..."
+    ; Current Asteria wire names
+    nsExec::Exec 'schtasks /end /tn "Asteria-Background" >nul 2>&1'
+    nsExec::Exec 'schtasks /end /tn "Asteria-Tray" >nul 2>&1'
+    nsExec::Exec 'schtasks /end /tn "Asteria-Watchdog" >nul 2>&1'
+    nsExec::Exec 'schtasks /end /tn "Asteria-Updater" >nul 2>&1'
+    nsExec::Exec 'schtasks /end /tn "Asteria-SilentUpdater" >nul 2>&1'
+    nsExec::Exec 'schtasks /end /tn "Asteria-MemoryRestart" >nul 2>&1'
+    nsExec::Exec 'schtasks /end /tn "AsteriaClientGuard" >nul 2>&1'
+    nsExec::Exec 'schtasks /change /tn "AsteriaClientGuard" /disable >nul 2>&1'
+    ; Pre-4.9.41 CloudHoneypot / HoneypotClient names
     nsExec::Exec 'schtasks /end /tn "CloudHoneypot-Background" >nul 2>&1'
     nsExec::Exec 'schtasks /end /tn "CloudHoneypot-Tray" >nul 2>&1'
     nsExec::Exec 'schtasks /end /tn "CloudHoneypot-Watchdog" >nul 2>&1'
@@ -173,12 +190,18 @@ Function DeleteAllHoneypotTasks
     nsExec::Exec 'schtasks /change /tn "HoneypotClientGuard" /disable >nul 2>&1'
     Sleep 300
 
-    DetailPrint "[TASKS] Deleting all CloudHoneypot / HoneypotClient tasks..."
-    ; PowerShell wildcard - catches CloudHoneypot* AND HoneypotClient* (self-protect guard)
-    nsExec::Exec 'powershell -ExecutionPolicy Bypass -Command "Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $$_.TaskName -like ''CloudHoneypot*'' -or $$_.TaskName -like ''HoneypotClient*'' } | ForEach-Object { schtasks /end /tn $$_.TaskName 2>$$null; Unregister-ScheduledTask -TaskName $$_.TaskName -Confirm:$$false -ErrorAction SilentlyContinue }"'
+    DetailPrint "[TASKS] Deleting Asteria / CloudHoneypot / HoneypotClient tasks..."
+    nsExec::Exec 'powershell -ExecutionPolicy Bypass -Command "Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $$_.TaskName -like ''Asteria-*'' -or $$_.TaskName -like ''AsteriaClient*'' -or $$_.TaskName -like ''CloudHoneypot*'' -or $$_.TaskName -like ''HoneypotClient*'' } | ForEach-Object { schtasks /end /tn $$_.TaskName 2>$$null; Unregister-ScheduledTask -TaskName $$_.TaskName -Confirm:$$false -ErrorAction SilentlyContinue }"'
     Pop $0
 
-    ; Fallback: explicit deletion of every known task name (both conventions)
+    ; Fallback: explicit deletion of every known task name
+    nsExec::Exec 'schtasks /delete /tn "Asteria-Background" /f >nul 2>&1'
+    nsExec::Exec 'schtasks /delete /tn "Asteria-Tray" /f >nul 2>&1'
+    nsExec::Exec 'schtasks /delete /tn "Asteria-Watchdog" /f >nul 2>&1'
+    nsExec::Exec 'schtasks /delete /tn "Asteria-Updater" /f >nul 2>&1'
+    nsExec::Exec 'schtasks /delete /tn "Asteria-SilentUpdater" /f >nul 2>&1'
+    nsExec::Exec 'schtasks /delete /tn "Asteria-MemoryRestart" /f >nul 2>&1'
+    nsExec::Exec 'schtasks /delete /tn "AsteriaClientGuard" /f >nul 2>&1'
     nsExec::Exec 'schtasks /delete /tn "CloudHoneypot-Background" /f >nul 2>&1'
     nsExec::Exec 'schtasks /delete /tn "CloudHoneypot-Tray" /f >nul 2>&1'
     nsExec::Exec 'schtasks /delete /tn "CloudHoneypot-Watchdog" /f >nul 2>&1'
@@ -188,7 +211,6 @@ Function DeleteAllHoneypotTasks
     nsExec::Exec 'schtasks /delete /tn "CloudHoneypotClientBoot" /f >nul 2>&1'
     nsExec::Exec 'schtasks /delete /tn "CloudHoneypotClientLogon" /f >nul 2>&1'
     nsExec::Exec 'schtasks /delete /tn "HoneypotClientGuard" /f >nul 2>&1'
-    ; Legacy names
     nsExec::Exec 'schtasks /delete /tn "Cloud Honeypot Client" /f >nul 2>&1'
     nsExec::Exec 'schtasks /delete /tn "HoneypotClientAutostart" /f >nul 2>&1'
     nsExec::Exec 'schtasks /delete /tn "CloudHoneypotTray" /f >nul 2>&1'
@@ -196,7 +218,7 @@ Function DeleteAllHoneypotTasks
     nsExec::Exec 'schtasks /delete /tn "CloudHoneypotUpdater" /f >nul 2>&1'
     nsExec::Exec 'schtasks /delete /tn "CloudHoneypotSilentUpdater" /f >nul 2>&1'
 
-    DetailPrint "[TASKS] All CloudHoneypot tasks deleted."
+    DetailPrint "[TASKS] All Asteria / legacy tasks deleted."
     Pop $0
 FunctionEnd
 
@@ -204,7 +226,14 @@ FunctionEnd
 Function un.DeleteAllHoneypotTasks
     Push $0
 
-    DetailPrint "[TASKS] Stopping all CloudHoneypot scheduled tasks..."
+    DetailPrint "[TASKS] Stopping Asteria / legacy scheduled tasks..."
+    nsExec::Exec 'schtasks /end /tn "Asteria-Background" >nul 2>&1'
+    nsExec::Exec 'schtasks /end /tn "Asteria-Tray" >nul 2>&1'
+    nsExec::Exec 'schtasks /end /tn "Asteria-Watchdog" >nul 2>&1'
+    nsExec::Exec 'schtasks /end /tn "Asteria-Updater" >nul 2>&1'
+    nsExec::Exec 'schtasks /end /tn "Asteria-SilentUpdater" >nul 2>&1'
+    nsExec::Exec 'schtasks /end /tn "Asteria-MemoryRestart" >nul 2>&1'
+    nsExec::Exec 'schtasks /end /tn "AsteriaClientGuard" >nul 2>&1'
     nsExec::Exec 'schtasks /end /tn "CloudHoneypot-Background" >nul 2>&1'
     nsExec::Exec 'schtasks /end /tn "CloudHoneypot-Tray" >nul 2>&1'
     nsExec::Exec 'schtasks /end /tn "CloudHoneypot-Watchdog" >nul 2>&1'
@@ -216,9 +245,16 @@ Function un.DeleteAllHoneypotTasks
     nsExec::Exec 'schtasks /end /tn "HoneypotClientGuard" >nul 2>&1'
     Sleep 500
 
-    nsExec::Exec 'powershell -ExecutionPolicy Bypass -Command "Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $$_.TaskName -like ''CloudHoneypot*'' -or $$_.TaskName -like ''HoneypotClient*'' } | ForEach-Object { schtasks /end /tn $$_.TaskName 2>$$null; Unregister-ScheduledTask -TaskName $$_.TaskName -Confirm:$$false -ErrorAction SilentlyContinue }"'
+    nsExec::Exec 'powershell -ExecutionPolicy Bypass -Command "Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $$_.TaskName -like ''Asteria-*'' -or $$_.TaskName -like ''AsteriaClient*'' -or $$_.TaskName -like ''CloudHoneypot*'' -or $$_.TaskName -like ''HoneypotClient*'' } | ForEach-Object { schtasks /end /tn $$_.TaskName 2>$$null; Unregister-ScheduledTask -TaskName $$_.TaskName -Confirm:$$false -ErrorAction SilentlyContinue }"'
     Pop $0
 
+    nsExec::Exec 'schtasks /delete /tn "Asteria-Background" /f >nul 2>&1'
+    nsExec::Exec 'schtasks /delete /tn "Asteria-Tray" /f >nul 2>&1'
+    nsExec::Exec 'schtasks /delete /tn "Asteria-Watchdog" /f >nul 2>&1'
+    nsExec::Exec 'schtasks /delete /tn "Asteria-Updater" /f >nul 2>&1'
+    nsExec::Exec 'schtasks /delete /tn "Asteria-SilentUpdater" /f >nul 2>&1'
+    nsExec::Exec 'schtasks /delete /tn "Asteria-MemoryRestart" /f >nul 2>&1'
+    nsExec::Exec 'schtasks /delete /tn "AsteriaClientGuard" /f >nul 2>&1'
     nsExec::Exec 'schtasks /delete /tn "CloudHoneypot-Background" /f >nul 2>&1'
     nsExec::Exec 'schtasks /delete /tn "CloudHoneypot-Tray" /f >nul 2>&1'
     nsExec::Exec 'schtasks /delete /tn "CloudHoneypot-Watchdog" /f >nul 2>&1'
@@ -235,7 +271,7 @@ Function un.DeleteAllHoneypotTasks
     nsExec::Exec 'schtasks /delete /tn "CloudHoneypotUpdater" /f >nul 2>&1'
     nsExec::Exec 'schtasks /delete /tn "CloudHoneypotSilentUpdater" /f >nul 2>&1'
 
-    DetailPrint "[TASKS] All CloudHoneypot tasks deleted."
+    DetailPrint "[TASKS] All Asteria / legacy tasks deleted."
     Pop $0
 FunctionEnd
 
@@ -254,6 +290,8 @@ Function PreInstallKillFast
     DetailPrint "[PRE-KILL] Stopping tasks + DACL-protected processes..."
     ; Legacy guardian service otherwise respawns the old YesNext binary while
     ; the Asteria files are being installed.
+    nsExec::Exec 'sc.exe stop AsteriaGuardian >nul 2>&1'
+    nsExec::Exec 'sc.exe delete AsteriaGuardian >nul 2>&1'
     nsExec::Exec 'sc.exe stop CloudHoneypotGuardian >nul 2>&1'
     nsExec::Exec 'sc.exe delete CloudHoneypotGuardian >nul 2>&1'
     nsExec::Exec 'sc.exe stop CloudHoneypotMonitor >nul 2>&1'
@@ -276,9 +314,9 @@ Function PreInstallKillFast
     DetailPrint "[PRE-KILL] remove-legacy-install.ps1 exit code: $0"
     ; Direct NSIS purge (64-bit Program Files) — do not rely on WOW64 view alone.
     RMDir /r "$PROGRAMFILES64\YesNext\Cloud Honeypot Client"
-    RMDir /r "$PROGRAMFILES64\YesNext\CloudHoneypotClient"
+    RMDir /r "$PROGRAMFILES64\Asteria"
     RMDir /r "$PROGRAMFILES\YesNext\Cloud Honeypot Client"
-    RMDir /r "$PROGRAMFILES\YesNext\CloudHoneypotClient"
+    RMDir /r "$PROGRAMFILES\Asteria"
     RMDir "$PROGRAMFILES64\YesNext"
     RMDir "$PROGRAMFILES\YesNext"
 FunctionEnd
@@ -333,6 +371,17 @@ Function HardenMotorRuntimeAcl
     HardenMotorRuntimeDone:
 FunctionEnd
 
+; Move / copy durable state from YesNext ProgramData trees into Asteria.
+Function MigrateProgramData
+    DetailPrint "[MIGRATE] ProgramData YesNext → Asteria ..."
+    InitPluginsDir
+    SetOutPath "$PLUGINSDIR"
+    File "scripts\migrate-programdata.ps1"
+    nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\migrate-programdata.ps1"'
+    Pop $0
+    DetailPrint "[MIGRATE] migrate-programdata.ps1 exit: $0"
+FunctionEnd
+
 ; Move locked onedir trees aside so File /r never hits Abort/Retry/Ignore.
 Function PrepareInstallDirForOverwrite
     DetailPrint "[PREP-DIR] Making install dir writable (rename locked _internal)..."
@@ -356,9 +405,9 @@ Function PrepareInstallDirForOverwrite
     PrepLegacyDone:
     DetailPrint "[PREP-DIR] remove-legacy-install.ps1 exit code: $0"
     RMDir /r "$PROGRAMFILES64\YesNext\Cloud Honeypot Client"
-    RMDir /r "$PROGRAMFILES64\YesNext\CloudHoneypotClient"
+    RMDir /r "$PROGRAMFILES64\Asteria"
     RMDir /r "$PROGRAMFILES\YesNext\Cloud Honeypot Client"
-    RMDir /r "$PROGRAMFILES\YesNext\CloudHoneypotClient"
+    RMDir /r "$PROGRAMFILES\Asteria"
     RMDir "$PROGRAMFILES64\YesNext"
     RMDir "$PROGRAMFILES\YesNext"
     Sleep 200
@@ -383,7 +432,8 @@ Function InstallMemoryRestartScript
 FunctionEnd
 
 ; ===================================================================
-; KILL HONEYPOT PROCESSES WITH VERIFICATION (fast: 1 full kill + short poll)
+; KILL ASTERIA PROCESSES WITH VERIFICATION (fast: 1 full kill + short poll)
+; Motor + GUI + legacy honeypot-client image names.
 ; ===================================================================
 Function KillHoneypotProcesses
     Push $0
@@ -393,7 +443,7 @@ Function KillHoneypotProcesses
     DetailPrint "[KILL] Fast shutdown sequence..."
 
     ; Skip full script if nothing to kill (e.g. already stopped in .onInit)
-    nsExec::ExecToStack 'cmd /c ((tasklist /FI "IMAGENAME eq asteria-client.exe" 2>nul | find /I "asteria-client.exe" >nul) || (tasklist /FI "IMAGENAME eq honeypot-client.exe" 2>nul | find /I "honeypot-client.exe" >nul)) && (echo RUNNING) || (echo STOPPED)'
+    nsExec::ExecToStack 'cmd /c ((tasklist /FI "IMAGENAME eq asteria-client.exe" 2>nul | find /I "asteria-client.exe" >nul) || (tasklist /FI "IMAGENAME eq asteria-gui.exe" 2>nul | find /I "asteria-gui.exe" >nul) || (tasklist /FI "IMAGENAME eq honeypot-client.exe" 2>nul | find /I "honeypot-client.exe" >nul)) && (echo RUNNING) || (echo STOPPED)'
     Pop $0
     Pop $1
     StrCmp $1 "STOPPED" KillDone
@@ -403,7 +453,7 @@ Function KillHoneypotProcesses
     ; Quick verify: max 3 short polls, cheap taskkill retry (no full script loop)
     StrCpy $2 "0"
     KillWaitLoop:
-        nsExec::ExecToStack 'cmd /c ((tasklist /FI "IMAGENAME eq asteria-client.exe" 2>nul | find /I "asteria-client.exe" >nul) || (tasklist /FI "IMAGENAME eq honeypot-client.exe" 2>nul | find /I "honeypot-client.exe" >nul)) && (echo RUNNING) || (echo STOPPED)'
+        nsExec::ExecToStack 'cmd /c ((tasklist /FI "IMAGENAME eq asteria-client.exe" 2>nul | find /I "asteria-client.exe" >nul) || (tasklist /FI "IMAGENAME eq asteria-gui.exe" 2>nul | find /I "asteria-gui.exe" >nul) || (tasklist /FI "IMAGENAME eq honeypot-client.exe" 2>nul | find /I "honeypot-client.exe" >nul)) && (echo RUNNING) || (echo STOPPED)'
         Pop $0
         Pop $1
         StrCmp $1 "STOPPED" KillDone
@@ -411,6 +461,7 @@ Function KillHoneypotProcesses
         IntCmp $2 3 KillForce KillWaitMore KillForce
         KillWaitMore:
             DetailPrint "[KILL] Still running - quick retry $2..."
+            nsExec::Exec 'taskkill /F /T /IM asteria-gui.exe >nul 2>&1'
             nsExec::Exec 'taskkill /F /T /IM asteria-client.exe >nul 2>&1'
             nsExec::Exec 'taskkill /F /T /IM honeypot-client.exe >nul 2>&1'
             Pop $0
@@ -440,14 +491,15 @@ Function un.KillHoneypotProcesses
     DetailPrint "[KILL] Uninstall shutdown..."
     Call un.PreInstallKillFast
 
+    nsExec::Exec 'taskkill /f /t /im "asteria-gui.exe" >nul 2>&1'
     nsExec::Exec 'taskkill /f /t /im "asteria-client.exe" >nul 2>&1'
     nsExec::Exec 'taskkill /f /t /im "honeypot-client.exe" >nul 2>&1'
-    nsExec::Exec 'taskkill /f /t /im "asteria-gui.exe" >nul 2>&1'
     Pop $0
-    Sleep 300
+    Sleep 800
 
     nsExec::Exec 'cmd /c del "%TEMP%\honeypot_watchdog_token.txt" 2>nul'
     nsExec::Exec 'cmd /c del "%ProgramData%\YesNext\CloudHoneypot\watchdog_stop.flag" 2>nul'
+    nsExec::Exec 'cmd /c del "%ProgramData%\Asteria\update_in_progress.lock" 2>nul'
 
     Pop $1
     Pop $0
@@ -455,6 +507,8 @@ FunctionEnd
 
 Function un.PreInstallKillFast
     DetailPrint "[PRE-KILL] Uninstall stop sequence..."
+    nsExec::Exec 'sc.exe stop AsteriaGuardian >nul 2>&1'
+    nsExec::Exec 'sc.exe delete AsteriaGuardian >nul 2>&1'
     nsExec::Exec 'sc.exe stop CloudHoneypotGuardian >nul 2>&1'
     nsExec::Exec 'sc.exe delete CloudHoneypotGuardian >nul 2>&1'
     nsExec::Exec 'sc.exe stop CloudHoneypotMonitor >nul 2>&1'
@@ -463,26 +517,44 @@ Function un.PreInstallKillFast
     nsExec::Exec 'cmd /c echo stop > "%APPDATA%\YesNext\CloudHoneypot\watchdog_token.txt"'
     nsExec::Exec 'cmd /c mkdir "%ProgramData%\YesNext\CloudHoneypot" 2>nul'
     nsExec::Exec 'cmd /c echo stop > "%ProgramData%\YesNext\CloudHoneypot\watchdog_stop.flag"'
-    nsExec::Exec 'cmd /c echo stop > "%APPDATA%\YesNext\CloudHoneypotClient\watchdog.token"'
+    nsExec::Exec 'cmd /c mkdir "%APPDATA%\Asteria" 2>nul'
+    nsExec::Exec 'cmd /c echo stop > "%APPDATA%\Asteria\watchdog.token"'
+    nsExec::Exec 'schtasks /end /tn "AsteriaClientGuard" >nul 2>&1'
+    nsExec::Exec 'schtasks /delete /tn "AsteriaClientGuard" /f >nul 2>&1'
     nsExec::Exec 'schtasks /end /tn "HoneypotClientGuard" >nul 2>&1'
     nsExec::Exec 'schtasks /delete /tn "HoneypotClientGuard" /f >nul 2>&1'
+    nsExec::Exec 'schtasks /end /tn "Asteria-Watchdog" >nul 2>&1'
+    nsExec::Exec 'schtasks /end /tn "Asteria-Background" >nul 2>&1'
+    nsExec::Exec 'schtasks /end /tn "Asteria-Tray" >nul 2>&1'
+    nsExec::Exec 'schtasks /end /tn "Asteria-Updater" >nul 2>&1'
+    nsExec::Exec 'schtasks /end /tn "Asteria-SilentUpdater" >nul 2>&1'
+    nsExec::Exec 'schtasks /end /tn "Asteria-MemoryRestart" >nul 2>&1'
     nsExec::Exec 'schtasks /end /tn "CloudHoneypot-Watchdog" >nul 2>&1'
     nsExec::Exec 'schtasks /end /tn "CloudHoneypot-Background" >nul 2>&1'
     nsExec::Exec 'schtasks /end /tn "CloudHoneypot-Tray" >nul 2>&1'
 
-    ; Prefer installed kill helper (SeDebugPrivilege)
+    ; Always prefer the kill helper embedded in the uninstaller (see un.onInit).
+    ; $INSTDIR\scripts\kill-honeypot.ps1 is intentionally NOT installed anymore.
+    IfFileExists "$PLUGINSDIR\kill-honeypot.ps1" 0 UnKillTryInstalled
+        nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\kill-honeypot.ps1" -Force'
+        Pop $0
+        Goto UnKillDone
+
+    UnKillTryInstalled:
     IfFileExists "$INSTDIR\scripts\kill-honeypot.ps1" 0 UnKillFallback
         nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\scripts\kill-honeypot.ps1" -Force'
         Pop $0
         Goto UnKillDone
 
     UnKillFallback:
-        ; QUIT + WMI terminate (admin) fallback when script missing
+        ; QUIT + terminate motor AND GUI (older fallback omitted asteria-gui.exe)
         nsExec::Exec 'powershell -NoProfile -ExecutionPolicy Bypass -Command "try{$$c=New-Object Net.Sockets.TcpClient;$$iar=$$c.BeginConnect(\"127.0.0.1\",58632,$$null,$$null);$$iar.AsyncWaitHandle.WaitOne(800)|Out-Null;if($$c.Connected){$$b=[Text.Encoding]::ASCII.GetBytes(\"QUIT`n\");$$c.GetStream().Write($$b,0,$$b.Length)};$$c.Close()}catch{}"'
         Pop $0
         Sleep 500
-        nsExec::Exec 'powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process -Filter \"Name=''asteria-client.exe''\" | ForEach-Object { $$_.Terminate() }; taskkill /F /T /IM asteria-client.exe 2>$$null"'
-        nsExec::Exec 'powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process -Filter \"Name=''honeypot-client.exe''\" | ForEach-Object { $$_.Terminate() }; taskkill /F /T /IM honeypot-client.exe 2>$$null"'
+        nsExec::Exec 'taskkill /F /T /IM asteria-gui.exe >nul 2>&1'
+        nsExec::Exec 'taskkill /F /T /IM asteria-client.exe >nul 2>&1'
+        nsExec::Exec 'taskkill /F /T /IM honeypot-client.exe >nul 2>&1'
+        nsExec::Exec 'powershell -NoProfile -ExecutionPolicy Bypass -Command "foreach($$n in @(''asteria-gui.exe'',''asteria-client.exe'',''honeypot-client.exe'')){ Get-CimInstance Win32_Process -Filter (\"Name=''$$n''\") -EA SilentlyContinue | ForEach-Object { try{$$_.Terminate()}catch{} } }"'
         Pop $0
         Sleep 400
 
@@ -494,10 +566,10 @@ FunctionEnd
 ; INITIALIZATION
 ; ===================================================================
 Function .onInit
-    StrCpy $LogFile "$LOCALAPPDATA\honeypot-installer.log"
+    StrCpy $LogFile "$LOCALAPPDATA\asteria-installer.log"
     Delete $LogFile
 
-    Push "=== CLOUD HONEYPOT CLIENT v${VERSIONMAJOR}.${VERSIONMINOR}.${VERSIONBUILD} INSTALLER ==="
+    Push "=== ASTERIA CLIENT v${VERSIONMAJOR}.${VERSIONMINOR}.${VERSIONBUILD} INSTALLER ==="
     Call WriteLog
     Push "Installation started with admin privileges"
     Call WriteLog
@@ -525,12 +597,16 @@ Section "Asteria Client (Required)" SEC_MAIN
     Sleep 200
 
     ; Step 2: Kill all honeypot processes with verification
-    !insertmacro LOG "[PREP] Step 2 - Killing honeypot processes..."
+    !insertmacro LOG "[PREP] Step 2 - Killing Asteria / legacy client processes..."
     Call KillHoneypotProcesses
 
     ; Step 3: Rename locked _internal/exe aside + Defender exclude BEFORE extract
     !insertmacro LOG "[PREP] Step 3 - Prepare install dir for overwrite..."
     Call PrepareInstallDirForOverwrite
+
+    ; Step 4: Brand ProgramData path (copy YesNext → Asteria)
+    !insertmacro LOG "[PREP] Step 4 - Migrate ProgramData to Asteria..."
+    Call MigrateProgramData
 
     !insertmacro LOG "[PHASE 1] Pre-installation cleanup complete."
 
@@ -581,7 +657,7 @@ Section "Asteria Client (Required)" SEC_MAIN
     ; Windows Defender exclusions — already attempted in prepare-install-dir;
     ; refresh async (Add-MpPreference can hang under nsExec::Exec).
     !insertmacro LOG "[CONFIG] Refreshing Defender exclusions (async)..."
-    nsExec::Exec 'cmd /c start "" /b powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command "try{Add-MpPreference -ExclusionPath \"$INSTDIR\" -Force -EA SilentlyContinue;Add-MpPreference -ExclusionProcess \"$INSTDIR\asteria-client.exe\" -Force -EA SilentlyContinue}catch{}"'
+    nsExec::Exec 'cmd /c start "" /b powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command "try{Add-MpPreference -ExclusionPath \"$INSTDIR\" -Force -EA SilentlyContinue;Add-MpPreference -ExclusionProcess \"$INSTDIR\asteria-client.exe\" -Force -EA SilentlyContinue;Add-MpPreference -ExclusionProcess \"$INSTDIR\asteria-gui.exe\" -Force -EA SilentlyContinue}catch{}"'
 
     ; Create uninstaller
     !insertmacro LOG "[CONFIG] Creating uninstaller..."
@@ -593,7 +669,7 @@ Section "Asteria Client (Required)" SEC_MAIN
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}" "UninstallString" "$\"$INSTDIR\Uninstall.exe$\""
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}" "QuietUninstallString" "$\"$INSTDIR\Uninstall.exe$\" /S"
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}" "InstallLocation" "$\"$INSTDIR$\""
-    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}" "DisplayIcon" "$\"$INSTDIR\asteria-client.exe$\""
+    WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}" "DisplayIcon" "$\"$INSTDIR\asteria-gui.exe$\""
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}" "Publisher" "${COMPANYNAME}"
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}" "DisplayVersion" "${VERSIONMAJOR}.${VERSIONMINOR}.${VERSIONBUILD}"
     WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}" "VersionMajor" ${VERSIONMAJOR}
@@ -622,12 +698,14 @@ Section "Asteria Client (Required)" SEC_MAIN
         Goto SkipAutoStart
     InteractiveOnboarding:
         ; Force visible GUI until user registers / links account (no tray hide)
-        ExpandEnvStrings $1 "%ProgramData%\YesNext\CloudHoneypotClient"
+        ExpandEnvStrings $1 "%ProgramData%\Asteria"
         CreateDirectory "$1"
         FileOpen $0 "$1\force_gui_onboarding.flag" w
         FileWrite $0 "interactive_install$\r$\n"
         FileClose $0
         !insertmacro LOG "[ONBOARDING] force_gui_onboarding.flag written — GUI will stay visible"
+        nsExec::Exec 'schtasks /end /tn "Asteria-Tray" >nul 2>&1'
+        nsExec::Exec 'schtasks /end /tn "Asteria-Background" >nul 2>&1'
         nsExec::Exec 'schtasks /end /tn "CloudHoneypot-Tray" >nul 2>&1'
         nsExec::Exec 'schtasks /end /tn "CloudHoneypot-Background" >nul 2>&1'
         ; Launch immediately — installer closes (AutoCloseWindow); no Finish checkbox
@@ -647,33 +725,53 @@ SectionEnd
 
 ; ===================================================================
 ; UNINSTALLER SECTION
+; Must remove everything install writes: motor + GUI + scripts + shortcuts
+; + ARP + Defender exclusions + services/tasks (via kill helpers above).
+; Locked files use /REBOOTOK so asteria-gui.exe cannot linger after a failed Delete.
 ; ===================================================================
 Section "Uninstall"
     ; Remove compatibility flag
     DeleteRegValue HKCU "Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers" "$INSTDIR\asteria-client.exe"
+    DeleteRegValue HKCU "Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers" "$INSTDIR\asteria-gui.exe"
+    DeleteRegValue HKCU "Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers" "$INSTDIR\honeypot-client.exe"
 
-    ; Phase 1: Stop everything
-    DetailPrint "Phase 1: Stopping all services..."
+    ; Phase 1: Stop everything (tasks, Guardian, motor, GUI)
+    DetailPrint "Phase 1: Stopping all services and processes..."
     Call un.DeleteAllHoneypotTasks
     Call un.KillHoneypotProcesses
+    ; Extra settle time so WebView2 / onefile GUI release file locks
+    Sleep 1000
+    nsExec::Exec 'taskkill /F /T /IM asteria-gui.exe >nul 2>&1'
+    nsExec::Exec 'taskkill /F /T /IM asteria-client.exe >nul 2>&1'
+    Sleep 500
 
     ; Phase 2: Remove Windows Defender exclusions
     DetailPrint "Removing Windows Defender exclusions..."
-    nsExec::ExecToLog 'powershell -ExecutionPolicy Bypass -Command "try { Remove-MpPreference -ExclusionPath \"$INSTDIR\" -Force; Remove-MpPreference -ExclusionProcess \"$INSTDIR\asteria-client.exe\" -Force } catch { }"'
+    nsExec::ExecToLog 'powershell -ExecutionPolicy Bypass -Command "try { Remove-MpPreference -ExclusionPath \"$INSTDIR\" -Force -EA SilentlyContinue; Remove-MpPreference -ExclusionProcess \"$INSTDIR\asteria-client.exe\" -Force -EA SilentlyContinue; Remove-MpPreference -ExclusionProcess \"$INSTDIR\asteria-gui.exe\" -Force -EA SilentlyContinue } catch { }"'
 
-    ; Phase 3: Remove shortcuts
+    ; Phase 3: Remove shortcuts (Asteria + legacy YesNext names)
     DetailPrint "Removing shortcuts..."
     Delete "$DESKTOP\Asteria.lnk"
+    Delete "$DESKTOP\Asteria Client.lnk"
+    Delete "$DESKTOP\Cloud Honeypot Client.lnk"
+    Delete "$DESKTOP\Cloud Honeypot.lnk"
+    Delete "$DESKTOP\Honeypot Client.lnk"
     Delete "$SMPROGRAMS\${COMPANYNAME}\Asteria.lnk"
+    Delete "$SMPROGRAMS\${COMPANYNAME}\Asteria Client.lnk"
     Delete "$SMPROGRAMS\${COMPANYNAME}\Uninstall.lnk"
     RMDir "$SMPROGRAMS\${COMPANYNAME}"
+    RMDir /r "$SMPROGRAMS\YesNext"
+    RMDir /r "$SMPROGRAMS\Cloud Honeypot Client"
+    RMDir /r "$SMPROGRAMS\CloudHoneypot"
 
-    ; Phase 4: Remove files
+    ; Phase 4: Remove application files
+    ; Explicit deletes first (GUI was the common leftover when process still held the lock),
+    ; then recursive wipe of $INSTDIR so future added files cannot be forgotten.
     DetailPrint "Removing application files..."
-    RMDir /r "$INSTDIR\_internal"
-    RMDir /r "$INSTDIR\runtime"
-    Delete "$INSTDIR\asteria-gui.exe"
-    Delete "$INSTDIR\asteria-client.exe"
+    Delete /REBOOTOK "$INSTDIR\asteria-gui.exe"
+    Delete /REBOOTOK "$INSTDIR\asteria-client.exe"
+    Delete /REBOOTOK "$INSTDIR\honeypot-client.exe"
+    Delete /REBOOTOK "$INSTDIR\Uninstall.exe"
     Delete "$INSTDIR\client_config.json"
     Delete "$INSTDIR\client_lang.json"
     Delete "$INSTDIR\LICENSE"
@@ -682,17 +780,38 @@ Section "Uninstall"
     Delete "$INSTDIR\scripts\prepare-install-dir.ps1"
     Delete "$INSTDIR\scripts\update-and-install.ps1"
     Delete "$INSTDIR\scripts\memory_restart.ps1"
-    RMDir "$INSTDIR\scripts"
-    Delete "$INSTDIR\Uninstall.exe"
-    RMDir "$INSTDIR"
+    Delete "$INSTDIR\scripts\install-memory-restart.ps1"
+    Delete "$INSTDIR\scripts\reset-agent-identity.ps1"
+    RMDir /r "$INSTDIR\scripts"
+    RMDir /r "$INSTDIR\_internal"
+    RMDir /r "$INSTDIR\runtime"
+    ; prepare-install-dir may leave .stale_* trees when files were locked
+    nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem -LiteralPath \"$INSTDIR\" -Force -EA SilentlyContinue | Where-Object { $$_.Name -like ''.stale_*'' } | ForEach-Object { Remove-Item -LiteralPath $$_.FullName -Recurse -Force -EA SilentlyContinue }"'
+    ; Final wipe — anything remaining (including locked → reboot pending via /REBOOTOK)
+    RMDir /r /REBOOTOK "$INSTDIR"
+    ; Empty vendor parent if nothing else remains under Program Files\Asteria
+    RMDir "$PROGRAMFILES64\${COMPANYNAME}"
+    RMDir "$PROGRAMFILES\${COMPANYNAME}"
 
     ; Phase 5: Remove registry entries
+    DetailPrint "Removing registry entries..."
     DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}"
+    DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\Cloud Honeypot Client"
+    DeleteRegKey HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\CloudHoneypotClient"
+    DeleteRegKey HKCU "Software\Asteria"
+    DeleteRegKey HKCU "Software\YesNext\CloudHoneypot"
+    DeleteRegKey HKLM "Software\Asteria"
 
-    ; Phase 6: Clean up app data
-    DetailPrint "Cleaning up watchdog tokens..."
+    ; Phase 6: Clean staging / stop flags (keep token.dat for optional reinstall continuity)
+    DetailPrint "Cleaning update staging and stop flags..."
     nsExec::Exec 'cmd /c del "%APPDATA%\YesNext\CloudHoneypot\watchdog_token.txt" 2>nul'
     nsExec::Exec 'cmd /c del "%ProgramData%\YesNext\CloudHoneypot\watchdog_stop.flag" 2>nul'
+    nsExec::Exec 'cmd /c del "%APPDATA%\Asteria\watchdog.token" 2>nul'
+    nsExec::Exec 'cmd /c del "%TEMP%\honeypot_watchdog_token.txt" 2>nul'
+    nsExec::Exec 'cmd /c del "%ProgramData%\Asteria\update_in_progress.lock" 2>nul'
+    nsExec::Exec 'cmd /c del "%ProgramData%\Asteria\force_gui_onboarding.flag" 2>nul'
+    nsExec::Exec 'cmd /c rmdir /s /q "%ProgramData%\Asteria\update" 2>nul'
+    nsExec::Exec 'cmd /c rmdir /s /q "%ProgramData%\Asteria\runtime" 2>nul'
 
     DetailPrint "Asteria Client has been completely removed."
 SectionEnd

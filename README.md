@@ -7,7 +7,7 @@ Windows agent for [Asteria](https://asteria.run): honeypot tunnels, threat respo
 | | |
 |--|--|
 | **Releases** | https://github.com/cevdetaksac/asteria-client/releases |
-| **Latest installer** | [cloud-client-installer.exe](https://github.com/cevdetaksac/asteria-client/releases/latest/download/cloud-client-installer.exe) |
+| **Latest installer** | [asteria-client-installer.exe](https://github.com/cevdetaksac/asteria-client/releases/latest/download/asteria-client-installer.exe) |
 | **Changelog** | [`docs/CHANGELOG.md`](docs/CHANGELOG.md) |
 | **API contract (SoT)** | https://asteria.run/static/shared-contract.zip (`VERSION` ≥ **1.4.31**) |
 | **Production floor** | Client ≥ **4.9.0** (see contract [`FLEET.md`](https://github.com/cevdetaksac/asteria-contract/blob/main/FLEET.md)) |
@@ -24,7 +24,7 @@ Windows agent for [Asteria](https://asteria.run): honeypot tunnels, threat respo
 
 ## Install (Windows)
 
-1. Download `cloud-client-installer.exe` from the [latest release](https://github.com/cevdetaksac/asteria-client/releases/latest).
+1. Download `asteria-client-installer.exe` from the [latest release](https://github.com/cevdetaksac/asteria-client/releases/latest).
 2. Run as Administrator (`/S` for silent).
 3. Agent registers with the cloud API and stores the token under ProgramData.
 
@@ -47,7 +47,8 @@ python -m pip install -r requirements-webrtc.txt
 powershell -ExecutionPolicy Bypass -File build.ps1 -Clean -WebRTC
 ```
 
-Output: `cloud-client-installer.exe` containing motor-only
+Output: `asteria-client-installer.exe` (plus a `cloud-client-installer.exe`
+alias copy for pre-4.9.41 self-update) containing motor-only
 `asteria-client.exe` + onefile `asteria-gui.exe`. Optional dev signing:
 `-Sign`; production `-Release` refuses unsigned/non-WebRTC builds.
 
@@ -55,7 +56,9 @@ Output: `cloud-client-installer.exe` containing motor-only
 
 ```powershell
 .\build.ps1 -Clean -WebRTC -Sign -Release
-gh release create vX.Y.Z cloud-client-installer.exe --title "vX.Y.Z" --notes-file release_notes_vX.Y.Z.md
+# Upload BOTH assets: agents <= 4.9.40 fall back to the legacy name.
+gh release create vX.Y.Z asteria-client-installer.exe cloud-client-installer.exe `
+  --title "vX.Y.Z" --notes-file release_notes_vX.Y.Z.md
 ```
 
 - Version: `VERSION` in `client_constants.py` (single source of truth)

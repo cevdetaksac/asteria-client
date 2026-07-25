@@ -11,7 +11,20 @@ type Props = {
   onSession: () => void
 }
 
-type DashPath = 'alerts' | 'blocking' | 'webhooks'
+type DashPath =
+  | 'dash_home'
+  | 'dash_attacks'
+  | 'dash_threats'
+  | 'dash_blocks'
+  | 'dash_users'
+  | 'dash_remote'
+  | 'dash_settings'
+  | 'dash_servers'
+  | 'alerts'
+  | 'blocking'
+  | 'webhooks'
+  | 'blocks_auto'
+  | 'blocks_notifications'
 
 type FieldKey =
   | 'alert_email_enabled'
@@ -39,35 +52,35 @@ const FIELDS: Field[] = [
     kind: 'bool',
     labelKey: 'settings_field_email',
     helpKey: 'settings_help_email',
-    dash: 'alerts',
+    dash: 'blocks_notifications',
   },
   {
     key: 'instant_email_for_critical',
     kind: 'bool',
     labelKey: 'settings_field_critical',
     helpKey: 'settings_help_critical',
-    dash: 'alerts',
+    dash: 'blocks_notifications',
   },
   {
     key: 'daily_digest_enabled',
     kind: 'bool',
     labelKey: 'settings_field_digest',
     helpKey: 'settings_help_digest',
-    dash: 'alerts',
+    dash: 'blocks_notifications',
   },
   {
     key: 'auto_block_enabled',
     kind: 'bool',
     labelKey: 'settings_field_autoblock',
     helpKey: 'settings_help_autoblock',
-    dash: 'blocking',
+    dash: 'blocks_auto',
   },
   {
     key: 'auto_block_threshold',
     kind: 'int',
     labelKey: 'settings_field_threshold',
     helpKey: 'settings_help_threshold',
-    dash: 'blocking',
+    dash: 'blocks_auto',
     min: 0,
     max: 100,
   },
@@ -76,7 +89,7 @@ const FIELDS: Field[] = [
     kind: 'int',
     labelKey: 'settings_field_duration',
     helpKey: 'settings_help_duration',
-    dash: 'blocking',
+    dash: 'blocks_auto',
     min: 0,
   },
   {
@@ -84,14 +97,14 @@ const FIELDS: Field[] = [
     kind: 'bool',
     labelKey: 'settings_field_webhook',
     helpKey: 'settings_help_webhook',
-    dash: 'webhooks',
+    dash: 'dash_settings',
   },
   {
     key: 'webhook_url',
     kind: 'str',
     labelKey: 'settings_field_webhook_url',
     helpKey: 'settings_help_webhook_url',
-    dash: 'webhooks',
+    dash: 'dash_settings',
   },
 ]
 

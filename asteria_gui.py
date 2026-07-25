@@ -157,15 +157,49 @@ _SHELL_ALLOWLIST = frozenset(
     }
 )
 
-# Deep-link targets for settings help links (allowlisted only — no free-form URLs).
-_DASHBOARD_OPEN_TARGETS = {
-    "": "https://asteria.run/dashboard",
-    "dashboard": "https://asteria.run/dashboard",
-    "alerts": "https://asteria.run/dashboard?view=alerts",
-    "blocking": "https://asteria.run/dashboard?view=blocking",
-    "webhooks": "https://asteria.run/dashboard?view=webhooks",
-    "settings": "https://asteria.run/dashboard?view=settings",
+# Deep-link targets — contract ≥1.4.35 cloud/dashboard-deep-links.md
+# Values: (path, fragment|None, attach_agent_token)
+# Browser only: https://asteria.run{path}?token={TOKEN}#{hash}
+_DASHBOARD_BASE = "https://asteria.run"
+_DASHBOARD_OPEN_TARGETS: Dict[str, tuple] = {
+    # Recommended shortcut IDs
+    "": ("/dashboard", None, True),
+    "dashboard": ("/dashboard", None, True),
+    "dash_home": ("/dashboard", None, True),
+    "dash_attacks": ("/dashboard/attacks", None, True),
+    "dash_threats": ("/dashboard/threats", None, True),
+    "dash_blocks": ("/dashboard/blocks", None, True),
+    "dash_users": ("/dashboard/server/users", None, True),
+    "dash_remote": ("/dashboard/remote", None, True),
+    "dash_settings": ("/dashboard/settings", None, True),
+    "dash_servers": ("/servers", None, False),
+    # Settings help links (Blocks tabs + account settings)
+    "alerts": ("/dashboard/blocks", "tab-notifications", True),
+    "blocking": ("/dashboard/blocks", "tab-auto", True),
+    "webhooks": ("/dashboard/settings", None, True),
+    "settings": ("/dashboard/settings", None, True),
+    "blocks_auto": ("/dashboard/blocks", "tab-auto", True),
+    "blocks_notifications": ("/dashboard/blocks", "tab-notifications", True),
+    "blocks_whitelist": ("/dashboard/blocks", "tab-whitelist", True),
+    "blocks_rules": ("/dashboard/blocks", "tab-rules", True),
 }
+
+
+def _build_dashboard_url(target_key: str, token: str = "") -> Optional[str]:
+    """Allowlisted dashboard deep-link (contract 1.4.35). Never free-form URLs."""
+    from urllib.parse import quote
+
+    spec = _DASHBOARD_OPEN_TARGETS.get(str(target_key or "").strip().lower())
+    if spec is None:
+        return None
+    path, fragment, needs_token = spec
+    url = f"{_DASHBOARD_BASE}{path}"
+    tok = str(token or "").strip()
+    if needs_token and tok:
+        url = f"{url}?token={quote(tok, safe='')}"
+    if fragment:
+        url = f"{url}#{fragment}"
+    return url
 
 _ACCOUNT_ACTIONS = frozenset({"status", "link", "unlink"})
 _HARDEN_FIX_TARGETS = frozenset({"winrm", "nla", "antivirus"})
@@ -695,6 +729,8 @@ class MotorBridge:
             return self._deny_locked()
         result = get_status(timeout=3.0)
         safe = _json_safe(result)
+        if isinstance(safe, dict):
+            safe = self._ensure_public_ip(safe)
         ok = bool(isinstance(safe, dict) and safe.get("ok"))
         now = time.time()
         last_ok = float(getattr(self, "_last_status_ok_log", 0.0) or 0.0)
@@ -709,6 +745,32 @@ class MotorBridge:
                 payload.get("motor_ok"),
             )
         return safe if isinstance(safe, dict) else {"ok": False, "error": "bad_status"}
+
+    def _ensure_public_ip(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Fill public_ip for the identity strip when motor STATUS omits it."""
+        current = str(payload.get("public_ip") or "").strip()
+        if current and current not in ("0.0.0.0", "None"):
+            return payload
+        now = time.time()
+        cached = str(getattr(self, "_public_ip_cache", "") or "").strip()
+        cached_at = float(getattr(self, "_public_ip_cache_at", 0.0) or 0.0)
+        if cached and (now - cached_at) < 60.0:
+            payload["public_ip"] = cached
+            return payload
+        ip = ""
+        try:
+            import requests
+
+            ip = str(requests.get("https://api.ipify.org", timeout=2).text or "").strip()
+        except Exception:
+            ip = cached
+        if ip and ip not in ("0.0.0.0", "None"):
+            self._public_ip_cache = ip
+            self._public_ip_cache_at = now
+            payload["public_ip"] = ip
+        elif cached:
+            payload["public_ip"] = cached
+        return payload
 
     def catalog(self) -> Dict[str, Any]:
         """Honeypot service catalog (ports/names) — no secrets."""
@@ -750,7 +812,17 @@ class MotorBridge:
         payload = self._normalize_args(args)
         try:
             result = self._dispatch_ipc(name, payload)
-            self.log.info("IPC %s -> ok=%s", name, bool((result or {}).get("ok", True)))
+            ok = bool((result or {}).get("ok", True))
+            # High-frequency polls: log failures always, success once/minute.
+            if name in ("IP_TABLE", "THREAT_TOP"):
+                now = time.time()
+                key = f"_last_ipc_ok_log_{name}"
+                last = float(getattr(self, key, 0.0) or 0.0)
+                if not ok or (now - last) >= 60.0:
+                    setattr(self, key, now)
+                    self.log.info("IPC %s -> ok=%s", name, ok)
+            else:
+                self.log.info("IPC %s -> ok=%s", name, ok)
         except Exception as exc:
             self.log.info("IPC %s failed: %s", name, exc)
             return {"ok": False, "error": str(exc), "cmd": name}
@@ -1358,8 +1430,13 @@ class MotorBridge:
         try:
             if act == "open_dashboard":
                 target_key = str(path or "").strip().lower()
-                url = _DASHBOARD_OPEN_TARGETS.get(target_key)
-                if url is None:
+                token = ""
+                try:
+                    token = self._load_token() or ""
+                except Exception:
+                    token = ""
+                url = _build_dashboard_url(target_key, token)
+                if not url:
                     return {"ok": False, "error": "dashboard_path_denied"}
                 webbrowser.open(url)
                 return {"ok": True, "url": url}
@@ -1367,7 +1444,8 @@ class MotorBridge:
                 webbrowser.open("https://asteria.run")
                 return {"ok": True}
             if act == "open_servers":
-                webbrowser.open("https://asteria.run/servers")
+                # Account fleet — no agent token (contract dash_servers)
+                webbrowser.open(_build_dashboard_url("dash_servers") or "https://asteria.run/servers")
                 return {"ok": True}
             if act == "open_github":
                 from client_constants import GITHUB_OWNER, GITHUB_REPO

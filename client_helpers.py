@@ -227,7 +227,7 @@ def interactive_frontend_running() -> bool:
 
 
 def launch_interactive_tray_gui() -> bool:
-    """Start CloudHoneypot-Tray in the logged-on user session (visible desktop)."""
+    """Start Asteria-Tray in the logged-on user session (visible desktop)."""
     try:
         import time
         from client_task_scheduler import TASK_NAME_TRAY
@@ -542,7 +542,7 @@ class ClientHelpers:
             # Check if daemon mutex exists
             try:
                 import tempfile
-                daemon_mutex_file = os.path.join(tempfile.gettempdir(), "CloudHoneypotClient_daemon.lock")
+                daemon_mutex_file = os.path.join(tempfile.gettempdir(), "AsteriaClient_daemon.lock")
                 return os.path.exists(daemon_mutex_file)
             except Exception as e:
                 log(f"Daemon check error: {e}")

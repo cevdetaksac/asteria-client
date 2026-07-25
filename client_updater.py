@@ -17,9 +17,9 @@ import os
 import sys
 import time
 import threading
-from typing import Optional, Dict, Any, Callable, Tuple
+from typing import Optional, Dict, Any, Callable, List, Tuple
 
-from client_constants import GITHUB_OWNER, GITHUB_REPO
+from client_constants import GITHUB_OWNER, GITHUB_REPO, INSTALLER_ASSET_NAME
 from client_helpers import log
 
 def _updater_t(key: str, **kwargs) -> str:
@@ -575,7 +575,7 @@ def check_updates_and_apply_silent() -> bool:
             # Wait for helper to open update-install.log before we exit (schtasks can lag)
             log_path = os.path.join(
                 os.environ.get("ProgramData", r"C:\ProgramData"),
-                "YesNext", "CloudHoneypotClient", "update-install.log",
+                "Asteria", "update-install.log",
             )
             helper_alive = False
             for _ in range(40):  # ~12s
@@ -1152,19 +1152,35 @@ def _resolve_latest_from_cloud(api_client=None) -> Optional[dict]:
     return None
 
 
-def _default_installer_url(tag: str) -> str:
-    """Build official GitHub release asset URL when API/cloud omit download_url."""
+def _installer_urls_for_tag(tag: str) -> List[str]:
+    """Official GitHub asset URLs when API/cloud omit download_url.
+
+    Asteria-branded name first, legacy name second: releases published during the
+    rename window carry both assets, and older releases only carry the legacy one.
+    """
     t = _normalize_version_tag(tag)
     if not t:
-        return ""
+        return []
     try:
-        from client_constants import GITHUB_OWNER, GITHUB_REPO
-        return (
-            f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}"
-            f"/releases/download/v{t}/cloud-client-installer.exe"
+        from client_constants import (
+            GITHUB_OWNER,
+            GITHUB_REPO,
+            INSTALLER_ASSET_NAME,
+            INSTALLER_ASSET_NAME_LEGACY,
         )
     except Exception:
-        return ""
+        return []
+    base = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/download/v{t}"
+    return [
+        f"{base}/{INSTALLER_ASSET_NAME}",
+        f"{base}/{INSTALLER_ASSET_NAME_LEGACY}",
+    ]
+
+
+def _default_installer_url(tag: str) -> str:
+    """Build official GitHub release asset URL when API/cloud omit download_url."""
+    urls = _installer_urls_for_tag(tag)
+    return urls[0] if urls else ""
 
 
 def run_self_update_command(params: Optional[dict] = None, api_client=None) -> dict:
@@ -1183,7 +1199,7 @@ def run_self_update_command(params: Optional[dict] = None, api_client=None) -> d
         expected_size = int(expected_size) if expected_size is not None else None
     except (TypeError, ValueError):
         expected_size = None
-    installer_name = (params.get("installer_name") or "cloud-client-installer.exe").strip()
+    installer_name = (params.get("installer_name") or INSTALLER_ASSET_NAME).strip()
     from_version = _current_installed_version()
 
     log(
@@ -1384,16 +1400,16 @@ def run_self_update_command(params: Optional[dict] = None, api_client=None) -> d
         staging_root = _update_helper_staging_dir()
         installer_path = os.path.join(
             staging_root,
-            f"cloud-client-installer-v{tag or 'pending'}.exe",
+            f"asteria-client-installer-v{tag or 'pending'}.exe",
         )
     except Exception:
         temp_dir = tempfile.mkdtemp(prefix="honeypot_self_update_")
-        installer_path = os.path.join(temp_dir, installer_name or "cloud-client-installer.exe")
+        installer_path = os.path.join(temp_dir, installer_name or INSTALLER_ASSET_NAME)
     staged = None
 
     try:
         urls_to_try = []
-        for u in (download_url, _default_installer_url(tag) if tag else ""):
+        for u in [download_url, *(_installer_urls_for_tag(tag) if tag else [])]:
             u = (u or "").strip()
             if not u or not _is_allowed_update_url(u):
                 continue
@@ -1578,7 +1594,7 @@ def run_self_update_command(params: Optional[dict] = None, api_client=None) -> d
         try:
             log_path = os.path.join(
                 os.environ.get("ProgramData", r"C:\ProgramData"),
-                "YesNext", "CloudHoneypotClient", "update-install.log",
+                "Asteria", "update-install.log",
             )
             helper_ok = False
             if os.path.isfile(log_path):

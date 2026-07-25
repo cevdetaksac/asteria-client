@@ -11,6 +11,7 @@ export type MotorStatus = Record<string, unknown> & {
   rs_quarantine?: Record<string, unknown>
   resources?: Record<string, unknown>
   persistence?: Record<string, unknown>
+  public_ip?: string | null
 }
 
 export type BridgeResult = Record<string, unknown> & {

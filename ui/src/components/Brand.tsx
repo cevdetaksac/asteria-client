@@ -1,5 +1,6 @@
 import logoMark from '../assets/brand/favicon_light.png'
 import logoWide from '../assets/brand/logo_light.png'
+import logoSquare from '../assets/brand/logo_square_light.png'
 
 type MarkProps = {
   size?: number
@@ -43,13 +44,23 @@ export function BrandWordmark({ tagline = true, compact = false }: WordProps) {
   )
 }
 
-/** Lock / hero lockup: wide logo art when space allows. */
-export function BrandLockup({ mode = 'split' }: { mode?: 'split' | 'wide' }) {
+/** Lock / hero lockup: square stacked art, wide horizontal, or mark+wordmark. */
+export function BrandLockup({ mode = 'split' }: { mode?: 'split' | 'wide' | 'square' }) {
   if (mode === 'wide') {
     return (
       <img
         className="brand-logo-wide"
         src={logoWide}
+        alt="Asteria Run"
+        draggable={false}
+      />
+    )
+  }
+  if (mode === 'square') {
+    return (
+      <img
+        className="brand-logo-square"
+        src={logoSquare}
         alt="Asteria Run"
         draggable={false}
       />
