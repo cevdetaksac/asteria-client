@@ -1031,6 +1031,25 @@ class CloudHoneypotClient:
                 return
             config = self.api_client.fetch_threat_config(token)
             if config and isinstance(config, dict):
+                # Fleet canary gates (C-CANARY-1…5) — process memory only.
+                try:
+                    from client_fleet_canary import (
+                        apply_fleet_rollout,
+                        mutate_config_for_gates,
+                        snapshot_for_health,
+                    )
+                    fr = apply_fleet_rollout(config)
+                    config = mutate_config_for_gates(config)
+                    log(
+                        "[CONFIG-SYNC] fleet_rollout "
+                        f"present={fr.get('present')} "
+                        f"in_canary={fr.get('in_canary')} "
+                        f"gates={fr.get('gates')}"
+                    )
+                    self._fleet_rollout_snapshot = snapshot_for_health()
+                except Exception as fre:
+                    log(f"[CONFIG-SYNC] fleet_rollout apply error: {fre}")
+
                 # Update silent hours config
                 sh_cfg = config.get("silent_hours")
                 if sh_cfg and self.silent_hours_guard:

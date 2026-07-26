@@ -20,7 +20,8 @@ Notes:
 - Wire identities: ProgramData\\Asteria, Asteria-* tasks, AsteriaGuardian;
   legacy YesNext / CloudHoneypot-* cleaned on install/update. Signing
   context emits ``asteria-chp-v1`` / ``asteria-heartbeat-v1`` (contract ≥1.4.32).
-  Verify still accepts legacy ``yesnext-*`` during fleet cutover.
+  Verify still accepts legacy ``yesnext-*`` during fleet cutover until the
+  dual-brand sunset target **2026-10-01** (PRODUCT_BRANDING.md §Sunset).
   per contract agent/rebrand-asteria.md — display brand is Asteria.
 """
 
@@ -41,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.44"  # Threat shares/services IPC + sync_firewall_rules; contract 1.4.36 gap-scan
+VERSION = "4.9.45"  # Contract 1.4.37: envelope observe, fleet canary, RD P0, offline gate
 
 CLIENT_VERSION = VERSION  # Main version constant
 __version__ = VERSION  # Export for compatibility

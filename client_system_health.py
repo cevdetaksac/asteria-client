@@ -1300,6 +1300,13 @@ class SystemHealthMonitor:
         except Exception:
             pass
 
+        # C-CANARY-5: echo in_canary + gate map (observe).
+        try:
+            from client_fleet_canary import snapshot_for_health
+            payload["snapshot"]["fleet_rollout"] = snapshot_for_health()
+        except Exception:
+            pass
+
         runtime = self._build_agent_runtime()
         if runtime:
             payload["snapshot"]["agent_runtime"] = runtime

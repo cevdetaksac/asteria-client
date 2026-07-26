@@ -799,11 +799,17 @@ def apply_from_config(config: Optional[dict], *, token: Optional[str] = None) ->
     if user_set is None:
         user_set = prev.get("policy_user_set", False)
 
+    want_isolate = bool(extracted.get("isolate_armed"))
+    try:
+        from client_fleet_canary import GATE_ISOLATE, and_enabled
+        want_isolate = and_enabled(GATE_ISOLATE, want_isolate)
+    except Exception:
+        want_isolate = False
     effective = build_effective(
         policy_name=extracted.get("policy_name") or "observe",
         policy_version=extracted.get("policy_version") or "",
         rules=extracted.get("rules"),
-        isolate_armed=bool(extracted.get("isolate_armed")),
+        isolate_armed=want_isolate,
         source="threats/config",
         observe_started_at=str(started or ""),
         observe_auto_promote_days=int(days) if days is not None else DEFAULT_PROMOTE_DAYS,

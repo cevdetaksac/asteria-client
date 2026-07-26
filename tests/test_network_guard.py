@@ -196,7 +196,7 @@ class TestConfig(unittest.TestCase):
         c = ng.load_config({"protection": {"network_guard": {
             "auto_contain": True, "score_threshold": 90,
             "auto_restore_network": False, "bogus": 1}}})
-        # Hard safety invariant: cloud config cannot enable auto containment.
+        # Without fleet canary gate, config cannot enable auto containment (fail-closed).
         self.assertFalse(c["auto_contain"])
         self.assertEqual(c["score_threshold"], 90)
         self.assertFalse(c["auto_restore_network"])

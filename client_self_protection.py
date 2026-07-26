@@ -122,7 +122,7 @@ class ProcessProtection:
     Usage:
         protection = ProcessProtection(
             threat_engine=threat_engine,
-            api_url="https://honeypot.yesnext.com.tr/api",
+            api_url="https://asteria.run/api",
             token_getter=lambda: state.get("token", ""),
         )
         protection.setup()

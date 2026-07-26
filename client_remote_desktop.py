@@ -55,6 +55,7 @@ HTTP_KEYFRAME_EVERY = 6               # also POST HTTP every N frames (dashboard
 MIN_JPEG_BYTES = 1500                 # API rejects tinier frames ("Frame too small")
 MIN_GOOD_JPEG_BYTES = 5 * 1024        # healthy 1280q35 frame is usually ≥5KB
 CAPTURE_FAIL_SECONDS = 10.0           # no frames in this window → fail stream
+WINLOGON_BLACK_FAIL_SECONDS = 2.0     # C-RD-P0-WL-4: unbroken black → fail
 PROBE_TIMEOUT_SEC = 12.0              # SYSTEM→user CreateProcessAsUser needs cold-start room
 
 # Absolute pointer moves (normalized 0..1). Subject to the move budget only.
@@ -175,6 +176,9 @@ class RemoteDesktopStreamer:
         self._pending_frame: Optional[bytes] = None
         self._ws_send_lock = threading.Lock()
         self._black_warn_ts = 0.0
+        self._black_streak_started = 0.0
+        self._winlogon_black_retried = False
+        self._last_stream_error = ""
         self._capture_method = "none"
         self._stream_started_at = 0.0
         self._use_user_helper = False  # Session 0 / other session → CreateProcessAsUser helper
@@ -298,6 +302,9 @@ class RemoteDesktopStreamer:
             self._desktop_name = ""
             self._winlogon_mode = False
             self._tscon_attempted = False
+            self._black_streak_started = 0.0
+            self._winlogon_black_retried = False
+            self._last_stream_error = ""
             self._last_good_jpeg = None
             self._last_good_wh = (0, 0)
             self._use_user_helper = False
@@ -501,7 +508,37 @@ class RemoteDesktopStreamer:
                         self._attach_input_desktop()
                         jpeg, w, h = self._grab_jpeg()
                         blackish = "+black" in (self._capture_method or "")
-                if not jpeg or w <= 0 or h <= 0 or len(jpeg) < MIN_JPEG_BYTES or blackish:
+                if self._winlogon_mode and (
+                    blackish or not jpeg or w <= 0 or h <= 0
+                    or (jpeg and len(jpeg) < MIN_JPEG_BYTES)
+                ):
+                    self._desktop_attached = False
+                    self._attach_input_desktop()
+                    jpeg, w, h = self._grab_jpeg()
+                    blackish = "+black" in (self._capture_method or "")
+                    if (
+                        blackish
+                        or not jpeg
+                        or w <= 0
+                        or h <= 0
+                        or len(jpeg) < MIN_JPEG_BYTES
+                    ):
+                        err = "winlogon_capture_black"
+                        msg = (
+                            "Winlogon/GDI capture returned unbroken black "
+                            f"(method={self._capture_method})"
+                        )
+                        log(f"[REMOTE-DESKTOP] ✖ {err}: {msg}")
+                        self._last_stream_error = err
+                        self._running = False
+                        self._transport = "idle"
+                        return {
+                            "success": False,
+                            "error": err,
+                            "message": msg,
+                            "data": self.get_status(),
+                        }
+                elif not jpeg or w <= 0 or h <= 0 or len(jpeg) < MIN_JPEG_BYTES or blackish:
                     jpeg2, w2, h2 = self._grab_via_user_helper()
                     if jpeg2 and w2 > 0 and h2 > 0 and len(jpeg2) >= MIN_JPEG_BYTES:
                         jpeg, w, h = jpeg2, w2, h2
@@ -637,6 +674,8 @@ class RemoteDesktopStreamer:
         )
         media.setdefault("encoder", "aiortc" if media.get("available") else "")
         media.setdefault("target_bitrate_bps", None)
+        # C-RD-P0-ICE-3: JPEG-WS stays active until ICE+DTLS verified.
+        media["jpeg_fallback_active"] = bool(not media_ready)
         return {
             "streaming": self._running,
             "transport": self._transport,
@@ -660,8 +699,13 @@ class RemoteDesktopStreamer:
             "username": self._target_username or "",
             "monitor": self._monitor_index,
             "capture_method": self._capture_method,
+            "black_frame": bool(
+                "+black" in (self._capture_method or "")
+                or self._black_streak_started > 0
+            ),
             "desktop": self._desktop_name or "",
             "winlogon_mode": bool(self._winlogon_mode),
+            "last_error": self._last_stream_error or "",
             "screen": {
                 "x": self._screen_x,
                 "y": self._screen_y,
@@ -1069,6 +1113,9 @@ class RemoteDesktopStreamer:
             return
         if "+black" in (self._capture_method or ""):
             # Disconnected RDP / wrong desktop → re-attach + optional tscon
+            now = time.time()
+            if self._black_streak_started <= 0:
+                self._black_streak_started = now
             self._desktop_attached = False
             self._attach_input_desktop()
             sid = self._target_session_id
@@ -1080,18 +1127,24 @@ class RemoteDesktopStreamer:
                     jpeg2, w2, h2 = self._grab_jpeg()
                     if jpeg2 and "+black" not in (self._capture_method or ""):
                         jpeg, w, h = jpeg2, w2, h2
+                        self._black_streak_started = 0.0
                     else:
                         self._stats["frames_failed"] += 1
                         self._stats["black_frames"] += 1
+                        self._maybe_fail_winlogon_black()
                         return
                 else:
                     self._stats["frames_failed"] += 1
                     self._stats["black_frames"] += 1
+                    self._maybe_fail_winlogon_black()
                     return
             else:
                 self._stats["frames_failed"] += 1
                 self._stats["black_frames"] += 1
+                self._maybe_fail_winlogon_black()
                 return
+        else:
+            self._black_streak_started = 0.0
 
         # Helper JPEG while WebRTC live: decode once → raw mailbox (no double encode).
         if self._media_ready() and self._use_user_helper:
@@ -1114,6 +1167,32 @@ class RemoteDesktopStreamer:
         self._last_good_jpeg = jpeg
         self._last_good_wh = (w, h)
         self._dispatch_frame(token, jpeg, w, h, seq)
+
+    def _maybe_fail_winlogon_black(self) -> None:
+        """C-RD-P0-WL-4: sustained GDI black in winlogon → retry once, then fail."""
+        if not self._winlogon_mode or self._black_streak_started <= 0:
+            return
+        elapsed = time.time() - self._black_streak_started
+        if elapsed < WINLOGON_BLACK_FAIL_SECONDS:
+            return
+        if not self._winlogon_black_retried:
+            self._winlogon_black_retried = True
+            self._desktop_attached = False
+            self._attach_input_desktop()
+            jpeg, w, h = self._grab_jpeg()
+            if jpeg and w > 0 and h > 0 and "+black" not in (self._capture_method or ""):
+                self._black_streak_started = 0.0
+                return
+            # Reset streak clock after the one allowed retry.
+            self._black_streak_started = time.time()
+            return
+        self._last_stream_error = "winlogon_capture_black"
+        log(
+            "[REMOTE-DESKTOP] ✖ winlogon_capture_black — "
+            f"unbroken black for ≥{WINLOGON_BLACK_FAIL_SECONDS:.0f}s "
+            f"(method={self._capture_method})"
+        )
+        self.stop(reason="winlogon_capture_black")
 
     def _dispatch_raw_frame(self, rgb, w: int, h: int, seq: int) -> bool:
         """Publish raw RGB into WebRTC mailbox. True if media accepted it."""

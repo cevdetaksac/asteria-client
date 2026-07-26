@@ -79,7 +79,7 @@ class SilentHoursConfig:
     weekend_all_day_silent: bool = False
 
     # Auto-actions — NEVER disable/logoff automatically (stuck servers / false alarms).
-    # Cloud may still send these flags; client forces them off in from_dict / check().
+    # Cloud may send these flags; client ANDs with fleet canary gate (C-CANARY-2).
     auto_block_ip: bool = False  # Bare successful logon must not HP-BLOCK (alert/challenge only)
     auto_logoff: bool = False
     auto_disable_account: bool = False
@@ -116,13 +116,22 @@ class SilentHoursConfig:
         cfg.work_days = data.get("work_days", cfg.work_days)
         cfg.custom_schedule = data.get("custom_schedule", cfg.custom_schedule)
         cfg.weekend_all_day_silent = data.get("weekend_all_day_silent", cfg.weekend_all_day_silent)
-        cfg.auto_block_ip = data.get("auto_block_ip", cfg.auto_block_ip)
-        # Safety hard-stop: silent-hours must never auto logoff/disable regardless of cloud flags.
-        # Destructive IR stays on dashboard confirm commands only.
-        cfg.auto_logoff = False
-        cfg.auto_disable_account = False
-        _ = data.get("auto_logoff")  # accepted for schema compat, ignored
-        _ = data.get("auto_disable_account")
+        # C-CANARY-2: risky autos only when fleet gate AND config enable.
+        try:
+            from client_fleet_canary import GATE_SILENT, and_enabled
+            cfg.auto_block_ip = and_enabled(
+                GATE_SILENT, bool(data.get("auto_block_ip", cfg.auto_block_ip))
+            )
+            cfg.auto_logoff = and_enabled(
+                GATE_SILENT, bool(data.get("auto_logoff", False))
+            )
+            cfg.auto_disable_account = and_enabled(
+                GATE_SILENT, bool(data.get("auto_disable_account", False))
+            )
+        except Exception:
+            cfg.auto_block_ip = False
+            cfg.auto_logoff = False
+            cfg.auto_disable_account = False
         cfg.block_duration_hours = data.get("block_duration_hours", cfg.block_duration_hours)
         cfg.whitelist_ips = data.get("whitelist_ips", cfg.whitelist_ips)
         cfg.whitelist_subnets = data.get("whitelist_subnets", cfg.whitelist_subnets)

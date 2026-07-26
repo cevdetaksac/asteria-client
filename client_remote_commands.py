@@ -984,6 +984,22 @@ class RemoteCommandExecutor:
         if verdict == "invalid":
             return "Invalid command signature"
 
+        # 0b. Envelope v2 observe-only (api/12) — never hard-fail v1 path
+        try:
+            from client_command_envelope import observe_command
+            env_obs = observe_command(cmd)
+            if env_obs:
+                self._stats["envelope_v2_observe"] = (
+                    int(self._stats.get("envelope_v2_observe", 0) or 0) + 1
+                )
+                log(
+                    f"[REMOTE-CMD] envelope_v2 observe "
+                    f"verdict={env_obs.get('verdict')} "
+                    f"code={env_obs.get('error_code')}"
+                )
+        except Exception:
+            pass
+
         cmd_type = cmd.get("command_type", "")
 
         # 1. Known command?

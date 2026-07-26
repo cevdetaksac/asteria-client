@@ -117,11 +117,21 @@ def load_config(client_config: Optional[dict] = None) -> dict:
             cfg.update({k: v for k, v in ng.items() if k in cfg})
     except Exception:
         pass
-    # Hard safety: never auto process contain/kill. Network-surface restore is
+    # C-CANARY-2: auto contain/kill/restore only when fleet gate AND config.
+    # Missing canary → fail-closed (all false). Network-surface restore stays
     # separately gated by auto_restore_network (contract 1.4.14).
-    cfg["auto_contain"] = False
-    cfg["auto_kill"] = False
-    cfg["auto_restore"] = False
+    want_contain = bool(cfg.get("auto_contain", False))
+    want_kill = bool(cfg.get("auto_kill", False))
+    want_restore = bool(cfg.get("auto_restore", False))
+    try:
+        from client_fleet_canary import GATE_NG, and_enabled
+        cfg["auto_contain"] = and_enabled(GATE_NG, want_contain)
+        cfg["auto_kill"] = and_enabled(GATE_NG, want_kill)
+        cfg["auto_restore"] = and_enabled(GATE_NG, want_restore)
+    except Exception:
+        cfg["auto_contain"] = False
+        cfg["auto_kill"] = False
+        cfg["auto_restore"] = False
     cfg["auto_restore_network"] = bool(cfg.get("auto_restore_network", True))
     return cfg
 
@@ -1230,13 +1240,9 @@ class NetworkGuard:
         self._last_trigger_mono = now
         self._last_trigger_ts = datetime.now(timezone.utc).isoformat()
 
-        # Hard invariant: detection is alert-only. Even high-confidence signals
-        # need an explicit, server-confirmed suspend_process command.
-        # ransomware_offline_bomb only when operator confirm policy enables contain.
-        auto_contain = False
-        if strong and bool(self.cfg.get("auto_contain", False)):
-            # Reserved: still hard-off via load_config; never flap-bomb.
-            auto_contain = False
+        # Auto-contain only when canary gate AND config enable (load_config AND).
+        # Default / out-of-canary remains alert-only (C-CANARY-2).
+        auto_contain = bool(strong and self.cfg.get("auto_contain", False))
         log(f"[NET-GUARD] {'CONTAIN' if auto_contain else 'ALERT-ONLY'} "
             f"{trigger} score={score} suspects={len(suspects)} strong={strong}")
 

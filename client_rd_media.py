@@ -323,6 +323,8 @@ class AiortcMediaTransport(OptionalMediaTransport):
     """aiortc video transport hosted on a dedicated asyncio thread."""
 
     ICE_CHECKING_TIMEOUT_SEC = 15.0
+    # C-RD-P0-ICE-3: after ICE fail/timeout, JPEG-WS must resume within 2s.
+    JPEG_FALLBACK_MAX_SEC = 2.0
     _CONNECTED_ICE_STATES = frozenset(("connected", "completed"))
 
     def __init__(
@@ -377,6 +379,11 @@ class AiortcMediaTransport(OptionalMediaTransport):
         except Exception:
             enc = "aiortc"
         with self._state_lock:
+            media_ready = bool(
+                self.active
+                and self._pc_connection_state == "connected"
+                and self._ice_state in self._CONNECTED_ICE_STATES
+            )
             return {
                 "available": True,
                 "active": bool(self.active),
@@ -391,6 +398,8 @@ class AiortcMediaTransport(OptionalMediaTransport):
                 "session_id": self._session_id,
                 "stream_id": self._stream_id,
                 "raw_path": True,
+                # C-RD-P0-ICE-3: JPEG path while ICE+DTLS not verified.
+                "jpeg_fallback_active": not media_ready,
             }
 
     def publish_frame(self, jpeg: bytes, metadata: Optional[dict] = None) -> bool:
@@ -829,9 +838,14 @@ class AiortcMediaTransport(OptionalMediaTransport):
                 self._closing = False
 
     def _fail(self, error: str):
+        # C-RD-P0-ICE-5: clear connected UI signals; JPEG fallback is immediate.
         with self._state_lock:
             self._error = str(error)
             self.active = False
+            if self._connection_state == "connected":
+                self._connection_state = "failed"
+            if self._ice_state in self._CONNECTED_ICE_STATES:
+                self._ice_state = "failed"
         try:
             self._fallback_handler(str(error))
         except Exception:

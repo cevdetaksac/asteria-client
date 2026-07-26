@@ -43,10 +43,19 @@ _stats_loaded = False
 
 
 def offline_queue_enabled() -> bool:
-    """Default off until cloud normative api/ promote + pilot (contract gate)."""
+    """Enable only when local flag AND fleet canary gate are both true.
+
+    Default local flag remains **off** (api/10 + PROMOTION_GATES). Missing
+    ``fleet_rollout`` fails closed via C-CANARY-3.
+    """
     try:
         from client_utils import get_from_config
-        return bool(get_from_config("security.offline_urgent_queue", False))
+        local = bool(get_from_config("security.offline_urgent_queue", False))
+    except Exception:
+        local = False
+    try:
+        from client_fleet_canary import GATE_OFFLINE, and_enabled
+        return and_enabled(GATE_OFFLINE, local)
     except Exception:
         return False
 
@@ -116,9 +125,21 @@ def pending_count(token: str = "", *, path: str = QUEUE_FILE) -> int:
 def health_observe_block(token: str = "", *, path: str = QUEUE_FILE) -> dict:
     """Additive health/report block for OOB-501 acceptance visibility."""
     stats = queue_stats()
+    try:
+        from client_utils import get_from_config
+        local_flag = bool(get_from_config("security.offline_urgent_queue", False))
+    except Exception:
+        local_flag = False
+    try:
+        from client_fleet_canary import GATE_OFFLINE, gate_allowed
+        canary_gate = bool(gate_allowed(GATE_OFFLINE))
+    except Exception:
+        canary_gate = False
     return {
         "mode": "observe",
-        "enabled": offline_queue_enabled(),
+        "local_flag": local_flag,
+        "canary_gate": canary_gate,
+        "enabled": bool(local_flag and canary_gate),
         "pending": pending_count(token, path=path),
         "max_records": MAX_RECORDS,
         "max_batch": MAX_BATCH,

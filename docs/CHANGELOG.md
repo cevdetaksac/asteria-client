@@ -1,3 +1,12 @@
+# v4.9.45
+
+## Contract 1.4.37 client close-out
+- Envelope v2 observe-only (RFC 8785 JCS + Ed25519 fixture verify); no emit/enforce
+- Fleet canary C-CANARY-1…5 (`fleet_rollout.gates` AND local enable; health echo)
+- Offline urgent queue: local flag AND canary gate (default off)
+- RD P0: Winlogon `black_frame` / `winlogon_capture_black`; ICE honesty + JPEG fallback
+- Dual-brand sunset notes → **2026-10-01** (legacy verify kept until then)
+
 # v4.9.44
 
 ## Threat Center — shares + third-party services
