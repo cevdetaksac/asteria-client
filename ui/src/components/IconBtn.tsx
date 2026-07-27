@@ -1,5 +1,6 @@
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import type { IconDefinition } from '@fortawesome/fontawesome-svg-core'
+import type { MouseEvent } from 'react'
 import {
   faBan,
   faCheck,
@@ -31,7 +32,7 @@ export const icons = {
 type Props = {
   icon: IconDefinition
   title: string
-  onClick?: () => void
+  onClick?: (event: MouseEvent<HTMLButtonElement>) => void
   disabled?: boolean
   danger?: boolean
   className?: string

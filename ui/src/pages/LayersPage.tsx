@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { motorBridge, type MotorStatus } from '../bridge'
 import { DetailModal, type DetailRow } from '../components/DetailModal'
+import { FeatureGuide } from '../components/FeatureGuide'
 import { t } from '../i18n'
 import { asRecord, pick } from '../lib'
 
@@ -20,6 +21,7 @@ export function LayersPage({ status, onRefresh, onToast }: Props) {
   const locked = Boolean(defense.defense_policy_locked)
   const [cfg, setCfg] = useState<Record<string, unknown>>({})
   const [detail, setDetail] = useState<LayerKey | null>(null)
+  const [pageHelp, setPageHelp] = useState(false)
 
   const policies = [
     { id: 'observe', title: t('layers_policy_observe'), blurb: t('layers_policy_observe_blurb') },
@@ -65,11 +67,19 @@ export function LayersPage({ status, onRefresh, onToast }: Props) {
   const ngOn = Boolean(ng.enabled ?? ng.running)
   const canaries = Number(rs.canary_files || 0) > 0
 
-  const detailContent = (): { title: string; blurb: string; rows: DetailRow[]; onToggle?: () => void; toggleLabel?: string } => {
+  const detailContent = (): {
+    title: string
+    blurb: string
+    guide: string
+    rows: DetailRow[]
+    onToggle?: () => void
+    toggleLabel?: string
+  } => {
     if (detail === 'ransomware') {
       return {
         title: t('layers_rs'),
         blurb: t('layers_rs_detail_blurb'),
+        guide: 'help_rs',
         rows: [
           { label: t('layers_rs'), value: rsOn ? t('label_on') : t('label_off'), tone: rsOn ? 'ok' : 'bad' },
           { label: t('layers_detail_canary_files'), value: pick(rs, 'canary_files') },
@@ -92,6 +102,7 @@ export function LayersPage({ status, onRefresh, onToast }: Props) {
       return {
         title: t('layers_canary'),
         blurb: t('layers_canary_detail_blurb'),
+        guide: 'help_rs',
         rows: [
           { label: t('layers_canary'), value: canaries ? t('layers_has') : t('layers_none'), tone: canaries ? 'ok' : 'plain' },
           { label: t('layers_detail_canary_files'), value: pick(rs, 'canary_files') },
@@ -104,6 +115,7 @@ export function LayersPage({ status, onRefresh, onToast }: Props) {
     return {
       title: t('layers_ng'),
       blurb: t('layers_ng_detail_blurb'),
+      guide: 'help_ng',
       rows: [
         { label: t('layers_ng'), value: ngOn ? t('label_on') : t('label_off'), tone: ngOn ? 'ok' : 'bad' },
         { label: t('status_ng_eyebrow'), value: ng.maintenance ? t('status_ng_maint') : ng.drift ? t('status_ng_drift') : t('status_ng_stable') },
@@ -129,17 +141,27 @@ export function LayersPage({ status, onRefresh, onToast }: Props) {
           <h2>{t('layers_title')}</h2>
           <p className="muted">{t('layers_blurb')}</p>
         </div>
+        <button type="button" className="btn ghost sm" onClick={() => setPageHelp(true)}>
+          {t('help_more')}
+        </button>
       </div>
 
       <div className="policy-grid">
         {policies.map((policy) => {
           const selected = current === policy.id
+          const guidePrefix =
+            policy.id === 'observe'
+              ? 'help_policy_observe'
+              : policy.id === 'balanced'
+                ? 'help_policy_balanced'
+                : 'help_policy_paranoid'
           return (
             <article key={policy.id} className={`policy-card ${selected ? 'selected' : ''}`}>
               <div>
                 <p className="eyebrow">{selected ? t('label_active') : t('label_select')}</p>
                 <h3>{policy.title}</h3>
                 <p className="muted">{policy.blurb}</p>
+                <p className="feature-card-help">{t(`${guidePrefix}_what`)}</p>
               </div>
               <button
                 type="button"
@@ -205,6 +227,7 @@ export function LayersPage({ status, onRefresh, onToast }: Props) {
           title={modal.title}
           eyebrow={t('layers_eyebrow')}
           blurb={modal.blurb}
+          guide={<FeatureGuide prefix={modal.guide} />}
           rows={modal.rows}
           actions={
             modal.onToggle ? (
@@ -214,6 +237,15 @@ export function LayersPage({ status, onRefresh, onToast }: Props) {
             ) : null
           }
           onClose={() => setDetail(null)}
+        />
+      )}
+      {pageHelp && (
+        <DetailModal
+          title={t('layers_title')}
+          eyebrow={t('layers_eyebrow')}
+          blurb={t('layers_blurb')}
+          guide={<FeatureGuide prefix="help_layers" />}
+          onClose={() => setPageHelp(false)}
         />
       )}
     </section>

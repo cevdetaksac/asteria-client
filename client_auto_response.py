@@ -610,29 +610,83 @@ class AutoResponse:
         if not allow_privileged:
             if not self._allow_local_critical_auto("disable_account", uname):
                 return False
-            if upper in AUTO_SAFE_ACCOUNTS:
-                log(
-                    f"[AUTO-RESPONSE] ⛔ Refusing auto-disable of privileged account "
-                    f"{uname} (requires confirmed IR)"
+            # C-BRICK-1.3: admin-class needs peer admin or live undo-mail path.
+            try:
+                from client_brick_guard import (
+                    admin_class_break_glass_ok,
+                    emit_skipped_no_break_glass,
+                    is_enabled_local_admin,
+                    probe_undo_mail_path,
                 )
-                self._last_disable_error = "PROTECTED_ACCOUNT"
+
+                tok = ""
+                try:
+                    tok = (self.token_getter() or "") if self.token_getter else ""
+                except Exception:
+                    tok = ""
+                if is_enabled_local_admin(uname):
+                    if not admin_class_break_glass_ok(
+                        uname, token=tok, api_client=self.api_client
+                    ):
+                        self._stats["skipped_no_break_glass"] = (
+                            self._stats.get("skipped_no_break_glass", 0) + 1
+                        )
+                        self._last_disable_error = "NO_BREAK_GLASS"
+                        emit_skipped_no_break_glass(
+                            self.alert_pipeline,
+                            action="disable_account",
+                            username=uname,
+                        )
+                        return False
+                # RID-500 / well-known names: still require undo-mail even when
+                # another admin exists (extra caution for built-in Administrator).
+                if upper in AUTO_SAFE_ACCOUNTS:
+                    if not probe_undo_mail_path(
+                        token=tok, api_client=self.api_client
+                    ):
+                        log(
+                            f"[AUTO-RESPONSE] ⛔ Refusing auto-disable of privileged "
+                            f"account {uname} (undo_mail_path not live)"
+                        )
+                        self._stats["skipped_no_break_glass"] = (
+                            self._stats.get("skipped_no_break_glass", 0) + 1
+                        )
+                        self._last_disable_error = "NO_BREAK_GLASS"
+                        emit_skipped_no_break_glass(
+                            self.alert_pipeline,
+                            action="disable_account",
+                            username=uname,
+                        )
+                        return False
+            except Exception as e:
+                log(f"[AUTO-RESPONSE] break-glass gate error (fail-closed): {e}")
+                self._last_disable_error = "NO_BREAK_GLASS"
                 return False
 
-        # C-BRICK-6: never close the last admin path
+        # C-BRICK-6: never close the last admin path without undo-mail break-glass
         if not force_last_admin:
             try:
-                from client_brick_guard import would_close_last_admin
+                from client_brick_guard import (
+                    probe_undo_mail_path,
+                    would_close_last_admin,
+                )
 
                 if would_close_last_admin(uname):
-                    self._stats["last_admin_refused"] = (
-                        self._stats.get("last_admin_refused", 0) + 1
-                    )
-                    self._last_disable_error = "LAST_ADMIN"
-                    log(
-                        f"[AUTO-RESPONSE] ⛔ Refusing disable of last admin "
-                        f"{uname} (C-BRICK-6)"
-                    )
-                    return False
+                    tok = ""
+                    try:
+                        tok = (self.token_getter() or "") if self.token_getter else ""
+                    except Exception:
+                        tok = ""
+                    if not probe_undo_mail_path(token=tok, api_client=self.api_client):
+                        self._stats["last_admin_refused"] = (
+                            self._stats.get("last_admin_refused", 0) + 1
+                        )
+                        self._last_disable_error = "LAST_ADMIN"
+                        log(
+                            f"[AUTO-RESPONSE] ⛔ Refusing disable of last admin "
+                            f"{uname} (C-BRICK-6 / no undo_mail_path)"
+                        )
+                        return False
             except Exception as e:
                 log(f"[AUTO-RESPONSE] last-admin check error (refuse): {e}")
                 self._last_disable_error = "LAST_ADMIN"
@@ -644,7 +698,10 @@ class AutoResponse:
             # Rollback if host left with zero enabled admins
             if not force_last_admin:
                 try:
-                    from client_brick_guard import count_enabled_local_admins
+                    from client_brick_guard import (
+                        count_enabled_local_admins,
+                        emit_critical_action_rolled_back,
+                    )
 
                     if count_enabled_local_admins() < 1:
                         log(
@@ -656,6 +713,12 @@ class AutoResponse:
                             self._stats.get("last_admin_rollback", 0) + 1
                         )
                         self._last_disable_error = "LAST_ADMIN"
+                        emit_critical_action_rolled_back(
+                            self.alert_pipeline,
+                            action="disable_account",
+                            username=uname,
+                            reason="zero_enabled_admin_after_disable",
+                        )
                         return False
                 except Exception as e:
                     log(f"[AUTO-RESPONSE] last-admin rollback check error: {e}")

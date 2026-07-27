@@ -1,3 +1,12 @@
+# v4.9.46
+
+## GUI feature guides
+- Network Guard / Ransomware / Layers / Threat / IP / Honeypot — i18n how-to (GOLD baseline, maintenance, canary decoys)
+
+## Anti-brick (contract 1.4.38)
+- Probe `undo_mail_path` on account-status; skip admin-class auto without break-glass
+- Rollback alert `critical_action_rolled_back`
+
 # v4.9.45
 
 ## Contract 1.4.37 client close-out

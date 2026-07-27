@@ -145,6 +145,8 @@ class TestLastAdminGuard(unittest.TestCase):
         ar = AutoResponse()
         with mock.patch(
             "client_brick_guard.would_close_last_admin", return_value=True
+        ), mock.patch(
+            "client_brick_guard.probe_undo_mail_path", return_value=False
         ), mock.patch.object(ar, "_run_system_cmd") as run:
             ok = ar.disable_account("Administrator", allow_privileged=True)
         self.assertFalse(ok)
@@ -166,11 +168,72 @@ class TestLastAdminGuard(unittest.TestCase):
         emit.assert_called()
         run.assert_not_called()
 
+    def test_admin_auto_skips_without_break_glass(self):
+        from client_auto_response import AutoResponse
+
+        ar = AutoResponse(token_getter=lambda: "tok")
+        with mock.patch(
+            "client_brick_guard.account_linked_for_auto", return_value=True
+        ), mock.patch(
+            "client_brick_guard.is_enabled_local_admin", return_value=True
+        ), mock.patch(
+            "client_brick_guard.admin_class_break_glass_ok", return_value=False
+        ), mock.patch(
+            "client_brick_guard.emit_skipped_no_break_glass"
+        ) as emit, mock.patch.object(ar, "_run_system_cmd") as run:
+            ok = ar.disable_account("HelperAdmin", allow_privileged=False)
+        self.assertFalse(ok)
+        self.assertEqual(ar._last_disable_error, "NO_BREAK_GLASS")
+        emit.assert_called()
+        run.assert_not_called()
+
+    def test_rollback_emits_critical_action_rolled_back(self):
+        from client_auto_response import AutoResponse
+
+        ar = AutoResponse(token_getter=lambda: "tok")
+        with mock.patch(
+            "client_brick_guard.account_linked_for_auto", return_value=True
+        ), mock.patch(
+            "client_brick_guard.is_enabled_local_admin", return_value=False
+        ), mock.patch(
+            "client_brick_guard.would_close_last_admin", return_value=False
+        ), mock.patch(
+            "client_brick_guard.count_enabled_local_admins", return_value=0
+        ), mock.patch(
+            "client_brick_guard.emit_critical_action_rolled_back"
+        ) as emit, mock.patch.object(
+            ar, "_run_system_cmd", return_value=True
+        ), mock.patch.object(ar, "enable_account", return_value=True) as en:
+            ok = ar.disable_account("bob", allow_privileged=False)
+        self.assertFalse(ok)
+        self.assertEqual(ar._last_disable_error, "LAST_ADMIN")
+        en.assert_called_once_with("bob")
+        emit.assert_called()
+
+    def test_undo_mail_probe_fail_closed(self):
+        from client_brick_guard import probe_undo_mail_path
+
+        self.assertFalse(probe_undo_mail_path(force=True))
+        self.assertTrue(
+            probe_undo_mail_path(
+                force=True,
+                api_client=mock.Mock(
+                    get_account_status=mock.Mock(
+                        return_value={"account_linked": True, "undo_mail_path": True}
+                    ),
+                    token_getter=lambda: "tok",
+                ),
+                token="tok",
+            )
+        )
+
 
 class TestSilentHoursDefaults(unittest.TestCase):
     def test_defaults_off(self):
         from client_silent_hours import SilentHoursConfig
+        import client_fleet_canary as fc
 
+        fc.apply_fleet_rollout({})
         cfg = SilentHoursConfig()
         self.assertFalse(cfg.enabled)
         self.assertFalse(cfg.auto_disable_account)
@@ -183,6 +246,7 @@ class TestSilentHoursDefaults(unittest.TestCase):
             "auto_logoff": True,
         })
         self.assertTrue(forced.enabled)
+        # Canary gates default false → still fail-closed
         self.assertFalse(forced.auto_disable_account)
         self.assertFalse(forced.auto_logoff)
 

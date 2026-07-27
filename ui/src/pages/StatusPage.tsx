@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { motorBridge, type MotorStatus } from '../bridge'
 import { DetailModal } from '../components/DetailModal'
+import { FeatureGuide } from '../components/FeatureGuide'
 import { IconBtn, icons } from '../components/IconBtn'
 import { t } from '../i18n'
 import { asRecord, boolLabel, formatBps, pick } from '../lib'
@@ -356,7 +357,17 @@ export function StatusPage({ status, online, updatedAt, onRefresh, onToast, onNa
 
       <div className="split" style={{ marginTop: 18 }}>
         <article className="panel clickable" onClick={() => setDetail('netguard')}>
-          <p className="eyebrow">{t('status_ng_eyebrow')}</p>
+          <div className="panel-head-row">
+            <p className="eyebrow">{t('status_ng_eyebrow')}</p>
+            <IconBtn
+              icon={icons.info}
+              title={t('help_more')}
+              onClick={(e) => {
+                e.stopPropagation()
+                setDetail('netguard')
+              }}
+            />
+          </div>
           <h3>{ng.maintenance ? t('status_ng_maint') : ng.drift ? t('status_ng_drift') : t('status_ng_stable')}</h3>
           <p className="muted">
             {t('status_ng_baseline', {
@@ -364,6 +375,7 @@ export function StatusPage({ status, online, updatedAt, onRefresh, onToast, onNa
               inet: boolLabel(ng.internet_ok, t('label_ok'), t('layers_none')),
             })}
           </p>
+          <p className="feature-card-help">{t('status_ng_card_help')}</p>
           <div className="btn-row" onClick={(e) => e.stopPropagation()}>
             <button type="button" className="btn ghost" onClick={() => void ngMaint(true)}>{t('status_ng_start')}</button>
             <button type="button" className="btn ghost" onClick={() => void ngMaint(false)}>{t('status_ng_end')}</button>
@@ -371,11 +383,22 @@ export function StatusPage({ status, online, updatedAt, onRefresh, onToast, onNa
           </div>
         </article>
         <article className="panel clickable" onClick={() => setDetail('ransomware')}>
-          <p className="eyebrow">{t('status_rs_eyebrow')}</p>
+          <div className="panel-head-row">
+            <p className="eyebrow">{t('status_rs_eyebrow')}</p>
+            <IconBtn
+              icon={icons.info}
+              title={t('help_more')}
+              onClick={(e) => {
+                e.stopPropagation()
+                setDetail('ransomware')
+              }}
+            />
+          </div>
           <h3>{rs.active ? t('status_rs_active') : t('status_rs_watch')}</h3>
           <p className="muted">
             {t('status_rs_meta', { canary: pick(rs, 'canary_files'), alerts: pick(rs, 'alerts_total') })}
           </p>
+          <p className="feature-card-help">{t('status_rs_card_help')}</p>
           <div className="btn-row" onClick={(e) => e.stopPropagation()}>
             <button
               type="button"
@@ -393,6 +416,9 @@ export function StatusPage({ status, online, updatedAt, onRefresh, onToast, onNa
         <article className="panel" style={{ gridColumn: '1 / -1' }}>
           <p className="eyebrow">{t('status_harden_eyebrow')}</p>
           <h3>{t('status_harden_title')}</h3>
+          <p className="feature-card-help" style={{ marginBottom: 10 }}>
+            {t('status_harden_help')}
+          </p>
           <p className="muted" style={{ marginBottom: 10 }}>
             {t('status_rdp_moved_hint')}
           </p>
@@ -487,6 +513,7 @@ export function StatusPage({ status, online, updatedAt, onRefresh, onToast, onNa
           title={t('layers_rs')}
           eyebrow={t('status_rs_eyebrow')}
           blurb={rs.active ? t('status_rs_active') : t('status_rs_watch')}
+          guide={<FeatureGuide prefix="help_rs" />}
           rows={[
             {
               label: t('layers_rs'),
@@ -524,6 +551,7 @@ export function StatusPage({ status, online, updatedAt, onRefresh, onToast, onNa
           title={t('layers_ng')}
           eyebrow={t('status_ng_eyebrow')}
           blurb={t('layers_ng_detail_blurb')}
+          guide={<FeatureGuide prefix="help_ng" />}
           rows={[
             {
               label: t('layers_ng'),

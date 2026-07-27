@@ -2,6 +2,7 @@ import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { motorBridge, type MotorStatus } from '../bridge'
 import { DetailModal } from '../components/DetailModal'
+import { FeatureGuide } from '../components/FeatureGuide'
 import { IconBtn, icons } from '../components/IconBtn'
 import { t } from '../i18n'
 import { asRecord, pick } from '../lib'
@@ -63,6 +64,7 @@ export function ThreatPage({ onToast }: Props) {
   const [checks, setChecks] = useState<HardenCheck[]>([])
   const [commands, setCommands] = useState<Array<Record<string, unknown>>>([])
   const [detail, setDetail] = useState<'threat' | 'harden' | null>(null)
+  const [pageHelp, setPageHelp] = useState(false)
   const [shares, setShares] = useState<Array<Record<string, unknown>>>([])
   const [shareCustom, setShareCustom] = useState(0)
   const [thirdParty, setThirdParty] = useState<Array<Record<string, unknown>>>([])
@@ -255,6 +257,9 @@ export function ThreatPage({ onToast }: Props) {
           <p className="muted">{t('threat_blurb')}</p>
         </div>
         <div className="btn-row">
+          <button type="button" className="btn ghost sm" onClick={() => setPageHelp(true)}>
+            {t('help_more')}
+          </button>
           <button type="button" className="btn ghost" disabled={busy} onClick={() => void snapshot()}>
             {t('btn_snapshot')}
           </button>
@@ -775,6 +780,15 @@ export function ThreatPage({ onToast }: Props) {
             tone: c.ok === false ? 'bad' : c.ok ? 'ok' : 'plain',
           }))}
           onClose={() => setDetail(null)}
+        />
+      )}
+      {pageHelp && (
+        <DetailModal
+          title={t('threat_title')}
+          eyebrow={t('threat_eyebrow')}
+          blurb={t('threat_blurb')}
+          guide={<FeatureGuide prefix="help_threat" />}
+          onClose={() => setPageHelp(false)}
         />
       )}
     </section>

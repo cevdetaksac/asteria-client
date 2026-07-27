@@ -883,6 +883,43 @@ h1, h2, h3, p { margin: 0; }
   color: var(--text);
   font-size: 13.5px;
 }
+.feature-guide {
+  display: grid;
+  gap: 12px;
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: rgba(46, 168, 209, 0.06);
+  border: 1px solid rgba(46, 168, 209, 0.18);
+}
+.feature-guide-sec h4 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--cyan);
+  font-family: var(--font-brand);
+}
+.feature-guide-sec p {
+  margin: 0 0 6px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text);
+}
+.feature-guide-sec p:last-child { margin-bottom: 0; }
+.feature-card-help {
+  margin: 8px 0 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.panel-head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.panel-head-row .eyebrow { margin: 0; }
 .about-modal h2 {
   margin: 8px 0 16px;
   font-size: 24px;

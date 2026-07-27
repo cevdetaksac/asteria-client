@@ -11,13 +11,23 @@ type Props = {
   title: string
   eyebrow?: string
   blurb?: string
+  guide?: ReactNode
   rows?: DetailRow[]
   children?: ReactNode
   actions?: ReactNode
   onClose: () => void
 }
 
-export function DetailModal({ title, eyebrow, blurb, rows, children, actions, onClose }: Props) {
+export function DetailModal({
+  title,
+  eyebrow,
+  blurb,
+  guide,
+  rows,
+  children,
+  actions,
+  onClose,
+}: Props) {
   return (
     <div className="modal-backdrop" role="presentation" onClick={onClose}>
       <div
@@ -37,6 +47,7 @@ export function DetailModal({ title, eyebrow, blurb, rows, children, actions, on
           </button>
         </div>
         {blurb ? <p className="detail-blurb">{blurb}</p> : null}
+        {guide}
         {rows && rows.length > 0 && (
           <div className="detail-rows">
             {rows.map((row) => (

@@ -1,5 +1,7 @@
 import { type FormEvent, useEffect, useState } from 'react'
 import { motorBridge } from '../bridge'
+import { DetailModal } from '../components/DetailModal'
+import { FeatureGuide } from '../components/FeatureGuide'
 import { IconBtn, icons } from '../components/IconBtn'
 import { t } from '../i18n'
 import { asRecord, pick } from '../lib'
@@ -22,6 +24,7 @@ export function IpListPage({ onToast }: Props) {
   const [blocked, setBlocked] = useState<IpRow[]>([])
   const [whitelist, setWhitelist] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
+  const [pageHelp, setPageHelp] = useState(false)
 
   const refresh = async () => {
     const [table, cloud] = await Promise.all([
@@ -98,9 +101,14 @@ export function IpListPage({ onToast }: Props) {
           <h2>{t('iplist_title')}</h2>
           <p className="muted">{t('iplist_blurb')}</p>
         </div>
-        <button type="button" className="btn danger" disabled={busy} onClick={() => void clearAll()}>
-          {t('btn_clear_blocks')}
-        </button>
+        <div className="btn-row">
+          <button type="button" className="btn ghost sm" onClick={() => setPageHelp(true)}>
+            {t('help_more')}
+          </button>
+          <button type="button" className="btn danger" disabled={busy} onClick={() => void clearAll()}>
+            {t('btn_clear_blocks')}
+          </button>
+        </div>
       </div>
 
       <form className="inline-form" onSubmit={onSubmit}>
@@ -236,6 +244,15 @@ export function IpListPage({ onToast }: Props) {
           </table>
         </div>
       </div>
+      {pageHelp && (
+        <DetailModal
+          title={t('iplist_title')}
+          eyebrow={t('iplist_eyebrow')}
+          blurb={t('iplist_blurb')}
+          guide={<FeatureGuide prefix="help_ip" />}
+          onClose={() => setPageHelp(false)}
+        />
+      )}
     </section>
   )
 }

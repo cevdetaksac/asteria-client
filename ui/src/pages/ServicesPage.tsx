@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { motorBridge } from '../bridge'
+import { DetailModal } from '../components/DetailModal'
+import { FeatureGuide } from '../components/FeatureGuide'
 import { RdpSecureMoveModal, type RdpMoveInfo } from '../components/RdpSecureMoveModal'
 import { t } from '../i18n'
 
@@ -17,6 +19,7 @@ export function ServicesPage({ onToast }: Props) {
   const [rdpModal, setRdpModal] = useState(false)
   const [rdpBusy, setRdpBusy] = useState(false)
   const [secondsLeft, setSecondsLeft] = useState(0)
+  const [pageHelp, setPageHelp] = useState(false)
 
   const refreshRdp = useCallback(async () => {
     const result = await motorBridge.rdp('status')
@@ -165,7 +168,12 @@ export function ServicesPage({ onToast }: Props) {
           <h2>{t('services_title')}</h2>
           <p className="muted">{t('services_blurb')}</p>
         </div>
-        <button type="button" className="btn" onClick={() => void refresh()}>{t('btn_refresh')}</button>
+        <div className="btn-row">
+          <button type="button" className="btn ghost sm" onClick={() => setPageHelp(true)}>
+            {t('help_more')}
+          </button>
+          <button type="button" className="btn" onClick={() => void refresh()}>{t('btn_refresh')}</button>
+        </div>
       </div>
 
       <div className="service-grid">
@@ -239,6 +247,15 @@ export function ServicesPage({ onToast }: Props) {
           onBegin={beginRdp}
           onConfirm={confirmRdp}
           onCancel={cancelRdp}
+        />
+      )}
+      {pageHelp && (
+        <DetailModal
+          title={t('services_title')}
+          eyebrow={t('services_eyebrow')}
+          blurb={t('services_blurb')}
+          guide={<FeatureGuide prefix="help_hp" />}
+          onClose={() => setPageHelp(false)}
         />
       )}
     </section>
