@@ -214,8 +214,8 @@ if ($Sign) {
     Write-Host "   SKIP: Authenticode payloads (-Sign not set; unsigned build OK for dev)" -ForegroundColor DarkGray
 }
 
-# Step 4: Check for NSIS
-Write-Host "[4/6] Checking for NSIS..." -ForegroundColor Yellow
+# Step 4: Check for NSIS + WebView2 Evergreen bootstrapper payload
+Write-Host "[4/6] Checking for NSIS + WebView2 bootstrapper..." -ForegroundColor Yellow
 $nsisPath = Get-Command makensis -ErrorAction SilentlyContinue
 if (-not $nsisPath) {
     Write-Host "   WARNING: NSIS not found, installing via Scoop..." -ForegroundColor Yellow
@@ -230,6 +230,26 @@ if (-not $nsisPath) {
 } else {
     Write-Host "   SUCCESS: NSIS found at $($nsisPath.Source)" -ForegroundColor Green
 }
+
+$wv2Dir = Join-Path $PSScriptRoot "vendor"
+$wv2Boot = Join-Path $wv2Dir "MicrosoftEdgeWebview2Setup.exe"
+if (-not (Test-Path -LiteralPath $wv2Boot)) {
+    New-Item -ItemType Directory -Force -Path $wv2Dir | Out-Null
+    Write-Host "   Downloading WebView2 Evergreen bootstrapper..." -ForegroundColor Yellow
+    try {
+        Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile $wv2Boot -UseBasicParsing
+    } catch {
+        Write-Host "   ERROR: Failed to download WebView2 bootstrapper: $_" -ForegroundColor Red
+        Write-Host "      Manual: save MicrosoftEdgeWebview2Setup.exe under vendor\" -ForegroundColor White
+        exit 1
+    }
+}
+$wv2Size = (Get-Item -LiteralPath $wv2Boot).Length
+if ($wv2Size -lt 500000) {
+    Write-Host "   ERROR: WebView2 bootstrapper looks too small ($wv2Size bytes)" -ForegroundColor Red
+    exit 1
+}
+Write-Host ("   SUCCESS: WebView2 bootstrapper ready ({0:N1} KB)" -f ($wv2Size / 1KB)) -ForegroundColor Green
 
 # Step 5: Build installer (embeds already-signed motor/GUI when -Sign was set)
 Write-Host "[5/6] Building installer..." -ForegroundColor Yellow

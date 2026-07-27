@@ -42,7 +42,7 @@ export function DetailModal({
             {eyebrow ? <p className="eyebrow">{eyebrow}</p> : null}
             <h2 id="detail-modal-title">{title}</h2>
           </div>
-          <button type="button" className="btn ghost sm" onClick={onClose} aria-label={t('btn_close')}>
+          <button type="button" className="btn ghost sm detail-modal-x" onClick={onClose} aria-label={t('btn_close')}>
             ×
           </button>
         </div>
@@ -61,12 +61,7 @@ export function DetailModal({
           </div>
         )}
         {children}
-        <div className="btn-row modal-actions">
-          {actions}
-          <button type="button" className="btn sm" onClick={onClose}>
-            {t('btn_close')}
-          </button>
-        </div>
+        {actions ? <div className="btn-row modal-actions">{actions}</div> : null}
       </div>
     </div>
   )

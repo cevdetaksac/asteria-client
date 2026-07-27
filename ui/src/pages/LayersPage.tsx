@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { motorBridge, type MotorStatus } from '../bridge'
 import { DetailModal, type DetailRow } from '../components/DetailModal'
 import { FeatureGuide } from '../components/FeatureGuide'
+import { Switch } from '../components/Switch'
 import { t } from '../i18n'
 import { asRecord, pick } from '../lib'
 
@@ -72,8 +73,9 @@ export function LayersPage({ status, onRefresh, onToast }: Props) {
     blurb: string
     guide: string
     rows: DetailRow[]
-    onToggle?: () => void
-    toggleLabel?: string
+    switchOn?: boolean
+    onSwitch?: (next: boolean) => void
+    switchLabel?: string
   } => {
     if (detail === 'ransomware') {
       return {
@@ -94,8 +96,9 @@ export function LayersPage({ status, onRefresh, onToast }: Props) {
             tone: rs.active ? 'bad' : 'ok',
           },
         ],
-        onToggle: () => void toggleLayer('ransomware', !rsOn),
-        toggleLabel: rsOn ? t('layers_close') : t('layers_open'),
+        switchOn: rsOn,
+        onSwitch: (next) => void toggleLayer('ransomware', next),
+        switchLabel: t('layers_rs'),
       }
     }
     if (detail === 'canary') {
@@ -108,8 +111,9 @@ export function LayersPage({ status, onRefresh, onToast }: Props) {
           { label: t('layers_detail_canary_files'), value: pick(rs, 'canary_files') },
           { label: t('layers_detail_canary_alerts'), value: pick(rs, 'canary_alerts', 'alerts_canary') },
         ],
-        onToggle: () => void toggleLayer('canaries', !canaries),
-        toggleLabel: t('layers_sync'),
+        switchOn: canaries,
+        onSwitch: (next) => void toggleLayer('canaries', next),
+        switchLabel: t('layers_canary'),
       }
     }
     return {
@@ -126,8 +130,9 @@ export function LayersPage({ status, onRefresh, onToast }: Props) {
           tone: ng.internet_ok ? 'ok' : 'bad',
         },
       ],
-      onToggle: () => void toggleLayer('network_guard', !ngOn),
-      toggleLabel: ngOn ? t('layers_close') : t('layers_open'),
+      switchOn: ngOn,
+      onSwitch: (next) => void toggleLayer('network_guard', next),
+      switchLabel: t('layers_ng'),
     }
   }
 
@@ -185,34 +190,46 @@ export function LayersPage({ status, onRefresh, onToast }: Props) {
 
       <div className="cards three layer-toggles" style={{ marginTop: 28 }}>
         <article className="layer-card clickable" onClick={() => setDetail('ransomware')}>
-          <p>{t('layers_rs')}</p>
+          <div className="layer-card-top">
+            <p>{t('layers_rs')}</p>
+            <div className="layer-actions" onClick={(e) => e.stopPropagation()}>
+              <Switch
+                checked={rsOn}
+                label={t('layers_rs')}
+                onChange={(next) => void toggleLayer('ransomware', next)}
+              />
+            </div>
+          </div>
           <strong className={rsOn ? 'good' : 'bad'}>{rsOn ? t('label_on') : t('label_off')}</strong>
           <small>{t('layers_click_detail')}</small>
-          <div className="layer-actions" onClick={(e) => e.stopPropagation()}>
-            <button type="button" className="btn sm ghost" onClick={() => void toggleLayer('ransomware', !rsOn)}>
-              {rsOn ? t('layers_close') : t('layers_open')}
-            </button>
-          </div>
         </article>
         <article className="layer-card clickable" onClick={() => setDetail('canary')}>
-          <p>{t('layers_canary')}</p>
+          <div className="layer-card-top">
+            <p>{t('layers_canary')}</p>
+            <div className="layer-actions" onClick={(e) => e.stopPropagation()}>
+              <Switch
+                checked={canaries}
+                label={t('layers_canary')}
+                onChange={(next) => void toggleLayer('canaries', next)}
+              />
+            </div>
+          </div>
           <strong>{canaries ? t('layers_has') : t('layers_none')}</strong>
           <small>{t('layers_click_detail')}</small>
-          <div className="layer-actions" onClick={(e) => e.stopPropagation()}>
-            <button type="button" className="btn sm ghost" onClick={() => void toggleLayer('canaries', !canaries)}>
-              {t('layers_sync')}
-            </button>
-          </div>
         </article>
         <article className="layer-card clickable" onClick={() => setDetail('network_guard')}>
-          <p>{t('layers_ng')}</p>
+          <div className="layer-card-top">
+            <p>{t('layers_ng')}</p>
+            <div className="layer-actions" onClick={(e) => e.stopPropagation()}>
+              <Switch
+                checked={ngOn}
+                label={t('layers_ng')}
+                onChange={(next) => void toggleLayer('network_guard', next)}
+              />
+            </div>
+          </div>
           <strong className={ngOn ? 'good' : 'bad'}>{ngOn ? t('label_on') : t('label_off')}</strong>
           <small>{t('layers_click_detail')}</small>
-          <div className="layer-actions" onClick={(e) => e.stopPropagation()}>
-            <button type="button" className="btn sm ghost" onClick={() => void toggleLayer('network_guard', !ngOn)}>
-              {ngOn ? t('layers_close') : t('layers_open')}
-            </button>
-          </div>
         </article>
       </div>
 
@@ -230,10 +247,17 @@ export function LayersPage({ status, onRefresh, onToast }: Props) {
           guide={<FeatureGuide prefix={modal.guide} />}
           rows={modal.rows}
           actions={
-            modal.onToggle ? (
-              <button type="button" className="btn sm" onClick={modal.onToggle}>
-                {modal.toggleLabel}
-              </button>
+            modal.onSwitch ? (
+              <div className="layer-modal-actions">
+                <label className="layer-switch-field">
+                  <span>{modal.switchOn ? t('label_on') : t('label_off')}</span>
+                  <Switch
+                    checked={Boolean(modal.switchOn)}
+                    label={modal.switchLabel || modal.title}
+                    onChange={(next) => modal.onSwitch?.(next)}
+                  />
+                </label>
+              </div>
             ) : null
           }
           onClose={() => setDetail(null)}

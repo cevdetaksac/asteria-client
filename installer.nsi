@@ -12,7 +12,7 @@ OutFile "asteria-client-installer.exe"
 !define DESCRIPTION "Asteria Client - Deception Cloud Agent"
 !define VERSIONMAJOR 4
 !define VERSIONMINOR 9
-!define VERSIONBUILD 46
+!define VERSIONBUILD 47
 
 InstallDir "$PROGRAMFILES64\${COMPANYNAME}\${APPNAME}"
 
@@ -583,6 +583,63 @@ Function .onInit
 FunctionEnd
 
 ; ===================================================================
+; WEBVIEW2 RUNTIME (Control Center / asteria-gui.exe)
+; ===================================================================
+Function EnsureWebView2
+    ; Evergreen client GUID — same keys as asteria_gui._webview2_runtime_present
+    ReadRegStr $R9 HKLM "SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
+    ${If} $R9 != ""
+    ${AndIf} $R9 != "0.0.0.0"
+        !insertmacro LOG "[WEBVIEW2] Runtime present (WOW6432Node pv=$R9)"
+        Goto Wv2Done
+    ${EndIf}
+    SetRegView 64
+    ReadRegStr $R9 HKLM "SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
+    SetRegView 32
+    ${If} $R9 != ""
+    ${AndIf} $R9 != "0.0.0.0"
+        !insertmacro LOG "[WEBVIEW2] Runtime present (64-bit pv=$R9)"
+        Goto Wv2Done
+    ${EndIf}
+    ReadRegStr $R9 HKCU "SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
+    ${If} $R9 != ""
+    ${AndIf} $R9 != "0.0.0.0"
+        !insertmacro LOG "[WEBVIEW2] Runtime present (HKCU pv=$R9)"
+        Goto Wv2Done
+    ${EndIf}
+
+    !insertmacro LOG "[WEBVIEW2] Runtime missing — running Evergreen bootstrapper (needs network)..."
+    IfFileExists "$INSTDIR\MicrosoftEdgeWebview2Setup.exe" 0 Wv2MissingPayload
+        nsExec::ExecToLog '"$INSTDIR\MicrosoftEdgeWebview2Setup.exe" /silent /install'
+        Pop $R8
+        !insertmacro LOG "[WEBVIEW2] Bootstrapper exit=$R8"
+        ; Re-check after install
+        ReadRegStr $R9 HKLM "SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
+        ${If} $R9 != ""
+        ${AndIf} $R9 != "0.0.0.0"
+            !insertmacro LOG "[WEBVIEW2] Runtime installed OK (pv=$R9)"
+            Goto Wv2Done
+        ${EndIf}
+        SetRegView 64
+        ReadRegStr $R9 HKLM "SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
+        SetRegView 32
+        ${If} $R9 != ""
+        ${AndIf} $R9 != "0.0.0.0"
+            !insertmacro LOG "[WEBVIEW2] Runtime installed OK (pv=$R9)"
+            Goto Wv2Done
+        ${EndIf}
+        !insertmacro LOG "[WEBVIEW2] WARNING: bootstrapper finished but runtime still not registered"
+        IfSilent Wv2Done
+            MessageBox MB_ICONEXCLAMATION|MB_OK "Microsoft Edge WebView2 Runtime kurulamadı.$\r$\n$\r$\nAsteria motoru çalışır; Control Center için:$\r$\nhttps://developer.microsoft.com/microsoft-edge/webview2/$\r$\n→ Evergreen Runtime kurun (sunucunun interneti olmalı)."
+        Goto Wv2Done
+    Wv2MissingPayload:
+        !insertmacro LOG "[WEBVIEW2] ERROR: MicrosoftEdgeWebview2Setup.exe missing from install dir"
+        IfSilent Wv2Done
+            MessageBox MB_ICONEXCLAMATION|MB_OK "WebView2 kurulum paketi eksik.$\r$\nControl Center için Evergreen Runtime kurun:$\r$\nhttps://developer.microsoft.com/microsoft-edge/webview2/"
+    Wv2Done:
+FunctionEnd
+
+; ===================================================================
 ; MAIN INSTALL SECTION
 ; ===================================================================
 Section "Asteria Client (Required)" SEC_MAIN
@@ -628,6 +685,8 @@ Section "Asteria Client (Required)" SEC_MAIN
     File /r "dist\asteria-client\*.*"
     ; Separate interactive GUI host (onefile; no motor secrets in WebView).
     File "dist\asteria-gui.exe"
+    ; WebView2 Evergreen bootstrapper (~1.5 MB) — run if runtime missing.
+    File "vendor\MicrosoftEdgeWebview2Setup.exe"
     ; Extra config copies at install root (also inside _internal via PyInstaller datas)
     File /oname=client_config.json "dist\client_config.json"
     File /oname=client_lang.json "dist\client_lang.json"
@@ -655,6 +714,9 @@ Section "Asteria Client (Required)" SEC_MAIN
     ; PHASE 3: POST-INSTALLATION CONFIGURATION
     ; =================================================================
     !insertmacro LOG "[PHASE 3] Starting post-installation configuration..."
+
+    ; Control Center needs Edge WebView2 Runtime (often missing on Server SKUs).
+    Call EnsureWebView2
 
     ; Windows Defender exclusions — already attempted in prepare-install-dir;
     ; refresh async (Add-MpPreference can hang under nsExec::Exec).
@@ -778,6 +840,7 @@ Section "Uninstall"
     Delete "$INSTDIR\client_lang.json"
     Delete "$INSTDIR\LICENSE"
     Delete "$INSTDIR\README.md"
+    Delete "$INSTDIR\MicrosoftEdgeWebview2Setup.exe"
     Delete "$INSTDIR\scripts\kill-honeypot.ps1"
     Delete "$INSTDIR\scripts\prepare-install-dir.ps1"
     Delete "$INSTDIR\scripts\update-and-install.ps1"

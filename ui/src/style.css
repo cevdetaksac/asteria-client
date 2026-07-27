@@ -852,6 +852,13 @@ h1, h2, h3, p { margin: 0; }
   margin: 4px 0 0;
   font-size: 22px;
 }
+.detail-modal-x {
+  flex-shrink: 0;
+  min-width: 34px;
+  font-size: 20px;
+  line-height: 1;
+  padding: 4px 10px;
+}
 .detail-rows {
   display: grid;
   gap: 10px;
@@ -1370,6 +1377,38 @@ input::-ms-clear { display: none; }
   display: grid;
   gap: 10px;
   align-content: start;
+}
+.layer-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.layer-card-top p {
+  margin: 0;
+}
+.layer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.layer-modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+}
+.layer-switch-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  color: var(--muted);
 }
 
 .settings-form {

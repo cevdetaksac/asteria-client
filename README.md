@@ -1,6 +1,6 @@
 # Asteria Client
 
-**Current Version: 4.9.46**
+**Current Version: 4.9.47**
 
 Windows agent for [Asteria](https://asteria.run): honeypot tunnels, threat response, remote desktop, and firewall sync. Open-source client; cloud/dashboard features may require a license.
 
@@ -27,6 +27,8 @@ Windows agent for [Asteria](https://asteria.run): honeypot tunnels, threat respo
 1. Download `asteria-client-installer.exe` from the [latest release](https://github.com/cevdetaksac/asteria-client/releases/latest).
 2. Run as Administrator (`/S` for silent).
 3. Agent registers with the cloud API and stores the token under ProgramData.
+4. **Control Center** needs [WebView2 Evergreen Runtime](https://developer.microsoft.com/microsoft-edge/webview2/).  
+   Installer ≥4.9.47 tries to install it automatically (host needs internet). Motor/honeypots work without it.
 
 API base (default): `https://asteria.run/api` (legacy failover: honeypot.yesnext.com.tr)
 

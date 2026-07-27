@@ -1,3 +1,12 @@
+# v4.9.47
+
+## WebView2 (Windows Server)
+- Installer ships Evergreen bootstrapper and installs silently when runtime missing
+- GUI offers to run bootstrapper / open download page if still missing
+
+## GUI UX
+- Detail modal: no bottom Kapat (× only); Layers use switch instead of Aç/Kapat twin
+
 # v4.9.46
 
 ## GUI feature guides

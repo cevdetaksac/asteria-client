@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.46"  # UI feature guides + C-BRICK-1.3 undo_mail probe + rolled_back; contract 1.4.38
+VERSION = "4.9.47"  # WebView2 bootstrapper on install; modal Kapat/switch UX; contract 1.4.38
 
 CLIENT_VERSION = VERSION  # Main version constant
 __version__ = VERSION  # Export for compatibility
