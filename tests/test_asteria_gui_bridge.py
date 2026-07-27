@@ -220,6 +220,33 @@ class MotorBridgeTests(unittest.TestCase):
             result = self.bridge.shell("check_updates")
         self.assertTrue(result["ok"])
         self.assertFalse(result["update_available"])
+        self.assertFalse(result.get("started"))
+
+    def test_shell_check_updates_starts_silent_motor_update(self):
+        with mock.patch(
+            "client_updater.check_update_availability",
+            return_value={
+                "ok": True,
+                "update_available": True,
+                "installed": "4.9.47",
+                "latest": "4.9.48",
+                "tag": "v4.9.48",
+                "download_url": "https://example.test/installer.exe",
+                "message": "update_available",
+            },
+        ), mock.patch(
+            "asteria_gui.self_update",
+            return_value={"ok": True, "started": True, "message": "update_accepted"},
+        ) as ipc_upd, mock.patch(
+            "client_update_ui.set_update_ui_status"
+        ) as set_ui, mock.patch("asteria_gui.webbrowser.open") as browser:
+            result = self.bridge.shell("check_updates")
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["update_available"])
+        self.assertTrue(result["started"])
+        ipc_upd.assert_called_once()
+        set_ui.assert_called()
+        browser.assert_not_called()
 
     def test_ir_requires_username(self):
         result = self.bridge.ir("logoff", "")

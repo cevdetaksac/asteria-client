@@ -134,6 +134,11 @@ def _release_stale_lock() -> None:
         release_update_lock(resume_updaters=True)
     except Exception:
         pass
+    try:
+        from client_resilience import clear_stand_down
+        clear_stand_down()
+    except Exception:
+        pass
 
 
 def _mark_stalled(st: Dict[str, Any], reason: str = "update_stalled") -> Dict[str, Any]:

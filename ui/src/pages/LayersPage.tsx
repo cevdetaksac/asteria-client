@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { motorBridge, type MotorStatus } from '../bridge'
 import { DetailModal, type DetailRow } from '../components/DetailModal'
 import { FeatureGuide } from '../components/FeatureGuide'
@@ -64,18 +64,32 @@ export function LayersPage({ status, onRefresh, onToast }: Props) {
     onRefresh()
   }
 
+  const ngMaint = async (start: boolean) => {
+    const result = await motorBridge.ipc(start ? 'NG_MAINT_START' : 'NG_MAINT_END_SNAPSHOT')
+    onToast(
+      result.ok ? (start ? t('toast_ng_maint_on') : t('toast_ng_maint_off')) : String(result.error || 'NG'),
+      result.ok ? 'ok' : 'err',
+    )
+    onRefresh()
+  }
+
+  const ngAccept = async () => {
+    const result = await motorBridge.ipc('NG_ACCEPT_SURFACE')
+    onToast(result.ok ? t('toast_ng_accept') : String(result.error || 'NG accept'), result.ok ? 'ok' : 'err')
+    onRefresh()
+  }
+
   const rsOn = Boolean(status?.ransomware_running)
   const ngOn = Boolean(ng.enabled ?? ng.running)
   const canaries = Number(rs.canary_files || 0) > 0
+  const ngMaintOn = Boolean(ng.maintenance)
 
   const detailContent = (): {
     title: string
     blurb: string
     guide: string
     rows: DetailRow[]
-    switchOn?: boolean
-    onSwitch?: (next: boolean) => void
-    switchLabel?: string
+    actions?: ReactNode
   } => {
     if (detail === 'ransomware') {
       return {
@@ -83,7 +97,16 @@ export function LayersPage({ status, onRefresh, onToast }: Props) {
         blurb: t('layers_rs_detail_blurb'),
         guide: 'help_rs',
         rows: [
-          { label: t('layers_rs'), value: rsOn ? t('label_on') : t('label_off'), tone: rsOn ? 'ok' : 'bad' },
+          {
+            label: t('layers_rs'),
+            value: rsOn ? t('label_on') : t('label_off'),
+            tone: rsOn ? 'ok' : 'bad',
+            toggle: {
+              checked: rsOn,
+              label: t('layers_rs'),
+              onChange: (next) => void toggleLayer('ransomware', next),
+            },
+          },
           { label: t('layers_detail_canary_files'), value: pick(rs, 'canary_files') },
           { label: t('layers_detail_canary_alerts'), value: pick(rs, 'canary_alerts', 'alerts_canary') },
           { label: t('layers_detail_fs_alerts'), value: pick(rs, 'fs_alerts', 'alerts_fs') },
@@ -96,9 +119,6 @@ export function LayersPage({ status, onRefresh, onToast }: Props) {
             tone: rs.active ? 'bad' : 'ok',
           },
         ],
-        switchOn: rsOn,
-        onSwitch: (next) => void toggleLayer('ransomware', next),
-        switchLabel: t('layers_rs'),
       }
     }
     if (detail === 'canary') {
@@ -107,13 +127,19 @@ export function LayersPage({ status, onRefresh, onToast }: Props) {
         blurb: t('layers_canary_detail_blurb'),
         guide: 'help_rs',
         rows: [
-          { label: t('layers_canary'), value: canaries ? t('layers_has') : t('layers_none'), tone: canaries ? 'ok' : 'plain' },
+          {
+            label: t('layers_canary'),
+            value: canaries ? t('layers_has') : t('layers_none'),
+            tone: canaries ? 'ok' : 'plain',
+            toggle: {
+              checked: canaries,
+              label: t('layers_canary'),
+              onChange: (next) => void toggleLayer('canaries', next),
+            },
+          },
           { label: t('layers_detail_canary_files'), value: pick(rs, 'canary_files') },
           { label: t('layers_detail_canary_alerts'), value: pick(rs, 'canary_alerts', 'alerts_canary') },
         ],
-        switchOn: canaries,
-        onSwitch: (next) => void toggleLayer('canaries', next),
-        switchLabel: t('layers_canary'),
       }
     }
     return {
@@ -121,8 +147,30 @@ export function LayersPage({ status, onRefresh, onToast }: Props) {
       blurb: t('layers_ng_detail_blurb'),
       guide: 'help_ng',
       rows: [
-        { label: t('layers_ng'), value: ngOn ? t('label_on') : t('label_off'), tone: ngOn ? 'ok' : 'bad' },
-        { label: t('status_ng_eyebrow'), value: ng.maintenance ? t('status_ng_maint') : ng.drift ? t('status_ng_drift') : t('status_ng_stable') },
+        {
+          label: t('layers_ng'),
+          value: ngOn ? t('label_on') : t('label_off'),
+          tone: ngOn ? 'ok' : 'bad',
+          toggle: {
+            checked: ngOn,
+            label: t('layers_ng'),
+            onChange: (next) => void toggleLayer('network_guard', next),
+          },
+        },
+        {
+          label: t('status_ng_surface'),
+          value: ngMaintOn ? t('status_ng_maint') : ng.drift ? t('status_ng_drift') : t('status_ng_stable'),
+        },
+        {
+          label: t('status_ng_maint_mode'),
+          value: ngMaintOn ? t('label_on') : t('label_off'),
+          tone: ngMaintOn ? 'plain' : 'ok',
+          toggle: {
+            checked: ngMaintOn,
+            label: t('status_ng_maint_mode'),
+            onChange: (next) => void ngMaint(next),
+          },
+        },
         { label: t('layers_detail_baseline'), value: pick(ng, 'baseline_version') },
         {
           label: t('layers_detail_internet'),
@@ -130,9 +178,11 @@ export function LayersPage({ status, onRefresh, onToast }: Props) {
           tone: ng.internet_ok ? 'ok' : 'bad',
         },
       ],
-      switchOn: ngOn,
-      onSwitch: (next) => void toggleLayer('network_guard', next),
-      switchLabel: t('layers_ng'),
+      actions: (
+        <button type="button" className="btn sm" onClick={() => void ngAccept()}>
+          {t('status_ng_accept')}
+        </button>
+      ),
     }
   }
 
@@ -246,20 +296,7 @@ export function LayersPage({ status, onRefresh, onToast }: Props) {
           blurb={modal.blurb}
           guide={<FeatureGuide prefix={modal.guide} />}
           rows={modal.rows}
-          actions={
-            modal.onSwitch ? (
-              <div className="layer-modal-actions">
-                <label className="layer-switch-field">
-                  <span>{modal.switchOn ? t('label_on') : t('label_off')}</span>
-                  <Switch
-                    checked={Boolean(modal.switchOn)}
-                    label={modal.switchLabel || modal.title}
-                    onChange={(next) => modal.onSwitch?.(next)}
-                  />
-                </label>
-              </div>
-            ) : null
-          }
+          actions={modal.actions}
           onClose={() => setDetail(null)}
         />
       )}

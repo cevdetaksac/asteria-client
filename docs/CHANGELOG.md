@@ -1,3 +1,15 @@
+# v4.9.48
+
+## Remote stream progress (contract 1.4.39)
+- Agent emits `t: stream_progress` on RD agent WS (`running` → `capture_start` → `capturing` → `ws`/`webrtc` → `live`, or `failed`+`error`).
+- C-RD-PROG-1..4: ≤4 evt/s, ≤3s heartbeat while starting, no `live` for black-fill-only, control-WS fallback.
+- Wired into `remote_stream_start` + `remote_session_prepare`.
+
+## Update brick / stuck recovery
+- **Orphan update lock no longer bricks the motor:** clearing a dead/stale `update_in_progress.lock` now resumes Background/SilentUpdater tasks, clears resilience stand-down, and marks the GUI banner `failed` (`orphan_lock_dead_pid` / heal paths).
+- **`client_update_recovery`:** diagnose + auto-abort + operator abort/recover. Wired into `ensure_daemon_running`, `heal_update_machinery`, GUI `ping` / `update_banner` (`abort` | `recover`).
+- **GUI:** failed/stalled banner and “motor unreachable” strip expose **Motoru kurtar** so operators can clear a stuck handoff without reinstalling.
+
 # v4.9.47
 
 ## WebView2 (Windows Server)

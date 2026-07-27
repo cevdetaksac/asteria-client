@@ -1,10 +1,18 @@
 import type { ReactNode } from 'react'
+import { Switch } from './Switch'
 import { t } from '../i18n'
 
 export type DetailRow = {
   label: string
   value: ReactNode
   tone?: 'ok' | 'bad' | 'plain'
+  /** Inline on/off shortcut next to the status value. */
+  toggle?: {
+    checked: boolean
+    onChange: (next: boolean) => void
+    label?: string
+    disabled?: boolean
+  }
 }
 
 type Props = {
@@ -50,12 +58,22 @@ export function DetailModal({
         {guide}
         {rows && rows.length > 0 && (
           <div className="detail-rows">
-            {rows.map((row) => (
-              <div className="detail-row" key={row.label}>
+            {rows.map((row, index) => (
+              <div className="detail-row" key={`${row.label}-${index}`}>
                 <span className="label">{row.label}</span>
-                <span className={`value ${row.tone === 'ok' ? 'ok' : row.tone === 'bad' ? 'bad' : ''}`}>
-                  {row.value}
-                </span>
+                <div className="detail-row-end">
+                  <span className={`value ${row.tone === 'ok' ? 'ok' : row.tone === 'bad' ? 'bad' : ''}`}>
+                    {row.value}
+                  </span>
+                  {row.toggle ? (
+                    <Switch
+                      checked={row.toggle.checked}
+                      onChange={row.toggle.onChange}
+                      label={row.toggle.label || String(row.label)}
+                      disabled={row.toggle.disabled}
+                    />
+                  ) : null}
+                </div>
               </div>
             ))}
           </div>

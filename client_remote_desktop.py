@@ -165,6 +165,13 @@ class RemoteDesktopStreamer:
         self._last_helper_capture_ms = 0.0
         self._stream_id = ""
         self._media_session_id = ""
+        # Contract 1.4.39 — agent → viewer stage honesty (C-RD-PROG-*)
+        self._command_id = ""
+        self._progress_times: deque = deque(maxlen=16)
+        self._progress_last_emit = 0.0
+        self._progress_last_phase = ""
+        self._progress_live_emitted = False
+        self._control_progress_send = None  # Optional[Callable[[dict], bool]]
 
         self._ws = None
         self._ws_ok = False
@@ -242,6 +249,104 @@ class RemoteDesktopStreamer:
 
     # ── Public API ────────────────────────────────────────────────
 
+    def set_control_progress_sender(self, fn) -> None:
+        """Optional control-WS fallback when RD agent socket is not up yet."""
+        self._control_progress_send = fn if callable(fn) else None
+
+    def emit_stream_progress(
+        self,
+        phase: str,
+        message: str = "",
+        *,
+        error: str = "",
+        command_id: Optional[str] = None,
+        force: bool = False,
+    ) -> bool:
+        """Emit ``t: stream_progress`` on RD agent WS (queue) ± control WS.
+
+        C-RD-PROG-1/3 · rate-limit ≤4/s · coalesce noisy repeats.
+        """
+        phase_l = str(phase or "").strip().lower()
+        if not phase_l:
+            return False
+        # C-RD-PROG-4: never advertise live for black-fill-only capture
+        if phase_l in ("live", "connected") and "+black" in (self._capture_method or ""):
+            return False
+        if phase_l in ("live", "connected") and self._progress_live_emitted and not force:
+            return False
+
+        now = time.time()
+        # Drop oldest outside the 1s window
+        while self._progress_times and (now - self._progress_times[0]) > 1.0:
+            self._progress_times.popleft()
+        if not force and len(self._progress_times) >= 4:
+            return False
+        # Coalesce identical phase spam (ICE ticks etc.) unless message/error changed
+        if (
+            not force
+            and phase_l == self._progress_last_phase
+            and not error
+            and (now - self._progress_last_emit) < 0.4
+        ):
+            return False
+
+        cid = str(command_id if command_id is not None else (self._command_id or "")).strip()
+        payload = {
+            "t": "stream_progress",
+            "protocol": 1,
+            "stream_id": str(self._stream_id or ""),
+            "command_id": cid,
+            "phase": phase_l,
+            "message": str(message or "")[:240],
+            "ts": int(now * 1000),
+        }
+        if error:
+            payload["error"] = str(error)[:120]
+
+        sent = False
+        try:
+            raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+            # Queue for RD agent WS flush (cloud relays /ws/remote/agent → viewers).
+            self._q_put_text(raw)
+            sent = True
+        except Exception as exc:
+            log(f"[REMOTE-DESKTOP] stream_progress queue error: {exc}")
+
+        # Fallback: control WS (may not be relayed to viewers today — still useful)
+        if self._control_progress_send is not None:
+            try:
+                if self._control_progress_send(payload):
+                    sent = True
+            except Exception:
+                pass
+
+        if sent:
+            self._progress_times.append(now)
+            self._progress_last_emit = now
+            self._progress_last_phase = phase_l
+            if phase_l in ("live", "connected"):
+                self._progress_live_emitted = True
+            if phase_l in ("failed", "error"):
+                self._last_stream_error = str(error or message or phase_l)[:160]
+        return sent
+
+    def _progress_heartbeat_tick(self) -> None:
+        """C-RD-PROG-2: never silent >3s while start/capture is still in flight."""
+        if not self._running:
+            return
+        if self._progress_live_emitted:
+            return
+        if (time.time() - float(self._progress_last_emit or 0)) < 2.5:
+            return
+        frames = int(self._stats.get("frames_sent") or 0)
+        if frames <= 0:
+            self.emit_stream_progress(
+                "capturing",
+                "Waiting for first real frame…",
+            )
+        else:
+            self.emit_stream_progress("streaming", f"frames_sent={frames}")
+
     def start(self, fps: float = DEFAULT_FPS, quality: int = DEFAULT_QUALITY,
               max_width: int = DEFAULT_MAX_WIDTH,
               session_id: Optional[int] = None,
@@ -249,7 +354,8 @@ class RemoteDesktopStreamer:
               monitor: int = 0,
               prefer: Optional[str] = None,
               desktop: Optional[str] = None,
-              pre_logon: Optional[bool] = None) -> dict:
+              pre_logon: Optional[bool] = None,
+              command_id: Optional[str] = None) -> dict:
         """Start capture + WS (with HTTP fallback).
 
         Honest start: resolve WTS session_id, probe desktop first.
@@ -267,6 +373,18 @@ class RemoteDesktopStreamer:
             or pre_logon is True
         )
         with self._lock:
+            self._command_id = str(command_id or "").strip()
+            self._stream_id = uuid.uuid4().hex
+            self._progress_live_emitted = False
+            self._progress_last_phase = ""
+            self._progress_last_emit = 0.0
+            self._progress_times.clear()
+            self._drain_out_q()
+            self.emit_stream_progress(
+                "running",
+                "remote_stream_start received",
+                force=True,
+            )
             self._requested_fps = max(1.0, min(float(fps or DEFAULT_FPS), 30.0))
             self._requested_quality = max(20, min(int(quality or DEFAULT_QUALITY), 85))
             self._requested_max_width = max(
@@ -338,6 +456,7 @@ class RemoteDesktopStreamer:
                 self._transport = "idle"
                 self._target_session_id = None
                 self._target_username = ""
+                self.emit_stream_progress("failed", msg, error=err, force=True)
                 return {
                     "success": False,
                     "error": err,
@@ -363,6 +482,7 @@ class RemoteDesktopStreamer:
                     err = "NO_INTERACTIVE_SESSION"
                     msg = f"Requested session_id={resolved_sid} not in interactive session list"
                     log(f"[REMOTE-DESKTOP] ✖ {err}: {msg}")
+                    self.emit_stream_progress("failed", msg, error=err, force=True)
                     return {
                         "success": False,
                         "error": err,
@@ -418,6 +538,15 @@ class RemoteDesktopStreamer:
                 f"user={self._target_username!r} monitor={self._monitor_index} "
                 f"pid_session={pid_sid} console={csid} helper={need_helper} "
                 f"winlogon={self._winlogon_mode}"
+            )
+            self.emit_stream_progress(
+                "capture_start",
+                (
+                    "Attaching Winlogon desktop…"
+                    if self._winlogon_mode
+                    else f"Attaching session {self._target_session_id}…"
+                ),
+                force=True,
             )
 
             if self._running and self._thread and self._thread.is_alive():
@@ -484,6 +613,7 @@ class RemoteDesktopStreamer:
                     log(f"[REMOTE-DESKTOP] ✖ {err}: {msg}")
                     self._running = False
                     self._transport = "idle"
+                    self.emit_stream_progress("failed", msg, error=err, force=True)
                     return {
                         "success": False,
                         "error": err,
@@ -493,6 +623,7 @@ class RemoteDesktopStreamer:
             else:
                 # Capture thread-less probe: attach input desktop first (RDP/elevated)
                 self._attach_input_desktop()
+                self.emit_stream_progress("prepare", "Input desktop attach / probe")
                 if state in ("Disconnected", "Down", "Init"):
                     self._try_reconnect_session_to_console(self._target_session_id)
 
@@ -532,6 +663,7 @@ class RemoteDesktopStreamer:
                         self._last_stream_error = err
                         self._running = False
                         self._transport = "idle"
+                        self.emit_stream_progress("failed", msg, error=err, force=True)
                         return {
                             "success": False,
                             "error": err,
@@ -553,6 +685,7 @@ class RemoteDesktopStreamer:
                 log(f"[REMOTE-DESKTOP] ✖ {err}: {msg}")
                 self._running = False
                 self._transport = "idle"
+                self.emit_stream_progress("failed", msg, error=err, force=True)
                 return {
                     "success": False,
                     "error": err,
@@ -569,12 +702,16 @@ class RemoteDesktopStreamer:
             log(f"[REMOTE-DESKTOP] probe ok — screen={self._screen_w}x{self._screen_h} "
                 f"capture={w}x{h} jpeg={len(jpeg)}B method={self._capture_method} "
                 f"session={self._target_session_id}")
+            self.emit_stream_progress(
+                "capturing",
+                f"Probe frame ready {w}x{h}",
+                force=True,
+            )
 
-            self._stream_id = uuid.uuid4().hex
+            # stream_id already assigned at start() entry for progress correlation
             self._media_session_id = ""
             self._running = True
             self._transport = "http"
-            self._drain_out_q()
             self._stream_started_at = time.time()
             if self._use_user_helper:
                 if not self._persistent_helper_connected():
@@ -611,6 +748,12 @@ class RemoteDesktopStreamer:
                         self._stats["frames_sent"] = 1
                         self._stats["bytes_sent"] = len(jpeg)
                         self._last_activity = time.time()
+                    if "+black" not in (self._capture_method or ""):
+                        self.emit_stream_progress(
+                            "live",
+                            "First real frame on the wire",
+                            force=True,
+                        )
             except Exception:
                 pass
 
@@ -1016,6 +1159,7 @@ class RemoteDesktopStreamer:
             # Drop any JPEG captured before DTLS/ICE became ready.
             with self._out_lock:
                 self._pending_frame = None
+            self.emit_stream_progress("webrtc", "WebRTC media path connected")
         self._enqueue_meta(force=True)
 
     def _capture_loop(self):
@@ -1034,9 +1178,16 @@ class RemoteDesktopStreamer:
                 ):
                     log("[REMOTE-DESKTOP] ✖ CAPTURE_NO_DESKTOP — "
                         f"no frames in {CAPTURE_FAIL_SECONDS:.0f}s (screen still empty)")
+                    self.emit_stream_progress(
+                        "failed",
+                        f"No frames in {CAPTURE_FAIL_SECONDS:.0f}s",
+                        error="CAPTURE_NO_DESKTOP",
+                        force=True,
+                    )
                     self.stop(reason="CAPTURE_NO_DESKTOP")
                     break
                 self._sync_media_capture_mode()
+                self._progress_heartbeat_tick()
                 self._capture_and_send()
             except Exception as e:
                 self._stats["frames_failed"] += 1
@@ -1167,6 +1318,12 @@ class RemoteDesktopStreamer:
         self._last_good_jpeg = jpeg
         self._last_good_wh = (w, h)
         self._dispatch_frame(token, jpeg, w, h, seq)
+        if not self._progress_live_emitted:
+            self.emit_stream_progress(
+                "live",
+                "First real frame on the wire",
+                force=True,
+            )
 
     def _maybe_fail_winlogon_black(self) -> None:
         """C-RD-P0-WL-4: sustained GDI black in winlogon → retry once, then fail."""
@@ -1191,6 +1348,12 @@ class RemoteDesktopStreamer:
             "[REMOTE-DESKTOP] ✖ winlogon_capture_black — "
             f"unbroken black for ≥{WINLOGON_BLACK_FAIL_SECONDS:.0f}s "
             f"(method={self._capture_method})"
+        )
+        self.emit_stream_progress(
+            "failed",
+            f"Unbroken black for ≥{WINLOGON_BLACK_FAIL_SECONDS:.0f}s",
+            error="winlogon_capture_black",
+            force=True,
         )
         self.stop(reason="winlogon_capture_black")
 
@@ -2492,6 +2655,7 @@ class RemoteDesktopStreamer:
                 self._transport = "websocket"
                 ws.send(json.dumps(self._hello_payload()))
                 self._enqueue_meta(force=True)
+                self.emit_stream_progress("ws", "Agent media WS up", force=True)
                 # Re-push last good frame so viewer is not blank while waiting
                 if (
                     not self._media_ready()

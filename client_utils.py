@@ -1497,6 +1497,38 @@ def touch_update_lock() -> None:
         pass
 
 
+def _finalize_cleared_update_lock(reason: str = "orphan_update_lock") -> None:
+    """After deleting a stale lock: resume tasks, clear stand-down, mark UI failed.
+
+    Critical: a bare ``os.remove(lock)`` used to leave Background/SilentUpdater
+    disabled and the GUI with no banner — hosts stayed motor-down indefinitely.
+    """
+    try:
+        from client_resilience import clear_stand_down
+        clear_stand_down()
+    except Exception:
+        pass
+    try:
+        resume_competing_updaters()
+    except Exception:
+        pass
+    try:
+        from client_update_ui import set_update_ui_status, _read_raw
+        prev = _read_raw() or {}
+        phase = str(prev.get("phase") or "").strip().lower()
+        # Don't overwrite a fresh "done"; only active/empty → failed.
+        if phase in ("", "accepted", "downloading", "staging", "installing"):
+            set_update_ui_status(
+                "failed",
+                from_version=str(prev.get("from_version") or ""),
+                to_version=str(prev.get("to_version") or ""),
+                detail=reason,
+                error=reason,
+            )
+    except Exception:
+        pass
+
+
 def is_update_in_progress(max_age_sec: float = 7200.0) -> bool:
     """True if update lock exists and holder still looks alive."""
     try:
@@ -1539,37 +1571,29 @@ def is_update_in_progress(max_age_sec: float = 7200.0) -> bool:
         # starts; 90s+ blocked every SilentUpdater tick and looked like "hours stuck").
         phase = str(lines[0]).strip().lower() if lines else ""
 
-        if lock_pid and not pid_alive and age > 15:
+        def _clear_stale(why: str) -> bool:
             try:
                 os.remove(path)
             except OSError:
                 pass
+            _finalize_cleared_update_lock(why)
             return False
+
+        if lock_pid and not pid_alive and age > 15:
+            return _clear_stale("orphan_lock_dead_pid")
 
         # Absolute ceiling (downloads can be long — touch_update_lock refreshes mtime)
         if age > max_age_sec:
-            try:
-                os.remove(path)
-            except OSError:
-                pass
-            return False
+            return _clear_stale("update_lock_max_age")
 
         # "installing" with no live holder — helper died or never spawned
         if phase.startswith("install") and not pid_alive and age > 30:
-            try:
-                os.remove(path)
-            except OSError:
-                pass
-            return False
+            return _clear_stale("orphan_install_lock")
 
         # installing lock but holder still "alive" while no helper ever ran (orphaned
         # after failed schtasks) — hard cap 20 min so hosts recover within the 1h SLA
         if phase.startswith("install") and age > 1200:
-            try:
-                os.remove(path)
-            except OSError:
-                pass
-            return False
+            return _clear_stale("install_lock_hard_cap")
 
         return True
     except OSError:
@@ -1580,7 +1604,15 @@ def heal_update_machinery(log_func=None) -> None:
     """Clear stale locks and re-enable update/watchdog tasks after failed updates."""
     _log = log_func or (lambda m: None)
     try:
-        # Force-evaluate stale lock (dead PID / short grace)
+        # Central stuck/brick recovery (lock + banner + stand-down + motor).
+        try:
+            from client_update_recovery import maybe_auto_recover_stuck_update
+            if maybe_auto_recover_stuck_update(log_func=_log):
+                _log("[UPDATE] Auto-recovered stuck update handoff")
+        except Exception as e:
+            _log(f"[UPDATE] update recovery probe failed: {e}")
+
+        # Force-evaluate stale lock (dead PID / short grace) — also resumes tasks
         if not is_update_in_progress(max_age_sec=1200.0):
             pass
         path = _update_lock_path()
@@ -1613,6 +1645,7 @@ def heal_update_machinery(log_func=None) -> None:
             ):
                 try:
                     os.remove(path)
+                    _finalize_cleared_update_lock("heal_stale_lock")
                     _log("[UPDATE] Cleared stale update lock")
                 except OSError:
                     pass
@@ -1626,17 +1659,9 @@ def heal_update_machinery(log_func=None) -> None:
                 if detect_launcher_only_storm(log_path) and phase.startswith("install"):
                     try:
                         os.remove(path)
+                        _finalize_cleared_update_lock("helper_parse_fail_storm")
                         _log("[UPDATE] Cleared lock after launcher-only storm (helper parse fail)")
                     except OSError:
-                        pass
-                    try:
-                        from client_update_ui import set_update_ui_status
-                        set_update_ui_status(
-                            "failed",
-                            detail="helper_parse_fail_storm",
-                            error="helper_parse_fail_storm",
-                        )
-                    except Exception:
                         pass
                     # Force re-stage good/emergency helper for next attempt
                     try:

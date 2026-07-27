@@ -50,8 +50,45 @@ function formatLogon(value?: string | null): string {
   }
 }
 
+function formatThreatTime(value: unknown): string {
+  if (value == null || value === '') return '—'
+  if (typeof value === 'number') {
+    const ms = value > 1e12 ? value : value * 1000
+    const d = new Date(ms)
+    return Number.isNaN(d.getTime()) ? String(value) : d.toLocaleString()
+  }
+  return formatLogon(String(value))
+}
+
+function normalizeAlertList(payload: unknown): Attacker[] {
+  if (Array.isArray(payload)) return payload as Attacker[]
+  const rec = asRecord(payload)
+  for (const key of ['alerts', 'items', 'results', 'data', 'critical_alerts']) {
+    const v = rec[key]
+    if (Array.isArray(v)) return v as Attacker[]
+  }
+  const nested = asRecord(rec.data)
+  if (Array.isArray(nested.alerts)) return nested.alerts as Attacker[]
+  return []
+}
+
+function alertFields(row: Record<string, unknown>) {
+  const title = pick(row, 'title', 'name', 'rule_name', 'threat_title')
+  const description = pick(row, 'description', 'detail', 'message', 'summary', 'reason')
+  const threatType = pick(row, 'threat_type', 'event_type', 'type', 'last_event_type')
+  const ip = pick(row, 'source_ip', 'ip', 'src_ip', 'address')
+  const score = pick(row, 'threat_score', 'score')
+  const when = pick(row, 'timestamp', 'created_at', 'time', 'last_seen')
+  const severity = pick(row, 'severity', 'level')
+  const service = pick(row, 'target_service', 'service')
+  const user = pick(row, 'username', 'user', 'account')
+  const action = pick(row, 'recommended_action', 'action')
+  return { title, description, threatType, ip, score, when, severity, service, user, action }
+}
+
 export function ThreatPage({ onToast }: Props) {
   const [attackers, setAttackers] = useState<Attacker[]>([])
+  const [recentAlerts, setRecentAlerts] = useState<Attacker[]>([])
   const [total, setTotal] = useState(0)
   const [users, setUsers] = useState<LocalUser[]>([])
   const [userCounts, setUserCounts] = useState({ total: 0, active: 0, disabled: 0 })
@@ -75,6 +112,22 @@ export function ThreatPage({ onToast }: Props) {
     const list = Array.isArray(result.attackers) ? (result.attackers as Attacker[]) : []
     setAttackers(list)
     setTotal(Number(result.total ?? list.length) || 0)
+
+    const localAlerts = Array.isArray(result.recent_alerts)
+      ? (result.recent_alerts as Attacker[])
+      : []
+
+    let cloudAlerts: Attacker[] = []
+    try {
+      const cloud = await motorBridge.cloud('GET', 'alerts/list', { limit: 40 })
+      if (cloud.ok) cloudAlerts = normalizeAlertList(cloud.data)
+    } catch {
+      cloudAlerts = []
+    }
+
+    // Prefer cloud (dashboard SoT) when present; else motor ring.
+    const merged = cloudAlerts.length > 0 ? cloudAlerts : localAlerts
+    setRecentAlerts(merged.slice(0, 40))
   }, [])
 
   const refreshUsers = useCallback(async () => {
@@ -319,16 +372,93 @@ export function ThreatPage({ onToast }: Props) {
       <article className="panel" style={{ marginBottom: 18 }}>
         <div className="page-head" style={{ marginBottom: 12, paddingBottom: 0, border: 'none' }}>
           <div>
+            <p className="eyebrow">{t('threat_alerts_eyebrow')}</p>
+            <h3>
+              {t('threat_alerts_title')}
+              {recentAlerts.length > 0 ? <span className="pill danger threat-count-pill">{recentAlerts.length}</span> : null}
+            </h3>
+            <p className="muted">{t('threat_alerts_blurb')}</p>
+          </div>
+          <button type="button" className="btn ghost sm" onClick={() => void motorBridge.shell('open_dashboard', 'dash_threats')}>
+            {t('threat_alerts_all')}
+          </button>
+        </div>
+        <div className="table-wrap">
+          <table className="threat-rich-table">
+            <thead>
+              <tr>
+                <th>{t('threat_col_time')}</th>
+                <th>{t('threat_col_threat')}</th>
+                <th>{t('threat_col_source')}</th>
+                <th>{t('threat_col_score')}</th>
+                <th className="actions-head">{t('threat_col_actions')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {recentAlerts.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="empty">{t('threat_alerts_empty')}</td>
+                </tr>
+              )}
+              {recentAlerts.map((row, idx) => {
+                const r = asRecord(row)
+                const f = alertFields(r)
+                const ip = f.ip
+                return (
+                  <tr key={`${ip}-${f.when}-${idx}`}>
+                    <td className="threat-time muted">{formatThreatTime(f.when === '—' ? null : f.when)}</td>
+                    <td className="threat-detail-cell">
+                      <strong className="threat-detail-title">{f.title !== '—' ? f.title : f.threatType}</strong>
+                      {f.description !== '—' && (
+                        <p className="threat-detail-desc">{f.description}</p>
+                      )}
+                      <div className="threat-detail-meta">
+                        {f.threatType !== '—' && <span className="pill muted">{f.threatType}</span>}
+                        {f.severity !== '—' && <span className={`pill ${f.severity === 'critical' || f.severity === 'high' ? 'danger' : 'muted'}`}>{f.severity}</span>}
+                        {f.service !== '—' && <span className="pill muted">{f.service}</span>}
+                        {f.action !== '—' && <span className="muted threat-action-hint">{f.action}</span>}
+                      </div>
+                    </td>
+                    <td className="mono">
+                      {ip}
+                      {f.user !== '—' ? <div className="muted">{f.user}</div> : null}
+                    </td>
+                    <td>
+                      <span className={`score-pill ${Number(f.score) >= 80 ? 'high' : ''}`}>{f.score}</span>
+                    </td>
+                    <td className="actions-cell">
+                      <div className="ip-row-actions">
+                        <IconBtn
+                          icon={icons.block}
+                          title={t('btn_block')}
+                          danger
+                          disabled={busy || ip === '—'}
+                          onClick={() => void block(ip)}
+                        />
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      </article>
+
+      <article className="panel" style={{ marginBottom: 18 }}>
+        <div className="page-head" style={{ marginBottom: 12, paddingBottom: 0, border: 'none' }}>
+          <div>
             <p className="eyebrow">{t('threat_attackers_eyebrow')}</p>
             <h3>{t('threat_attackers_title')}</h3>
             <p className="muted">{t('threat_attackers_blurb')}</p>
           </div>
         </div>
         <div className="table-wrap">
-          <table>
+          <table className="threat-rich-table">
             <thead>
               <tr>
-                <th>{t('threat_col_ip')}</th>
+                <th>{t('threat_col_threat')}</th>
+                <th>{t('threat_col_source')}</th>
                 <th>{t('threat_col_score')}</th>
                 <th>{t('threat_col_events')}</th>
                 <th>{t('threat_col_last')}</th>
@@ -338,26 +468,54 @@ export function ThreatPage({ onToast }: Props) {
             <tbody>
               {attackers.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="empty">{t('threat_empty')}</td>
+                  <td colSpan={6} className="empty">{t('threat_empty')}</td>
                 </tr>
               )}
               {attackers.map((row) => {
                 const r = asRecord(row)
-                const ip = pick(r, 'ip', 'src_ip', 'address')
-                const user = pick(r, 'username', 'user', 'account')
+                const f = alertFields(r)
+                const ip = f.ip
+                const user = f.user !== '—' ? f.user : pick(r, 'username', 'user', 'account')
+                const services = Array.isArray(r.services) ? r.services.map(String).filter(Boolean) : []
+                const users = Array.isArray(r.usernames) ? r.usernames.map(String).filter(Boolean) : []
                 return (
-                  <tr key={ip + pick(r, 'score', 'last_seen')}>
-                    <td className="mono">{ip}{user !== '—' ? ` · ${user}` : ''}</td>
-                    <td>{pick(r, 'score', 'threat_score')}</td>
-                    <td>{pick(r, 'events', 'event_count', 'count')}</td>
-                    <td>{pick(r, 'last_seen', 'updated_at')}</td>
+                  <tr key={ip + pick(r, 'score', 'threat_score', 'last_seen')}>
+                    <td className="threat-detail-cell">
+                      <strong className="threat-detail-title">
+                        {f.title !== '—' ? f.title : t('threat_ip_activity')}
+                      </strong>
+                      {f.description !== '—' && (
+                        <p className="threat-detail-desc">{f.description}</p>
+                      )}
+                      <div className="threat-detail-meta">
+                        {f.threatType !== '—' && <span className="pill muted">{f.threatType}</span>}
+                        {services.slice(0, 4).map((svc) => (
+                          <span key={svc} className="pill muted">{svc}</span>
+                        ))}
+                        {users.slice(0, 3).map((u) => (
+                          <span key={u} className="pill muted">{u}</span>
+                        ))}
+                        {Boolean(r.is_blocked) && <span className="pill danger">{t('threat_badge_blocked')}</span>}
+                      </div>
+                    </td>
+                    <td className="mono">
+                      {ip}
+                      {user !== '—' ? <div className="muted">{user}</div> : null}
+                    </td>
+                    <td>
+                      <span className={`score-pill ${Number(pick(r, 'threat_score', 'score')) >= 80 ? 'high' : ''}`}>
+                        {pick(r, 'threat_score', 'score')}
+                      </span>
+                    </td>
+                    <td>{pick(r, 'failed_attempts', 'events', 'event_count', 'count')}</td>
+                    <td className="muted">{formatThreatTime(r.last_seen ?? r.updated_at)}</td>
                     <td className="actions-cell">
                       <div className="ip-row-actions">
                         <IconBtn
                           icon={icons.block}
                           title={t('btn_block')}
                           danger
-                          disabled={busy || ip === '—'}
+                          disabled={busy || ip === '—' || Boolean(r.is_blocked)}
                           onClick={() => void block(ip)}
                         />
                         {user !== '—' && user.toLowerCase() !== currentUser.toLowerCase() && (

@@ -3,6 +3,7 @@ import { motorBridge, type MotorStatus } from '../bridge'
 import { DetailModal } from '../components/DetailModal'
 import { FeatureGuide } from '../components/FeatureGuide'
 import { IconBtn, icons } from '../components/IconBtn'
+import { Switch } from '../components/Switch'
 import { t } from '../i18n'
 import { asRecord, boolLabel, formatBps, pick } from '../lib'
 
@@ -121,6 +122,16 @@ export function StatusPage({ status, online, updatedAt, onRefresh, onToast, onNa
       result.ok ? (start ? t('toast_ng_maint_on') : t('toast_ng_maint_off')) : String(result.error || 'NG'),
       result.ok ? 'ok' : 'err',
     )
+    onRefresh()
+  }
+
+  const toggleLayer = async (key: 'ransomware' | 'network_guard', value: boolean) => {
+    const patch: Record<string, unknown> =
+      key === 'ransomware'
+        ? { ransomware_protection_enabled: value }
+        : { protection: { network_guard: { enabled: value } } }
+    const result = await motorBridge.cloud('POST', 'threats/config', patch)
+    onToast(result.ok ? t('toast_layer_ok') : String(result.error || 'layer'), result.ok ? 'ok' : 'err')
     onRefresh()
   }
 
@@ -376,9 +387,23 @@ export function StatusPage({ status, online, updatedAt, onRefresh, onToast, onNa
             })}
           </p>
           <p className="feature-card-help">{t('status_ng_card_help')}</p>
-          <div className="btn-row" onClick={(e) => e.stopPropagation()}>
-            <button type="button" className="btn ghost" onClick={() => void ngMaint(true)}>{t('status_ng_start')}</button>
-            <button type="button" className="btn ghost" onClick={() => void ngMaint(false)}>{t('status_ng_end')}</button>
+          <div className="btn-row status-panel-actions" onClick={(e) => e.stopPropagation()}>
+            <label className="layer-switch-field">
+              <span>{Boolean(ng.enabled ?? ng.running) ? t('label_on') : t('label_off')}</span>
+              <Switch
+                checked={Boolean(ng.enabled ?? ng.running)}
+                label={t('layers_ng')}
+                onChange={(next) => void toggleLayer('network_guard', next)}
+              />
+            </label>
+            <label className="layer-switch-field">
+              <span>{t('status_ng_maint_mode')}</span>
+              <Switch
+                checked={Boolean(ng.maintenance)}
+                label={t('status_ng_maint_mode')}
+                onChange={(next) => void ngMaint(next)}
+              />
+            </label>
             <button type="button" className="btn" onClick={() => void ngAccept()}>{t('status_ng_accept')}</button>
           </div>
         </article>
@@ -399,7 +424,15 @@ export function StatusPage({ status, online, updatedAt, onRefresh, onToast, onNa
             {t('status_rs_meta', { canary: pick(rs, 'canary_files'), alerts: pick(rs, 'alerts_total') })}
           </p>
           <p className="feature-card-help">{t('status_rs_card_help')}</p>
-          <div className="btn-row" onClick={(e) => e.stopPropagation()}>
+          <div className="btn-row status-panel-actions" onClick={(e) => e.stopPropagation()}>
+            <label className="layer-switch-field">
+              <span>{status?.ransomware_running ? t('label_on') : t('label_off')}</span>
+              <Switch
+                checked={Boolean(status?.ransomware_running)}
+                label={t('layers_rs')}
+                onChange={(next) => void toggleLayer('ransomware', next)}
+              />
+            </label>
             <button
               type="button"
               className="btn danger"
@@ -519,6 +552,11 @@ export function StatusPage({ status, online, updatedAt, onRefresh, onToast, onNa
               label: t('layers_rs'),
               value: status?.ransomware_running ? t('label_on') : t('label_off'),
               tone: status?.ransomware_running ? 'ok' : 'bad',
+              toggle: {
+                checked: Boolean(status?.ransomware_running),
+                label: t('layers_rs'),
+                onChange: (next) => void toggleLayer('ransomware', next),
+              },
             },
             { label: t('layers_detail_canary_files'), value: pick(rs, 'canary_files') },
             { label: t('layers_detail_total_alerts'), value: pick(rs, 'alerts_total') },
@@ -557,10 +595,24 @@ export function StatusPage({ status, online, updatedAt, onRefresh, onToast, onNa
               label: t('layers_ng'),
               value: ng.running || ng.enabled ? t('label_on') : t('label_off'),
               tone: ng.running || ng.enabled ? 'ok' : 'bad',
+              toggle: {
+                checked: Boolean(ng.running || ng.enabled),
+                label: t('layers_ng'),
+                onChange: (next) => void toggleLayer('network_guard', next),
+              },
             },
             {
-              label: t('status_ng_eyebrow'),
+              label: t('status_ng_surface'),
               value: ng.maintenance ? t('status_ng_maint') : ng.drift ? t('status_ng_drift') : t('status_ng_stable'),
+            },
+            {
+              label: t('status_ng_maint_mode'),
+              value: ng.maintenance ? t('label_on') : t('label_off'),
+              toggle: {
+                checked: Boolean(ng.maintenance),
+                label: t('status_ng_maint_mode'),
+                onChange: (next) => void ngMaint(next),
+              },
             },
             { label: t('layers_detail_baseline'), value: pick(ng, 'baseline_version') },
             {
@@ -570,11 +622,9 @@ export function StatusPage({ status, online, updatedAt, onRefresh, onToast, onNa
             },
           ]}
           actions={
-            <>
-              <button type="button" className="btn sm ghost" onClick={() => void ngMaint(true)}>{t('status_ng_start')}</button>
-              <button type="button" className="btn sm ghost" onClick={() => void ngMaint(false)}>{t('status_ng_end')}</button>
-              <button type="button" className="btn sm" onClick={() => void ngAccept()}>{t('status_ng_accept')}</button>
-            </>
+            <button type="button" className="btn sm" onClick={() => void ngAccept()}>
+              {t('status_ng_accept')}
+            </button>
           }
           onClose={() => setDetail(null)}
         />

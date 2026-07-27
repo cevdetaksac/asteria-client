@@ -14,6 +14,7 @@ Protocol (newline-terminated, UTF-8):
   IP_TABLE
   SHARES_LIST / SHARE_REMOVE <name>
   SVC_LIST / SVC_STOP <name>
+  SELF_UPDATE
   NG_MAINT_START / NG_MAINT_END / NG_MAINT_END_SNAPSHOT / NG_SNAPSHOT
   NG_ACCEPT_SURFACE
   HONEYPOT START <SERVICE> <PORT>
@@ -129,6 +130,14 @@ def threat_top(timeout: float = 4.0) -> Dict[str, Any]:
         return request_json("THREAT_TOP", timeout=timeout)
     except Exception as e:
         return {"ok": False, "error": str(e), "attackers": [], "total": 0}
+
+
+def self_update(timeout: float = 8.0) -> Dict[str, Any]:
+    """Ask SYSTEM motor to start silent self-update (GUI Check for updates)."""
+    try:
+        return request_json("SELF_UPDATE", timeout=timeout)
+    except Exception as e:
+        return {"ok": False, "error": str(e), "started": False}
 
 
 def ip_table(timeout: float = 6.0) -> Dict[str, Any]:
@@ -285,13 +294,23 @@ def ensure_daemon_running(log_func=None, wait_sec: float = 20.0) -> bool:
     if is_motor_healthy():
         return True
 
-    # Never fight update handoff or signed operator PIN stop.
+    # Never fight a *live* update handoff or signed operator PIN stop.
+    # Stuck/orphan update locks must not brick the motor forever — auto-recover first.
     try:
         from client_resilience import is_legitimate_stand_down, note_stand_down
         if is_legitimate_stand_down():
-            note_stand_down("update_or_operator_stop")
-            log_func("[IPC] ensure_daemon_running skipped — legitimate stand-down")
-            return False
+            recovered = False
+            try:
+                from client_update_recovery import maybe_auto_recover_stuck_update
+                recovered = bool(maybe_auto_recover_stuck_update(log_func=log_func))
+            except Exception as e:
+                log_func(f"[IPC] stuck-update probe failed: {e}")
+            if recovered:
+                log_func("[IPC] stuck update aborted — continuing daemon start")
+            elif is_legitimate_stand_down():
+                note_stand_down("update_or_operator_stop")
+                log_func("[IPC] ensure_daemon_running skipped — legitimate stand-down")
+                return False
     except Exception:
         pass
 

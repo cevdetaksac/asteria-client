@@ -845,6 +845,25 @@ class AsteriaAPIClient:
             self.log(f"[API] threat summary fetch error: {e}")
             return None
 
+    def fetch_alerts_list(self, token: str, limit: int = 40) -> Optional[Dict]:
+        """GET /api/alerts/list — recent alerts for Control Center (dashboard parity)."""
+        try:
+            resp = self.api_request(
+                "GET",
+                "alerts/list",
+                params={"limit": int(limit)},
+                token=token,
+                timeout=12,
+            )
+            if isinstance(resp, list):
+                return {"alerts": resp, "total": len(resp)}
+            if isinstance(resp, dict):
+                return resp
+            return None
+        except Exception as e:
+            self.log(f"[API] alerts/list fetch error: {e}")
+            return None
+
     def update_notification_preferences(self, token: str, prefs: dict) -> bool:
         """PUT /api/notifications/preferences — Bildirim tercihleri güncelle"""
         try:

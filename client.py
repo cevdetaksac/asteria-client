@@ -1941,7 +1941,7 @@ class CloudHoneypotClient:
         """Top attacker contexts for GUI frontends that hold no local engine."""
         te = getattr(self, "threat_engine", None)
         if te is None:
-            return {"ok": True, "attackers": [], "total": 0, "engine": False}
+            return {"ok": True, "attackers": [], "recent_alerts": [], "total": 0, "engine": False}
         try:
             contexts = te.get_all_contexts() or {}
         except Exception:
@@ -1956,19 +1956,63 @@ class CloudHoneypotClient:
                 continue
             if ctx.failed_attempts <= 0 and ctx.threat_score <= 0:
                 continue
+            try:
+                summary = te.summarize_ip_context(ctx)
+            except Exception:
+                summary = {}
             rows.append({
                 "ip": ip,
                 "services": list(ctx.services_targeted or []),
                 "failed_attempts": int(ctx.failed_attempts),
+                "successful_logins": int(getattr(ctx, "successful_logins", 0) or 0),
                 "threat_score": int(ctx.threat_score),
+                "score": int(ctx.threat_score),
+                "events": int(ctx.failed_attempts),
+                "event_count": int(ctx.failed_attempts),
                 "last_seen": float(ctx.last_seen or 0),
                 "is_blocked": bool(ctx.is_blocked or ip in blocked),
+                "usernames": list(summary.get("usernames") or [])[:8],
+                "username": (list(summary.get("usernames") or []) or [""])[0],
+                "title": summary.get("title") or "",
+                "description": summary.get("description") or "",
+                "threat_type": summary.get("threat_type") or "",
+                "last_event_type": summary.get("last_event_type") or "",
+                "recommended_action": "",
             })
-        rows.sort(key=lambda r: r["failed_attempts"], reverse=True)
+        rows.sort(
+            key=lambda r: (int(r.get("threat_score") or 0), int(r.get("failed_attempts") or 0)),
+            reverse=True,
+        )
+        try:
+            recent = te.get_recent_alerts(limit=max(10, int(limit)))
+        except Exception:
+            recent = []
+        # Prefer newest alert prose onto matching IP rows when present.
+        by_ip = {}
+        for alert in recent:
+            sip = str(alert.get("source_ip") or "")
+            if sip and sip not in by_ip:
+                by_ip[sip] = alert
+        for row in rows:
+            alert = by_ip.get(str(row.get("ip") or ""))
+            if not alert:
+                continue
+            if alert.get("title"):
+                row["title"] = alert.get("title")
+            if alert.get("description"):
+                row["description"] = alert.get("description")
+            if alert.get("threat_type"):
+                row["threat_type"] = alert.get("threat_type")
+            if alert.get("recommended_action"):
+                row["recommended_action"] = alert.get("recommended_action")
+            if alert.get("username") and not row.get("username"):
+                row["username"] = alert.get("username")
+            row["severity"] = alert.get("severity") or row.get("severity")
         return {
             "ok": True,
             "engine": True,
             "attackers": rows[: max(1, int(limit))],
+            "recent_alerts": recent[: max(1, int(limit))],
             "total": len(rows),
         }
 
@@ -2138,6 +2182,91 @@ class CloudHoneypotClient:
                     except Exception as e:
                         log(f"[CTRL] THREAT_TOP error: {e}")
                         _send(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
+                    continue
+
+                if cmd_u == "SELF_UPDATE":
+                    # GUI "Check for updates" → silent install (same path as dashboard).
+                    try:
+                        if getattr(self, "_gui_self_update_running", False):
+                            _send(json.dumps({
+                                "ok": True,
+                                "started": False,
+                                "busy": True,
+                                "error": "update_busy",
+                            }, ensure_ascii=False))
+                            continue
+                        self._gui_self_update_running = True
+
+                        def _gui_self_update_worker():
+                            try:
+                                from client_updater import run_self_update_command
+                                api = getattr(self, "api_client", None)
+                                result = run_self_update_command(
+                                    {
+                                        "force": False,
+                                        "triggered_by": "gui_check_updates",
+                                    },
+                                    api_client=api,
+                                ) or {}
+                                log(
+                                    f"[CTRL] SELF_UPDATE done ok={result.get('ok')} "
+                                    f"err={result.get('error')} restart={result.get('restart_required')}"
+                                )
+                                if result.get("restart_required"):
+                                    time.sleep(1.2)
+                                    try:
+                                        from client_self_protection import disarm_for_update
+                                        disarm_for_update(reason="gui_self_update")
+                                    except Exception:
+                                        pass
+                                    os._exit(0)
+                            except Exception as exc:
+                                log(f"[CTRL] SELF_UPDATE worker error: {exc}")
+                                try:
+                                    from client_update_ui import set_update_ui_status
+                                    from client_constants import VERSION as _ver
+                                    set_update_ui_status(
+                                        "failed",
+                                        from_version=str(_ver),
+                                        detail=str(exc),
+                                        error=str(exc),
+                                    )
+                                except Exception:
+                                    pass
+                            finally:
+                                try:
+                                    self._gui_self_update_running = False
+                                except Exception:
+                                    pass
+
+                        import threading
+                        threading.Thread(
+                            target=_gui_self_update_worker,
+                            name="gui-self-update",
+                            daemon=True,
+                        ).start()
+                        try:
+                            from client_update_ui import set_update_ui_status
+                            from client_constants import VERSION as _cur
+                            set_update_ui_status(
+                                "accepted",
+                                from_version=str(_cur),
+                                detail="gui_check_updates",
+                            )
+                        except Exception:
+                            pass
+                        _send(json.dumps({
+                            "ok": True,
+                            "started": True,
+                            "message": "update_accepted",
+                        }, ensure_ascii=False))
+                    except Exception as e:
+                        log(f"[CTRL] SELF_UPDATE error: {e}")
+                        try:
+                            self._gui_self_update_running = False
+                        except Exception:
+                            pass
+                        _send(json.dumps({"ok": False, "error": str(e), "started": False}, ensure_ascii=False))
                     continue
 
                 if cmd_u == "IP_TABLE":

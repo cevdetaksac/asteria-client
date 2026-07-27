@@ -164,12 +164,35 @@ export function installMockBridge(): void {
         return {
           ok: true,
           total: blocked.size,
+          recent_alerts: Array.from(blocked).map((ip, i) => ({
+            source_ip: ip,
+            timestamp: Date.now() / 1000 - i * 90,
+            threat_score: 95 - i,
+            severity: 'critical',
+            threat_type: 'failed_logon',
+            title: 'Block Rule: Network logon brute force',
+            description: `Repeated failed logons from ${ip}; rule matched failed_logon burst.`,
+            username: i === 0 ? 'attacker' : 'admin',
+            target_service: 'RDP',
+            recommended_action: 'Block IP and review account lockouts',
+          })),
           attackers: Array.from(blocked).map((ip, i) => ({
             ip,
+            threat_score: 80 - i * 10,
             score: 80 - i * 10,
-            events: 3 + i,
-            last_seen: new Date().toISOString(),
+            failed_attempts: 3 + i * 4,
+            events: 3 + i * 4,
+            last_seen: Date.now() / 1000 - i * 40,
             username: i === 0 ? 'attacker' : '',
+            usernames: i === 0 ? ['attacker', 'admin'] : ['guest'],
+            services: i === 0 ? ['RDP', 'SMB'] : ['SSH'],
+            title: i === 0 ? 'Block Rule: Network logon brute force' : 'Failed Logon',
+            description:
+              i === 0
+                ? `failed×${12 + i} · failed_logon · RDP; users: attacker, admin`
+                : `failed×${3 + i} · SSH`,
+            threat_type: 'failed_logon',
+            is_blocked: true,
           })),
         }
       }
@@ -292,7 +315,27 @@ export function installMockBridge(): void {
     },
     async cloud(method, path, body) {
       if (locked) return { ok: false, error: 'gui_locked' }
-      if (path.replace(/^\//, '') !== 'threats/config') {
+      const p = path.replace(/^\//, '')
+      if (p === 'alerts/list' && method.toUpperCase() === 'GET') {
+        return {
+          ok: true,
+          data: {
+            alerts: Array.from(blocked).map((ip, i) => ({
+              source_ip: ip,
+              timestamp: new Date(Date.now() - i * 120000).toISOString(),
+              threat_score: 95,
+              severity: 'critical',
+              threat_type: 'failed_logon',
+              title: 'Block Rule: Network logon brute force',
+              description: `Cloud alert detail for ${ip}: repeated failed network logons.`,
+              username: 'attacker',
+              target_service: 'RDP',
+              recommended_action: 'Block IP immediately',
+            })),
+          },
+        }
+      }
+      if (p !== 'threats/config') {
         return { ok: false, error: 'cloud_denied' }
       }
       if (method.toUpperCase() === 'GET') return { ok: true, data: config }
@@ -332,12 +375,15 @@ export function installMockBridge(): void {
       }
       if (action === 'check_updates') {
         if (locked) return { ok: false, error: 'gui_locked' }
+        // Simulate silent motor update path (no browser).
         return {
           ok: true,
-          update_available: false,
-          installed: '4.9.35-mock',
-          latest: '4.9.35',
-          message: 'already_current',
+          update_available: true,
+          started: true,
+          installed: '4.9.47-mock',
+          latest: '4.9.48',
+          tag: 'v4.9.48',
+          message: 'update_started',
         }
       }
       if (action === 'open_github' || action === 'open_website' || action === 'open_servers') {
@@ -505,7 +551,31 @@ export function installMockBridge(): void {
         updateStatus = null
         return { ok: true, dismissed: true }
       }
-      return { ok: true, status: updateStatus, current_version: '4.9.35-mock' }
+      if (action === 'abort' || action === 'recover') {
+        updateStatus = {
+          phase: 'failed',
+          to_version: '4.9.35',
+          from_version: '4.9.34',
+          detail: 'operator_recover',
+          error: 'operator_recover',
+        }
+        return {
+          ok: true,
+          aborted: true,
+          motor_ok: true,
+          status: updateStatus,
+          current_version: '4.9.35-mock',
+        }
+      }
+      const status = updateStatus
+        ? { ...updateStatus, can_abort: true }
+        : null
+      return {
+        ok: true,
+        status,
+        current_version: '4.9.35-mock',
+        recovery: { stuck: false, actionable: Boolean(status), reasons: [], motor_ok: true },
+      }
     },
     async i18n(next = '') {
       const requested = String(next || '').trim().toLowerCase()

@@ -1,0 +1,18 @@
+﻿{
+    "product":  "asteria-client",
+    "version":  "4.9.48",
+    "artifact":  "asteria-client-installer.exe",
+    "artifact_legacy_alias":  "cloud-client-installer.exe",
+    "sha256":  "50cfe6726c925798bc843e7832e7d2e1d0aa40009098c946c4ec0885a2fc5a5e",
+    "size_bytes":  118989523,
+    "built_at":  "2026-07-27T18:39:18.2198579Z",
+    "webrtc":  true,
+    "separate_gui":  true,
+    "gui_sha256":  "02e45c1387435d8f1cfff36610454a97a87aee76e189a39f692ce3f97fb17d4e",
+    "authenticode_signed":  false,
+    "toolchain":  {
+                      "nsis":  "installer.nsi",
+                      "pyinstaller":  "asteria-client.spec",
+                      "python":  "Python 3.12.6"
+                  }
+}

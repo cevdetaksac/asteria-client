@@ -1184,6 +1184,16 @@ class RemoteCommandExecutor:
                 api_client=self.api_client,
                 token_getter=self.token_getter,
             )
+            try:
+                self._remote_desktop.set_control_progress_sender(
+                    lambda payload: bool(
+                        self._control_ws
+                        and self._control_ws.connected
+                        and self._control_ws.send_json(payload)
+                    )
+                )
+            except Exception:
+                pass
         return self._remote_desktop
 
     def _cmd_remote_stream_start(self, params: dict) -> dict:
@@ -1198,6 +1208,13 @@ class RemoteCommandExecutor:
             mon = int(mon) if mon is not None else 0
         except (TypeError, ValueError):
             mon = 0
+        parent = getattr(self, "_current_cmd", None) or {}
+        cmd_id = str(
+            parent.get("command_id")
+            or parent.get("id")
+            or params.get("command_id")
+            or ""
+        )
         result = rd.start(
             fps=float(params.get("fps", 6.0) or 6.0),
             quality=int(params.get("quality", 35) or 35),
@@ -1212,6 +1229,7 @@ class RemoteCommandExecutor:
                 if params.get("pre_logon") is not None
                 else None
             ),
+            command_id=cmd_id or None,
         )
         if result.get("success"):
             self._notify_remote_desktop_ui("started")
@@ -1315,8 +1333,29 @@ class RemoteCommandExecutor:
 
         # Mid-flight running reports (no password in payload)
         parent_cmd = getattr(self, "_current_cmd", None)
+        rd = self._get_remote_desktop()
+        cmd_id = str((parent_cmd or {}).get("command_id") or (parent_cmd or {}).get("id") or "")
+        if cmd_id:
+            rd._command_id = cmd_id
+        if not rd._stream_id:
+            import uuid as _uuid
+            rd._stream_id = _uuid.uuid4().hex
+        rd.emit_stream_progress(
+            "running",
+            "remote_session_prepare received",
+            command_id=cmd_id or None,
+            force=True,
+        )
 
         def _progress(phase: str, msg: str = ""):
+            try:
+                rd.emit_stream_progress(
+                    phase or "prepare",
+                    msg or phase,
+                    command_id=cmd_id or None,
+                )
+            except Exception:
+                pass
             if not parent_cmd:
                 return
             try:
@@ -1336,7 +1375,7 @@ class RemoteCommandExecutor:
                 pass
 
         try:
-            return prepare_remote_session(
+            result = prepare_remote_session(
                 username=username,
                 password=password,
                 session_id=sid,
@@ -1344,6 +1383,15 @@ class RemoteCommandExecutor:
                 timeout_sec=timeout_sec,
                 progress_cb=_progress,
             )
+            if not result.get("success"):
+                rd.emit_stream_progress(
+                    "failed",
+                    str(result.get("message") or "prepare failed"),
+                    error=str(result.get("error") or "PREPARE_FAILED"),
+                    command_id=cmd_id or None,
+                    force=True,
+                )
+            return result
         finally:
             # Best-effort: drop local reference (str immutable; avoid lingering copies in frames)
             password = ""

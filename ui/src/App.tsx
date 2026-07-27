@@ -24,6 +24,7 @@ type UpdateBanner = {
   progress?: number
   detail?: string
   error?: string
+  can_abort?: boolean
 }
 
 function isGuiLockedPayload(value: unknown): boolean {
@@ -49,6 +50,8 @@ export default function App() {
   const [page, setPage] = useState<PageId>('status')
   const [toast, setToast] = useState<{ msg: string; kind: 'ok' | 'err' } | null>(null)
   const [banner, setBanner] = useState<UpdateBanner | null>(null)
+  const [updateStuck, setUpdateStuck] = useState(false)
+  const [recoverBusy, setRecoverBusy] = useState(false)
   const [lang, setLang] = useState(currentLang())
   const [, setI18nTick] = useState(0)
   const [about, setAbout] = useState<AboutInfo | null>(null)
@@ -135,10 +138,15 @@ export default function App() {
       }
       if (!result.ok && result.error) {
         showToast(String(result.detail || result.error || t('toast_update_failed')), 'err')
+        void refreshBanner()
         return
       }
       if (result.update_available) {
-        showToast(t('toast_update_available', { latest: String(result.latest || result.tag || '') }))
+        if (result.started || result.busy) {
+          showToast(t('toast_update_available', { latest: String(result.latest || result.tag || '') }))
+        } else {
+          showToast(String(result.detail || t('toast_update_start_failed')), 'err')
+        }
         void refreshBanner()
         return
       }
@@ -218,11 +226,16 @@ export default function App() {
 
       const pong = await motorBridge.ping()
       setOnline(pong.ok)
+      setUpdateStuck(Boolean(pong.update_stuck) && !pong.ok)
       if (!pong.ok) {
         setStatus(null)
-        setError(t('motor_unreachable'))
+        setError(
+          pong.update_stuck ? t('motor_unreachable_update_stuck') : t('motor_unreachable'),
+        )
+        void refreshBanner()
         return
       }
+      setUpdateStuck(false)
       const snapshot = await motorBridge.status()
       if (isGuiLockedPayload(snapshot)) {
         enterLockScreen()
@@ -339,6 +352,35 @@ export default function App() {
     setBanner(null)
   }
 
+  const recoverUpdate = useCallback(async () => {
+    setRecoverBusy(true)
+    try {
+      const result = await motorBridge.update_banner('recover')
+      if (isGuiLockedPayload(result)) {
+        enterLockScreen()
+        return
+      }
+      if (result.ok === false && result.error === 'helper_in_flight') {
+        showToast(t('toast_update_recover_failed'), 'err')
+        return
+      }
+      setBanner(result.status && typeof result.status === 'object' ? (result.status as UpdateBanner) : null)
+      setUpdateStuck(false)
+      showToast(
+        result.motor_ok || result.aborted ? t('toast_update_recovered') : t('toast_update_recover_failed'),
+        result.motor_ok || result.aborted ? 'ok' : 'err',
+      )
+      // Give Background a moment, then refresh motor state.
+      window.setTimeout(() => {
+        void refresh()
+      }, 1500)
+    } catch (reason) {
+      showToast(reason instanceof Error ? reason.message : String(reason), 'err')
+    } finally {
+      setRecoverBusy(false)
+    }
+  }, [enterLockScreen, refresh, showToast])
+
   const switchLang = async (next: 'tr' | 'en') => {
     await loadI18n(next)
     setLang(currentLang())
@@ -349,6 +391,24 @@ export default function App() {
   }
 
   const nav = navItems()
+
+  useEffect(() => {
+    const ver = String(status?.version || '').trim()
+    document.title = ver ? `Asteria v${ver}` : 'Asteria'
+  }, [status?.version])
+
+  // Fast banner poll while an update is in flight.
+  useEffect(() => {
+    if (locked !== false) return
+    const active =
+      banner &&
+      ['accepted', 'downloading', 'staging', 'installing'].includes(String(banner.phase || ''))
+    if (!active) return
+    const timer = window.setInterval(() => {
+      void refreshBanner()
+    }, 800)
+    return () => window.clearInterval(timer)
+  }, [banner, locked, refreshBanner])
 
   // PIN gate: never render Control Center chrome while host session is locked.
   if (locked !== false) {
@@ -368,23 +428,53 @@ export default function App() {
     )
   }
 
-  const bannerText = banner
-    ? [
-        banner.phase ? String(banner.phase).toUpperCase() : t('update_banner_default'),
-        banner.to_version ? `→ ${banner.to_version}` : '',
-        banner.progress != null ? `${banner.progress}%` : '',
-        banner.detail || banner.error || '',
-      ]
-        .filter(Boolean)
-        .join(' · ')
-    : ''
+  const bannerText = (() => {
+    if (!banner) return ''
+    const phase = String(banner.phase || '').toLowerCase()
+    const pct = banner.progress != null ? Number(banner.progress) : null
+    let title = t('update_banner_default')
+    if (phase === 'accepted') title = t('update_banner_accepted')
+    else if (phase === 'downloading' && pct != null && Number.isFinite(pct)) {
+      title = t('update_banner_downloading_pct', { pct: Math.round(pct) })
+    } else if (phase === 'downloading') title = t('update_banner_downloading')
+    else if (phase === 'staging') title = t('update_banner_staging')
+    else if (phase === 'installing') title = t('update_banner_installing')
+    else if (phase === 'done') title = t('update_banner_done')
+    else if (phase === 'failed') {
+      title = banner.detail === 'update_stalled' ? t('update_banner_stalled') : t('update_banner_failed')
+    }
+    const fromV = String(banner.from_version || '')
+    const toV = String(banner.to_version || '')
+    const ver =
+      fromV || toV
+        ? t('update_banner_version_line', { from_v: fromV || '—', to_v: toV || '—' })
+        : ''
+    const err = phase === 'failed' ? String(banner.error || banner.detail || '') : ''
+    return [title, ver, err].filter(Boolean).join(' · ')
+  })()
+
+  const bannerProgress =
+    banner?.progress != null && Number.isFinite(Number(banner.progress))
+      ? Math.max(0, Math.min(100, Number(banner.progress)))
+      : banner?.phase === 'installing' || banner?.phase === 'staging'
+        ? 100
+        : banner?.phase === 'accepted'
+          ? 5
+          : null
 
   return (
     <div className="shell">
       <aside className="sidebar">
         <div className="side-brand">
           <BrandMark size={44} />
-          <BrandWordmark />
+          <div className="side-brand-text">
+            <BrandWordmark />
+            {status?.version ? (
+              <span className="side-version" title={t('about_version')}>
+                v{String(status.version)}
+              </span>
+            ) : null}
+          </div>
         </div>
         <nav>
           {nav.map((item) => (
@@ -427,11 +517,32 @@ export default function App() {
 
       <main className="content">
         {banner && (
-          <div className={`update-banner ${banner.phase === 'failed' ? 'fail' : ''}`}>
-            <span>{bannerText}</span>
-            <button type="button" className="btn ghost sm" onClick={() => void dismissBanner()}>
-              {t('btn_close')}
-            </button>
+          <div className={`update-banner ${banner.phase === 'failed' ? 'fail' : banner.phase === 'done' ? 'ok' : ''}`}>
+            <div className="update-banner-copy">
+              <span>{bannerText}</span>
+              {bannerProgress != null && (
+                <div className="update-banner-track" aria-hidden="true">
+                  <div className="update-banner-fill" style={{ width: `${bannerProgress}%` }} />
+                </div>
+              )}
+            </div>
+            <div className="update-banner-actions">
+              {(banner.phase === 'failed' ||
+                banner.can_abort ||
+                ['accepted', 'downloading', 'staging', 'installing'].includes(String(banner.phase || ''))) && (
+                <button
+                  type="button"
+                  className="btn ghost sm"
+                  disabled={recoverBusy}
+                  onClick={() => void recoverUpdate()}
+                >
+                  {t('update_recover')}
+                </button>
+              )}
+              <button type="button" className="btn ghost sm" onClick={() => void dismissBanner()}>
+                {t('btn_close')}
+              </button>
+            </div>
           </div>
         )}
 
@@ -474,7 +585,21 @@ export default function App() {
           </div>
         </header>
 
-        {error && <aside className="error">{error}</aside>}
+        {error && (
+          <aside className="error">
+            <span>{error}</span>
+            {(updateStuck || !online) && (
+              <button
+                type="button"
+                className="btn ghost sm"
+                disabled={recoverBusy}
+                onClick={() => void recoverUpdate()}
+              >
+                {t('update_recover')}
+              </button>
+            )}
+          </aside>
+        )}
         {page === 'status' && (
           <StatusPage
             status={status}

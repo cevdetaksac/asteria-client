@@ -98,6 +98,7 @@ from client_daemon_ipc import (
     shares_list,
     svc_list,
     svc_stop,
+    self_update,
     threat_top,
     unblock_ip,
 )
@@ -140,6 +141,7 @@ _IPC_ALLOWLIST = frozenset(
         "SHARE_REMOVE",
         "SVC_LIST",
         "SVC_STOP",
+        "SELF_UPDATE",
     }
 )
 
@@ -147,6 +149,7 @@ _CLOUD_ALLOWLIST = frozenset(
     {
         ("GET", "threats/config"),
         ("POST", "threats/config"),
+        ("GET", "alerts/list"),
     }
 )
 
@@ -215,7 +218,7 @@ _RDP_MOVE_MODES = frozenset({"secure", "rollback"})
 _RDP_ACTIONS = frozenset({"status", "move", "begin", "confirm", "cancel"})
 _RDP_CONFIRM_SECONDS = 60
 _IR_ACTIONS = frozenset({"list", "logoff", "disable", "enable", "reset_password"})
-_UPDATE_ACTIONS = frozenset({"status", "dismiss"})
+_UPDATE_ACTIONS = frozenset({"status", "dismiss", "abort", "recover"})
 _I18N_LANGS = frozenset({"tr", "en"})
 
 
@@ -414,10 +417,12 @@ def _run_tray_icon_once(window: Any, bridge: "MotorBridge", logger: logging.Logg
                 pass
         _schedule_webview(_destroy, label="destroy")
 
+    from client_constants import VERSION as _tray_ver
+
     icon = pystray.Icon(
         "asteria-gui",
         image,
-        "Asteria",
+        f"Asteria v{_tray_ver}" if _tray_ver else "Asteria",
         menu=pystray.Menu(
             pystray.MenuItem("Asteria'yı Aç", show_gui, default=True),
             pystray.MenuItem("Dashboard", open_dashboard),
@@ -724,7 +729,34 @@ class MotorBridge:
 
     def ping(self) -> Dict[str, Any]:
         healthy = ping(timeout=1.5)
-        return {"ok": healthy, "motor": "online" if healthy else "offline"}
+        out: Dict[str, Any] = {
+            "ok": healthy,
+            "motor": "online" if healthy else "offline",
+        }
+        # When motor is down, surface update brick diagnosis so the UI can offer recover.
+        if not healthy:
+            try:
+                from client_update_recovery import diagnose_update_state, maybe_auto_recover_stuck_update
+                # Best-effort auto heal on every failed ping (throttled by diagnose).
+                maybe_auto_recover_stuck_update(log_func=lambda m: self.log.info("%s", m))
+                diag = diagnose_update_state()
+                out["update_stuck"] = bool(diag.get("stuck") or diag.get("actionable"))
+                out["update_recovery"] = {
+                    "stuck": bool(diag.get("stuck")),
+                    "reasons": list(diag.get("reasons") or [])[:5],
+                    "lock_phase": (diag.get("lock") or {}).get("phase") or "",
+                    "helper_in_flight": bool(diag.get("helper_in_flight")),
+                }
+                # Re-check after auto-recover
+                if out["update_stuck"]:
+                    healthy2 = ping(timeout=1.5)
+                    if healthy2:
+                        out["ok"] = True
+                        out["motor"] = "online"
+                        out["recovered"] = True
+            except Exception as exc:
+                self.log.debug("ping update diagnosis: %s", exc)
+        return out
 
     def status(self) -> Dict[str, Any]:
         if not self._authorized():
@@ -894,6 +926,8 @@ class MotorBridge:
             return svc_list(timeout=25.0)
         if name == "SVC_STOP":
             return svc_stop(str(args.get("name") or args.get("service") or ""))
+        if name == "SELF_UPDATE":
+            return self_update(timeout=8.0)
         return {"ok": False, "error": "ipc_unhandled", "cmd": name}
 
     def cloud(
@@ -922,6 +956,8 @@ class MotorBridge:
                 data = client.fetch_threat_config(token)
             elif m == "POST" and p == "threats/config":
                 data = client.update_threat_config(token, patch)
+            elif m == "GET" and p == "alerts/list":
+                data = client.fetch_alerts_list(token, limit=int(patch.get("limit") or 40))
             else:
                 return {"ok": False, "error": "cloud_unhandled"}
             if data is None:
@@ -1373,8 +1409,54 @@ class MotorBridge:
             if act == "dismiss":
                 clear_update_ui_status()
                 return {"ok": True, "dismissed": True}
+
+            if act in ("abort", "recover"):
+                from client_update_recovery import abort_stuck_update, diagnose_update_state
+                result = abort_stuck_update(
+                    reason="operator_abort" if act == "abort" else "operator_recover",
+                    resume_motor=True,
+                    force=True,
+                    log_func=lambda m: self.log.info("%s", m),
+                )
+                st = get_update_ui_status(current_version=VERSION)
+                return {
+                    "ok": bool(result.get("ok")),
+                    "aborted": bool(result.get("aborted")),
+                    "motor_ok": bool(result.get("motor_ok")),
+                    "error": result.get("error"),
+                    "status": st,
+                    "current_version": VERSION,
+                    "diagnosis": result.get("diagnosis_after") or diagnose_update_state(),
+                }
+
+            # status: expire stale phases + include recovery diagnosis
             st = get_update_ui_status(current_version=VERSION)
-            return {"ok": True, "status": st, "current_version": VERSION}
+            diagnosis = None
+            try:
+                from client_update_recovery import diagnose_update_state, maybe_auto_recover_stuck_update
+                if maybe_auto_recover_stuck_update(log_func=lambda m: self.log.info("%s", m)):
+                    st = get_update_ui_status(current_version=VERSION)
+                diagnosis = diagnose_update_state()
+            except Exception:
+                diagnosis = None
+            out: Dict[str, Any] = {"ok": True, "status": st, "current_version": VERSION}
+            if diagnosis:
+                out["recovery"] = {
+                    "stuck": bool(diagnosis.get("stuck")),
+                    "actionable": bool(diagnosis.get("actionable")),
+                    "reasons": list(diagnosis.get("reasons") or [])[:5],
+                    "motor_ok": bool(diagnosis.get("motor_ok")),
+                }
+                if st and isinstance(st, dict):
+                    st = dict(st)
+                    st["can_abort"] = bool(
+                        diagnosis.get("actionable")
+                        or str(st.get("phase") or "") in (
+                            "accepted", "downloading", "staging", "installing", "failed",
+                        )
+                    )
+                    out["status"] = st
+            return out
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 
@@ -1501,35 +1583,62 @@ class MotorBridge:
                 latest = str(info.get("latest") or "")
                 installed = str(info.get("installed") or "")
                 download_url = str(info.get("download_url") or "").strip()
-                if available and download_url:
-                    # Open release/installer URL; motor/updater owns silent apply.
-                    try:
-                        webbrowser.open(download_url)
-                    except Exception:
-                        pass
-                elif available:
-                    from client_constants import GITHUB_OWNER, GITHUB_REPO
+                if not available:
+                    return {
+                        "ok": bool(info.get("ok", True)),
+                        "update_available": False,
+                        "started": False,
+                        "installed": installed,
+                        "latest": latest,
+                        "tag": str(info.get("tag") or ""),
+                        "download_url": "",
+                        "message": str(info.get("message") or "already_current"),
+                        "error": info.get("error"),
+                        "detail": info.get("detail"),
+                    }
 
-                    tag = str(info.get("tag") or (f"v{latest}" if latest else ""))
-                    url = (
-                        f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/tag/{tag}"
-                        if tag
-                        else f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
+                # Banner first so GUI shows progress immediately (no browser).
+                try:
+                    from client_update_ui import set_update_ui_status
+
+                    set_update_ui_status(
+                        "accepted",
+                        from_version=installed,
+                        to_version=latest,
+                        detail="gui_check_updates",
                     )
+                except Exception:
+                    pass
+
+                motor = self_update(timeout=8.0)
+                started = bool(motor.get("ok") and motor.get("started", True) and not motor.get("error"))
+                if motor.get("busy"):
+                    started = True
+                if not motor.get("ok") and motor.get("error"):
                     try:
-                        webbrowser.open(url)
+                        from client_update_ui import set_update_ui_status
+
+                        set_update_ui_status(
+                            "failed",
+                            from_version=installed,
+                            to_version=latest,
+                            detail=str(motor.get("error")),
+                            error=str(motor.get("error")),
+                        )
                     except Exception:
                         pass
                 return {
-                    "ok": bool(info.get("ok", True)),
-                    "update_available": available,
+                    "ok": bool(info.get("ok", True)) and (started or bool(motor.get("busy"))),
+                    "update_available": True,
+                    "started": started or bool(motor.get("busy")),
+                    "busy": bool(motor.get("busy")),
                     "installed": installed,
                     "latest": latest,
                     "tag": str(info.get("tag") or ""),
                     "download_url": download_url,
-                    "message": str(info.get("message") or ""),
-                    "error": info.get("error"),
-                    "detail": info.get("detail"),
+                    "message": "update_started" if started or motor.get("busy") else "update_start_failed",
+                    "error": None if (started or motor.get("busy")) else (motor.get("error") or "motor_update_failed"),
+                    "detail": motor.get("error") or motor.get("message") or info.get("detail"),
                 }
             if act == "minimize":
                 if self._window is not None:
@@ -1869,11 +1978,14 @@ def main() -> int:
         logger.error("UI bundle missing: %s", index)
         raise FileNotFoundError(f"Asteria UI bundle missing: {index}")
 
+    from client_constants import VERSION
+
     logger.info("Starting asteria-gui.exe; UI=%s pid=%s", index, os.getpid())
     tray_start = any(arg.lower() in ("--tray", "--mode=tray") for arg in sys.argv[1:])
     bridge = MotorBridge(logger)
+    window_title = f"Asteria v{VERSION}" if VERSION else "Asteria"
     window = webview.create_window(
-        "Asteria",
+        window_title,
         index.as_uri(),
         js_api=bridge,
         width=1280,

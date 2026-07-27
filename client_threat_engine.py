@@ -439,6 +439,8 @@ class ThreatEngine:
 
         # Urgent alert dedup: "ip:event_type" → last emit (başarılı logon spam engeli)
         self._urgent_dedup: Dict[str, float] = {}
+        # Ring of recent alerts for Control Center (dashboard-parity detail).
+        self._recent_alerts: deque = deque(maxlen=80)
 
         # Stats
         self._stats = {
@@ -1231,6 +1233,66 @@ class ThreatEngine:
                 self.on_alert(alert)
             except Exception as e:
                 log(f"[THREAT] Alert callback error: {e}")
+
+        # Keep a GUI-facing copy (no secrets); dashboard "Son Kritik" parity.
+        try:
+            snap = {
+                "alert_id": alert.get("alert_id"),
+                "timestamp": alert.get("timestamp"),
+                "severity": alert.get("severity"),
+                "threat_type": alert.get("threat_type"),
+                "title": alert.get("title"),
+                "description": alert.get("description"),
+                "source_ip": alert.get("source_ip"),
+                "target_service": alert.get("target_service"),
+                "target_port": alert.get("target_port"),
+                "username": alert.get("username"),
+                "threat_score": alert.get("threat_score"),
+                "correlation_rule": alert.get("correlation_rule"),
+                "recommended_action": alert.get("recommended_action"),
+                "auto_response": list(alert.get("auto_response") or []),
+            }
+            with self._lock:
+                self._recent_alerts.appendleft(snap)
+        except Exception:
+            pass
+
+    def get_recent_alerts(self, limit: int = 25) -> List[dict]:
+        """Most recent emitted alerts for Control Center (newest first)."""
+        with self._lock:
+            out = list(self._recent_alerts)[: max(1, int(limit))]
+        return out
+
+    @staticmethod
+    def summarize_ip_context(ctx: "IPContext") -> dict:
+        """Human title/description for an IP row (dashboard-style Tehdit column)."""
+        events = list(ctx.events) if ctx.events else []
+        last = events[-1] if events else {}
+        etype = str(last.get("event_type") or "")
+        services = list(ctx.services_targeted or [])[:6]
+        users = list(ctx.usernames_tried or [])[:8]
+        title = ThreatEngine._build_title({"event_type": etype}, "")
+        bits = []
+        if ctx.failed_attempts:
+            bits.append(f"{int(ctx.failed_attempts)} failed logon")
+        if ctx.successful_logins:
+            bits.append(f"{int(ctx.successful_logins)} successful logon")
+        if services:
+            bits.append("services: " + ", ".join(str(s) for s in services))
+        if users:
+            bits.append("users: " + ", ".join(str(u) for u in users))
+        if etype and not bits:
+            bits.append(f"{etype.replace('_', ' ')} from {ctx.ip}")
+        description = "; ".join(bits) if bits else f"Activity from {ctx.ip}"
+        return {
+            "title": title,
+            "description": description,
+            "threat_type": etype or "unknown",
+            "services": services,
+            "usernames": users,
+            "last_event_type": etype,
+            "successful_logins": int(ctx.successful_logins or 0),
+        }
 
     @staticmethod
     def _build_title(event: dict, rule_name: str) -> str:

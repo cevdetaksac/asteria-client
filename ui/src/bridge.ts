@@ -33,7 +33,13 @@ type AsteriaApi = {
     client_id?: string
   }>
   unlock(pin: string): Promise<{ ok: boolean; reason: string; lockout_seconds: number }>
-  ping(): Promise<{ ok: boolean; motor: 'online' | 'offline' }>
+  ping(): Promise<{
+    ok: boolean
+    motor: 'online' | 'offline'
+    update_stuck?: boolean
+    recovered?: boolean
+    update_recovery?: Record<string, unknown>
+  }>
   status(): Promise<MotorStatus>
   catalog(): Promise<{ ok: boolean; services: Array<{ port: string; service: string }>; rdp_secure_port?: number }>
   ipc(cmd: string, args?: Record<string, unknown>): Promise<BridgeResult>
