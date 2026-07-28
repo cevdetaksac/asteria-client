@@ -1,3 +1,8 @@
+# v4.9.51
+
+## GUI
+- Sidebar foot reordered: centered larger **TR | EN**, then **Motor | Version** pill, then **Minimize to tray**.
+
 # v4.9.50
 
 ## GUI

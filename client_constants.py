@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.50"  # sidebar version badge + logo lockup; utf-8-sig quarantine; lifecycle mode
+VERSION = "4.9.51"  # sidebar foot: TR|EN · Motor|Version · tray
 
 CLIENT_VERSION = VERSION  # Main version constant
 __version__ = VERSION  # Export for compatibility

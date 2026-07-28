@@ -482,20 +482,28 @@ export default function App() {
           ))}
         </nav>
         <div className="side-foot">
-          <div className={`connection ${online ? 'online' : 'offline'}`}>
-            <span /> {online ? t('motor_online') : t('motor_offline')}
-          </div>
-          <div className="lang-row">
-            <button type="button" className={`btn ghost sm ${lang === 'tr' ? 'on' : ''}`} onClick={() => void switchLang('tr')}>
+          <div className="lang-row" role="group" aria-label="Language">
+            <button type="button" className={`lang-btn ${lang === 'tr' ? 'on' : ''}`} onClick={() => void switchLang('tr')}>
               TR
             </button>
-            <button type="button" className={`btn ghost sm ${lang === 'en' ? 'on' : ''}`} onClick={() => void switchLang('en')}>
+            <span className="lang-sep" aria-hidden="true">|</span>
+            <button type="button" className={`lang-btn ${lang === 'en' ? 'on' : ''}`} onClick={() => void switchLang('en')}>
               EN
             </button>
           </div>
+          <div className={`side-status ${online ? 'online' : 'offline'}`}>
+            <span className="side-status-motor">
+              <i />
+              {online ? t('motor_online') : t('motor_offline')}
+            </span>
+            <span className="side-status-sep" aria-hidden="true">|</span>
+            <span className="side-status-ver" title={t('about_version')}>
+              {status?.version ? `v${String(status.version)}` : '—'}
+            </span>
+          </div>
           <button
             type="button"
-            className="btn ghost sm"
+            className="btn ghost side-tray-btn"
             onClick={() => {
               void motorBridge.shell('minimize').then((result) => {
                 if (result.ok !== false) enterLockScreen()
@@ -504,11 +512,6 @@ export default function App() {
           >
             {t('tray_hide')}
           </button>
-          {status?.version ? (
-            <span className="side-version-badge" title={t('about_version')}>
-              v{String(status.version)}
-            </span>
-          ) : null}
         </div>
       </aside>
 
