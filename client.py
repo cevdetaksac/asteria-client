@@ -645,7 +645,15 @@ class CloudHoneypotClient:
                     "client_startup",
                     "app_init",
                     {
-                        "mode": getattr(self, "_startup_mode", None) or "unknown",
+                        "mode": (
+                            getattr(self, "_startup_mode", None)
+                            or (
+                                str(self._detect_current_mode() or "")
+                                .replace("--mode=", "")
+                                .strip()
+                            )
+                            or "unknown"
+                        ),
                         "tasks_ok": True,
                     },
                     severity="info",

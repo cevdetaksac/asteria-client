@@ -2,7 +2,7 @@ import { type FormEvent, useCallback, useEffect, useState } from 'react'
 import { motorBridge, type MotorStatus } from './bridge'
 import { AccountActionModal } from './components/AccountActionModal'
 import { AboutModal, type AboutInfo } from './components/AboutModal'
-import { BrandMark, BrandWordmark } from './components/Brand'
+import { BrandSidebar } from './components/Brand'
 import { HeaderMenu, type MenuAction } from './components/HeaderMenu'
 import { IdentityStrip } from './components/IdentityStrip'
 import { LiveMeters } from './components/LiveMeters'
@@ -466,15 +466,7 @@ export default function App() {
     <div className="shell">
       <aside className="sidebar">
         <div className="side-brand">
-          <BrandMark size={44} />
-          <div className="side-brand-text">
-            <BrandWordmark />
-            {status?.version ? (
-              <span className="side-version" title={t('about_version')}>
-                v{String(status.version)}
-              </span>
-            ) : null}
-          </div>
+          <BrandSidebar />
         </div>
         <nav>
           {nav.map((item) => (
@@ -512,6 +504,11 @@ export default function App() {
           >
             {t('tray_hide')}
           </button>
+          {status?.version ? (
+            <span className="side-version-badge" title={t('about_version')}>
+              v{String(status.version)}
+            </span>
+          ) : null}
         </div>
       </aside>
 

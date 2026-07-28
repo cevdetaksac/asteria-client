@@ -1,3 +1,13 @@
+# v4.9.50
+
+## GUI
+- Sidebar version moved under foot as a pill badge (no longer under brand lockup).
+- Sidebar uses official `logo_light.png` wide lockup; sticky viewport sidebar so foot stays visible.
+- Quarantine JSON load accepts UTF-8 BOM (`utf-8-sig`).
+
+## Hygiene
+- Lifecycle `client_startup` reports real mode (`daemon`/`gui`/…) instead of `unknown`.
+
 # v4.9.49
 
 ## State / signal hygiene

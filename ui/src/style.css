@@ -72,9 +72,14 @@ h1, h2, h3, p { margin: 0; }
 .brand-mark-img {
   display: block;
   flex-shrink: 0;
+  width: auto;
+  height: auto;
+  max-width: 100%;
   object-fit: contain;
-  border-radius: 10px;
+  object-position: center;
   background: transparent;
+  /* Keep stars/arch unclipped — no radius mask on the mark */
+  border-radius: 0;
 }
 .brand-lockup {
   display: flex;
@@ -141,6 +146,8 @@ h1, h2, h3, p { margin: 0; }
   display: grid;
   grid-template-columns: 248px 1fr;
   min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
 }
 .sidebar {
   display: flex;
@@ -149,23 +156,25 @@ h1, h2, h3, p { margin: 0; }
   padding: 28px 18px 24px;
   border-right: 1px solid var(--line);
   background: rgba(8, 13, 20, 0.94);
+  height: 100%;
+  max-height: 100vh;
+  overflow: hidden;
+  position: sticky;
+  top: 0;
 }
 .side-brand {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 4px 8px 14px;
+  display: block;
+  padding: 2px 4px 8px;
+  flex-shrink: 0;
 }
-.side-brand-text {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-.side-version {
-  font-size: 11px;
-  font-weight: 650;
-  letter-spacing: 0.08em;
-  color: var(--muted);
+.side-logo {
+  display: block;
+  width: 100%;
+  max-width: 196px;
+  height: auto;
+  object-fit: contain;
+  object-position: left center;
+  background: transparent;
 }
 .sidebar nav {
   display: block;
@@ -215,7 +224,31 @@ h1, h2, h3, p { margin: 0; }
   border-color: rgba(46, 168, 209, 0.4);
   background: var(--accent-dim);
 }
-.side-foot { display: grid; gap: 10px; }
+.side-foot {
+  display: grid;
+  gap: 10px;
+  margin-top: auto;
+  flex-shrink: 0;
+  padding-top: 8px;
+}
+.side-version-badge {
+  display: inline-flex;
+  align-self: start;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 11px;
+  border-radius: 999px;
+  border: 1px solid rgba(46, 168, 209, 0.28);
+  background: rgba(12, 26, 43, 0.9);
+  color: #91a3b8;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  width: fit-content;
+  max-width: 100%;
+}
 .connection {
   padding: 9px 12px;
   border-radius: 999px;
@@ -311,6 +344,9 @@ h1, h2, h3, p { margin: 0; }
 .content {
   padding: 32px 40px 56px;
   min-width: 0;
+  overflow: auto;
+  height: 100%;
+  max-height: 100vh;
 }
 .topbar {
   display: flex;

@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.49"  # quarantine empty-heal; VSS single alert; resume grace; resilience migrate
+VERSION = "4.9.50"  # sidebar version badge + logo lockup; utf-8-sig quarantine; lifecycle mode
 
 CLIENT_VERSION = VERSION  # Main version constant
 __version__ = VERSION  # Export for compatibility

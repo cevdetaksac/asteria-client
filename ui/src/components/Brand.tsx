@@ -44,6 +44,18 @@ export function BrandWordmark({ tagline = true, compact = false }: WordProps) {
   )
 }
 
+/** Sidebar: single wide lockup art (transparent PNG) — no CSS wordmark drift. */
+export function BrandSidebar() {
+  return (
+    <img
+      className="side-logo"
+      src={logoWide}
+      alt="Asteria Run"
+      draggable={false}
+    />
+  )
+}
+
 /** Lock / hero lockup: square stacked art, wide horizontal, or mark+wordmark. */
 export function BrandLockup({ mode = 'split' }: { mode?: 'split' | 'wide' | 'square' }) {
   if (mode === 'wide') {
