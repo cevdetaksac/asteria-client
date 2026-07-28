@@ -1716,7 +1716,7 @@ class RansomwareShield:
         try:
             if not os.path.isfile(path):
                 return
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8-sig") as f:
                 data = json.load(f)
             if not isinstance(data, dict):
                 return
