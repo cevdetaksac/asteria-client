@@ -76,6 +76,41 @@ def _load_state() -> None:
             _state = merged
     except Exception:
         pass
+    _normalize_state(persist=True)
+
+
+def _normalize_state(persist: bool = False) -> bool:
+    """Heal disk pollution (e.g. version=test from fault-injection) and sticky flags."""
+    global _state
+    changed = False
+    with _lock:
+        disk_ver = str(_state.get("version") or "")
+        if disk_ver != str(VERSION):
+            _state["version"] = VERSION
+            changed = True
+            # Migrating off polluted/test state: sticky false without storm is noise.
+            if not _state.get("restart_storm"):
+                _state["last_recovery_ok"] = True
+        # Default last_recovery_ok=False with zero attempts is misleading "degraded".
+        try:
+            daemon = list(_state.get("daemon_restarts") or [])
+            heal = list(_state.get("guardian_heal_attempts") or [])
+            ms = int(_state.get("last_recovery_ms") or 0)
+            if (
+                not _state.get("last_recovery_ok")
+                and ms == 0
+                and not daemon
+                and not heal
+                and not (_state.get("stand_down_reason") or "")
+            ):
+                _state["last_recovery_ok"] = True
+                _state["last_recovery_leg"] = ""
+                changed = True
+        except Exception:
+            pass
+        if changed and persist:
+            _save_state()
+    return changed
 
 
 def _save_state() -> None:

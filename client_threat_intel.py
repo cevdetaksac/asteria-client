@@ -539,6 +539,7 @@ class ThreatIntelManager:
                     "threat_type": "intel_watch",
                     "severity": "info",
                     "threat_score": 5,
+                    "title": "Threat Intel process watch",
                     "description": f"Cloud process_watch rules loaded: {len(items)}",
                     "details": {"count": len(items)},
                 })
@@ -560,6 +561,7 @@ class ThreatIntelManager:
                         "threat_type": "intel_banner",
                         "severity": b.get("severity") or "info",
                         "threat_score": 5,
+                        "title": title,
                         "description": f"{title}: {body}",
                         "details": b,
                     })

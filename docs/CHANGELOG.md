@@ -1,3 +1,12 @@
+# v4.9.49
+
+## State / signal hygiene
+- **Empty RS quarantine auto-heal:** `active=true` with zero IFEO entries no longer sticks after VSS/canary miss — heal on load/start and disarm after contain with no writer.
+- **Single VSS alert emit:** drop duplicate `on_alert` + `send_urgent` pair (TR + empty-title cloud noise).
+- **Resume grace (180s):** after sleep/wake, persistence snapshot stays optimistic so cloud does not spam `agent_persistence_degraded`.
+- **Resilience migrate:** rewrite polluted `version=test` to `VERSION`; clear sticky `last_recovery_ok=false` on migrate / empty baseline.
+- **Threat intel titles:** `intel_watch` / `intel_banner` always carry a non-empty `title`.
+
 # v4.9.48
 
 ## Remote stream progress (contract 1.4.39)

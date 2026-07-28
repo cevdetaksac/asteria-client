@@ -268,11 +268,25 @@ def get_persistence_status(daemon_ok_override=None) -> dict:
         "last_tamper_ts": _last_tamper_ts,
         "tamper_count_24h": _tamper_count_24h,
     }
+    # After sleep/wake, brief IPC/DNS blips must not become cloud
+    # agent_persistence_degraded false positives.
+    try:
+        from client_power_presence import in_resume_grace
+        if in_resume_grace():
+            out["resume_grace"] = True
+            if not daemon_ok:
+                out["daemon_ok"] = True
+                out["daemon_ok_raw"] = False
+            if svc_inst and not svc_ok:
+                out["service_ok"] = True
+                out["service_ok_raw"] = False
+    except Exception:
+        pass
     try:
         from client_resilience import snapshot
         out["resilience"] = snapshot(
             guardian_installed=svc_inst,
-            guardian_running=svc_ok,
+            guardian_running=bool(out.get("service_ok")),
         )
     except Exception:
         pass

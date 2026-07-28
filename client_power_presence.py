@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ctypes
 import threading
+import time
 from ctypes import wintypes
 from typing import Callable, Optional
 
@@ -35,11 +36,15 @@ CTRL_CLOSE_EVENT = 2
 CTRL_LOGOFF_EVENT = 5
 CTRL_SHUTDOWN_EVENT = 6
 
+# Suppress false agent_persistence_degraded while IPC/DNS settle after wake.
+RESUME_GRACE_SEC = 180.0
+
 _started = False
 _lock = threading.Lock()
 _registration = None
 _callback_ref = None
 _ctrl_ref = None
+_resume_grace_until = 0.0
 
 
 class DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS(ctypes.Structure):
@@ -47,6 +52,19 @@ class DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS(ctypes.Structure):
         ("Callback", DEVICE_NOTIFY_CALLBACK_ROUTINE),
         ("Context", ctypes.c_void_p),
     ]
+
+
+def note_resume_grace(seconds: float = RESUME_GRACE_SEC) -> None:
+    global _resume_grace_until
+    try:
+        sec = float(seconds)
+    except Exception:
+        sec = RESUME_GRACE_SEC
+    _resume_grace_until = time.time() + max(0.0, sec)
+
+
+def in_resume_grace() -> bool:
+    return time.time() < float(_resume_grace_until or 0.0)
 
 
 def _on_suspend(reason: str = "sleep") -> None:
@@ -62,6 +80,7 @@ def _on_suspend(reason: str = "sleep") -> None:
 
 
 def _on_resume() -> None:
+    note_resume_grace()
     try:
         from client_presence import (
             emit_lifecycle_mirror,

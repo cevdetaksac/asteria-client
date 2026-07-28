@@ -351,6 +351,7 @@ class RansomwareShield:
         ).start()
 
         log("[RANSOMWARE-SHIELD] Started (canary + process + VSS + quarantine)")
+        self._disarm_empty_quarantine("start_empty")
         if self._quarantine.get("active"):
             log(
                 f"[RANSOMWARE-SHIELD] Quarantine STILL ACTIVE "
@@ -927,27 +928,9 @@ class RansomwareShield:
                     f"[RANSOMWARE-SHIELD] canary soft debounce "
                     f"({int(_soft_sec)}s): {filename}"
                 )
-                try:
-                    with self._quarantine_lock:
-                        if self._quarantine.get("active") and not self._quarantine.get(
-                            "entries"
-                        ):
-                            self._quarantine["active"] = False
-                            self._quarantine["trigger"] = ""
-                            self._quarantine["locked_at"] = ""
-                except Exception:
-                    pass
+                self._disarm_empty_quarantine("canary_soft_debounce")
                 return
-            try:
-                with self._quarantine_lock:
-                    if self._quarantine.get("active") and not self._quarantine.get(
-                        "entries"
-                    ):
-                        self._quarantine["active"] = False
-                        self._quarantine["trigger"] = ""
-                        self._quarantine["locked_at"] = ""
-            except Exception:
-                pass
+            self._disarm_empty_quarantine("canary_soft")
         else:
             severity = "critical"
             threat_score = 100
@@ -1624,53 +1607,44 @@ class RansomwareShield:
         }
         self._detections.append(detection)
 
-        if self.on_alert:
-            self.on_alert({
-                "event_type": "vss_shadow_deleted",
-                "threat_type": "shadow_copy_deleted",
-                "severity": severity,
-                "threat_score": threat_score,
-                "details": {
-                    "deleted_count": deleted_count,
-                    "remaining": remaining,
-                    "delete_cmd_seen": delete_cmd_seen,
-                },
-                "description": (
-                    f"{deleted_count} Volume Shadow Copy silindi (kalan: {remaining}). "
-                    + (
-                        "Aktif ransomware göstergesi."
-                        if critical
-                        else "Küçük delta — OS rotasyonu olabilir."
-                    )
-                ),
-            })
-
-        if self.alert_pipeline:
-            try:
-                self.alert_pipeline.send_urgent({
-                    "severity": severity,
-                    "threat_type": "shadow_copy_deleted",
-                    "title": (
-                        "🚨 VSS Shadow Copy Silindi — Ransomware Şüphesi!"
-                        if critical
-                        else "🟠 VSS shadow sayısı azaldı (inceleme)"
-                    ),
-                    "description": (
-                        f"{deleted_count} adet Volume Shadow Copy silindi.\n"
-                        f"Kalan shadow copy sayısı: {remaining}\n"
-                        + (
-                            "\nBu, aktif bir ransomware saldırısının güçlü göstergesidir."
-                            if critical
-                            else "\nKüçük azalma — OS shadow rotasyonu olabilir."
-                        )
-                    ),
-                    "threat_score": threat_score,
-                    "auto_response_taken": (
-                        ["emergency_alert"] if critical else ["alert_only"]
-                    ),
-                })
-            except Exception:
-                pass
+        # Single emit (avoid TR+empty/EN duplicate via on_alert + send_urgent).
+        vss_alert = {
+            "event_type": "vss_shadow_deleted",
+            "threat_type": "shadow_copy_deleted",
+            "severity": severity,
+            "threat_score": threat_score,
+            "title": (
+                "🚨 VSS Shadow Copy Silindi — Ransomware Şüphesi!"
+                if critical
+                else "🟠 VSS shadow sayısı azaldı (inceleme)"
+            ),
+            "description": (
+                f"{deleted_count} adet Volume Shadow Copy silindi.\n"
+                f"Kalan shadow copy sayısı: {remaining}\n"
+                + (
+                    "\nBu, aktif bir ransomware saldırısının güçlü göstergesidir."
+                    if critical
+                    else "\nKüçük azalma — OS shadow rotasyonu olabilir."
+                )
+            ),
+            "details": {
+                "deleted_count": deleted_count,
+                "remaining": remaining,
+                "delete_cmd_seen": delete_cmd_seen,
+            },
+            "auto_response_taken": (
+                ["emergency_alert"] if critical else ["alert_only"]
+            ),
+        }
+        try:
+            if critical and self.alert_pipeline:
+                self.alert_pipeline.send_urgent(vss_alert)
+            elif self.on_alert:
+                self.on_alert(vss_alert)
+            elif self.alert_pipeline:
+                self.alert_pipeline.send_urgent(vss_alert)
+        except Exception as e:
+            log(f"[RANSOMWARE-SHIELD] VSS alert delivery error: {e}")
 
         if critical:
             self._block_suspicious_ips(
@@ -1753,6 +1727,8 @@ class RansomwareShield:
                 if img:
                     images.add(img)
             self._quarantine_images = images
+            # Stuck lock with no IFEO/targets — heal on boot (persisted).
+            self._disarm_empty_quarantine("load_empty")
         except Exception as e:
             log(f"[RANSOMWARE-SHIELD] quarantine load error: {e}")
 
@@ -1764,6 +1740,46 @@ class RansomwareShield:
                 json.dump(self._quarantine, f, indent=2, ensure_ascii=False)
         except Exception as e:
             log(f"[RANSOMWARE-SHIELD] quarantine persist error: {e}")
+
+    def _disarm_empty_quarantine(self, reason: str = "auto_heal_empty") -> bool:
+        """Clear active=true with zero enforceable entries (no IFEO images)."""
+        prior = ""
+        try:
+            with self._quarantine_lock:
+                entries = list(self._quarantine.get("entries") or [])
+                images = {
+                    (e.get("image") or "").strip().lower()
+                    for e in entries
+                    if (e.get("image") or "").strip()
+                }
+                if self._quarantine_images:
+                    images |= {str(x).lower() for x in self._quarantine_images}
+                if not self._quarantine.get("active"):
+                    return False
+                if entries or images:
+                    return False
+                prior = self._quarantine.get("trigger") or ""
+                self._quarantine = {
+                    "active": False,
+                    "locked_at": "",
+                    "trigger": "",
+                    "entries": [],
+                    "unlocked_at": datetime.now().isoformat(),
+                    "unlock_reason": reason,
+                    "prior_trigger": prior,
+                }
+                self._quarantine_images.clear()
+                self._stats["quarantine_active"] = False
+                self._stats["quarantine_entries"] = 0
+                self._persist_quarantine()
+            log(
+                f"[RANSOMWARE-SHIELD] Quarantine auto-disarmed "
+                f"({reason}); prior_trigger={prior}"
+            )
+            return True
+        except Exception as e:
+            log(f"[RANSOMWARE-SHIELD] empty quarantine heal error: {e}")
+            return False
 
     def _contain_after_hit(
         self, trigger: str, focus_path: str = "", mode: str = "kill"
@@ -1914,14 +1930,28 @@ class RansomwareShield:
             self._quarantine["entries"] = entries
             self._quarantine["trigger"] = trigger
             self._stats["quarantine_entries"] = len(entries)
+            # No attributed writer → empty lockdown is noise; disarm + persist.
+            if not entries and not self._quarantine_images:
+                prior = trigger
+                self._quarantine = {
+                    "active": False,
+                    "locked_at": "",
+                    "trigger": "",
+                    "entries": [],
+                    "unlocked_at": datetime.now().isoformat(),
+                    "unlock_reason": "auto_disarm_no_writer",
+                    "prior_trigger": prior,
+                }
+                self._stats["quarantine_active"] = False
+                self._stats["quarantine_entries"] = 0
             self._persist_quarantine()
 
         if actions:
             log(f"[RANSOMWARE-SHIELD] Containment: {', '.join(actions[:12])}")
         else:
             log(
-                f"[RANSOMWARE-SHIELD] Containment armed (no live writer found) "
-                f"trigger={trigger}"
+                f"[RANSOMWARE-SHIELD] Containment complete (no live writer) "
+                f"trigger={trigger} — empty lock disarmed"
             )
 
         detection = {

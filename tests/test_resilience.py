@@ -94,6 +94,19 @@ class TestResilienceStormBreaker(unittest.TestCase):
         self.assertTrue(snap["guardian_installed"])
         self.assertFalse(snap["guardian_running"])
 
+    def test_normalize_heals_test_version_and_sticky_ok(self):
+        with resilience._lock:
+            resilience._state["version"] = "test"
+            resilience._state["last_recovery_ok"] = False
+            resilience._state["last_recovery_ms"] = 50
+            resilience._state["restart_storm"] = False
+            resilience._state["daemon_restarts"] = [time.time()]
+        self.assertTrue(resilience._normalize_state(persist=True))
+        with open(self.state_path, "r", encoding="utf-8") as fh:
+            disk = __import__("json").load(fh)
+        self.assertEqual(disk["version"], resilience.VERSION)
+        self.assertTrue(disk["last_recovery_ok"])
+
 
 if __name__ == "__main__":
     unittest.main()

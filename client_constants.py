@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.48"  # stream_progress (1.4.39); update brick recovery; GUI recover UX
+VERSION = "4.9.49"  # quarantine empty-heal; VSS single alert; resume grace; resilience migrate
 
 CLIENT_VERSION = VERSION  # Main version constant
 __version__ = VERSION  # Export for compatibility

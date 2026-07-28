@@ -111,6 +111,53 @@ class TestShadowCopySeverity(unittest.TestCase):
         shield._contain_after_hit.assert_not_called()
         shield._block_suspicious_ips.assert_not_called()
 
+    def test_on_vss_deletion_critical_single_emit(self):
+        pipeline_alerts = []
+        on_alerts = []
+        shield = RansomwareShield(
+            on_alert=lambda a: on_alerts.append(a),
+            alert_pipeline=type("P", (), {
+                "send_urgent": lambda self, a: pipeline_alerts.append(a),
+            })(),
+        )
+        shield._contain_after_hit = mock.Mock(
+            return_value={"suspects": [], "actions": [], "quarantine": {}}
+        )
+        shield._block_suspicious_ips = mock.Mock()
+        shield._on_vss_deletion(3, 0)
+        self.assertEqual(len(pipeline_alerts), 1)
+        self.assertEqual(len(on_alerts), 0)
+        self.assertIn("title", pipeline_alerts[0])
+        self.assertEqual(pipeline_alerts[0]["threat_type"], "shadow_copy_deleted")
+        shield._contain_after_hit.assert_called_once()
+
+    def test_empty_active_quarantine_auto_disarm(self):
+        import json
+        import os
+        import tempfile
+
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        qpath = os.path.join(td.name, "ransomware_quarantine.json")
+        with open(qpath, "w", encoding="utf-8") as fh:
+            json.dump(
+                {
+                    "active": True,
+                    "locked_at": "2026-07-26T00:00:00",
+                    "trigger": "vss_deletion:2",
+                    "entries": [],
+                },
+                fh,
+            )
+        shield = RansomwareShield()
+        shield._quarantine_path = lambda: qpath
+        shield._load_quarantine()
+        self.assertFalse(shield.get_quarantine().get("active"))
+        with open(qpath, "r", encoding="utf-8") as fh:
+            disk = json.load(fh)
+        self.assertFalse(disk.get("active"))
+        self.assertEqual(disk.get("unlock_reason"), "load_empty")
+
 
 class TestCanaryHygiene(unittest.TestCase):
     def test_self_touch_suppresses(self):
