@@ -1,3 +1,24 @@
+# v4.9.54
+
+## Network Adapter Admin (contract 1.4.42)
+- Remote command `network_adapter_apply`: enable/disable/set_ipv4/set_dns/set_config.
+- Local watchdog (5–15s, default 10) probes connectivity; on fail restores that adapter’s adapter+ipv4+dns from signed golden (`WATCHDOG_ROLLBACK`).
+- Pauses `auto_restore_network` during apply; refuses last management NIC disable (`LAST_MGMT_ADAPTER`); optional `on_success=accept_surface`.
+
+# v4.9.53
+
+## Firewall Windows MMC parity (contract 1.4.41)
+- `list_firewall` `scope=all`: full inbound/outbound rule lists + profiles + truncation/counts (`engine=netsh`).
+- `firewall_rule` ops: enable / disable / delete / add (`AR-MANUAL-*` for dashboard IP adds); delete/add confirm-gated on cloud.
+- `firewall_set_profile` accepts `profile=all`; returns updated profiles after mutate.
+- Plan note: [`docs/LINUX_AGENT_PLAN.md`](LINUX_AGENT_PLAN.md) (future Linux/macOS agent).
+
+# v4.9.52
+
+## Firewall Management (contract 1.4.40)
+- Remote commands `list_firewall` (profiles + AR/HP/HONEYPOT inbound rules + counts) and `firewall_set_profile` (Domain/Private/Public; confirm-gated).
+- Inventory module `client_firewall_inventory.py`; cloud dashboard **Tam envanter** needs client ≥4.9.40 (this build).
+
 # v4.9.51
 
 ## GUI

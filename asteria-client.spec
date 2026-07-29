@@ -97,6 +97,7 @@ _hidden = [
     'client_device_identity',
     'client_operator_keys',
     'client_firewall',
+    'client_firewall_inventory',
     'client_cleanup',
     'client_block_store',
     'client_protection_store',

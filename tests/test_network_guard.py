@@ -309,10 +309,11 @@ class TestCommandWhitelist(unittest.TestCase):
         for c in ("network_snapshot", "network_restore", "list_network_baseline",
                   "network_diff", "network_maintenance_start",
                   "network_maintenance_end", "network_accept_surface",
-                  "network_disable_adapter"):
+                  "network_disable_adapter", "network_adapter_apply"):
             self.assertIn(c, ALLOWED_COMMANDS)
         self.assertIn("network_restore", REQUIRES_CONFIRMATION)
         self.assertIn("network_disable_adapter", REQUIRES_CONFIRMATION)
+        self.assertIn("network_adapter_apply", REQUIRES_CONFIRMATION)
         # read-only snapshot/list must NOT require confirmation
         self.assertNotIn("network_snapshot", REQUIRES_CONFIRMATION)
         self.assertNotIn("network_accept_surface", REQUIRES_CONFIRMATION)
@@ -325,7 +326,7 @@ class TestCommandWhitelist(unittest.TestCase):
         for c in ("network_snapshot", "network_restore", "list_network_baseline",
                   "network_diff", "network_maintenance_start",
                   "network_maintenance_end", "network_accept_surface",
-                  "network_disable_adapter"):
+                  "network_disable_adapter", "network_adapter_apply"):
             self.assertTrue(hasattr(ex, f"_cmd_{c}"), c)
 
 

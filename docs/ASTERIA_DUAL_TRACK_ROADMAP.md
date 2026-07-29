@@ -5,6 +5,7 @@
 > Durum: **aktif plan** — uygulama fazlara bağlı  
 > İlgili: [`GUI_WEBVIEW_ROADMAP.md`](GUI_WEBVIEW_ROADMAP.md) ·  
 > [`SECURITY_RESILIENCE_ROADMAP.md`](SECURITY_RESILIENCE_ROADMAP.md) ·  
+> [`LINUX_AGENT_PLAN.md`](LINUX_AGENT_PLAN.md) *(ileride Linux/macOS ajan)* ·  
 > contract `agent/gui-control-center.md` · `cloud/PRODUCT_BRANDING.md`
 
 Bu belge **iki işi birlikte** yönetir:

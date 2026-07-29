@@ -73,6 +73,8 @@ CREATE_NO_WINDOW = 0x08000000
 ALLOWED_COMMANDS: Set[str] = {
     "block_ip", "unblock_ip", "clear_firewall", "migrate_firewall_brand",
     "sync_firewall_rules",
+    # Firewall Management (contract ≥1.4.40 — agent/firewall-management.md)
+    "list_firewall", "firewall_set_profile", "firewall_rule",
     "logoff_user", "disable_account", "enable_account", "reset_password",
     "contain_user",  # IR: logoff + password reset (+ optional disable) in one shot
     "disable_all_users",  # IR panic: disable every local SAM user (excl. machine IDs)
@@ -96,6 +98,7 @@ ALLOWED_COMMANDS: Set[str] = {
     "network_diff",
     "network_maintenance_start", "network_maintenance_end",
     "network_accept_surface", "network_disable_adapter",
+    "network_adapter_apply",
     # System Recovery (contract ≥1.4.13 — agent/system-recovery.md)
     "system_recovery_snapshot", "list_system_recovery",
     "system_recovery_diff", "system_recovery_restore",
@@ -111,6 +114,7 @@ _STREAM_COMMANDS = frozenset({
     "remote_send_sas",
     "remote_session_prepare", "list_local_users", "list_sessions",
     "list_processes", "list_services",
+    "list_firewall",
 })
 
 # Incident-response: always fast poll + no rate limit (breach containment)
@@ -128,6 +132,7 @@ _IR_URGENT_COMMANDS = frozenset({
     "enable_lockdown", "disable_lockdown",
     "unlock_ransomware_quarantine",
     "clear_firewall", "migrate_firewall_brand",
+    "list_firewall", "firewall_set_profile", "firewall_rule",
     "self_update", "check_update",  # dashboard update — same urgency as IR
     "remote_session_prepare", "list_local_users",
     "list_processes", "list_sessions",
@@ -138,6 +143,7 @@ _IR_URGENT_COMMANDS = frozenset({
     "network_diff",
     "network_maintenance_start", "network_maintenance_end",
     "network_accept_surface", "network_disable_adapter",
+    "network_adapter_apply",
     # System Recovery — attack-surface restore
     "system_recovery_snapshot", "list_system_recovery",
     "system_recovery_diff", "system_recovery_restore",
@@ -180,10 +186,13 @@ REQUIRES_CONFIRMATION: Set[str] = {
     # Network Guard — mutating restore only (see network_restore_requires_confirm)
     "network_restore",
     "network_disable_adapter",
+    "network_adapter_apply",
     # System Recovery — mutating restore (dry_run exempt via helper)
     "system_recovery_restore",
     # GUI PIN — overwrite/reset local anti-tamper PIN needs operator confirm
     "set_gui_pin", "clear_gui_pin",
+    # Firewall Management — profile mutate (cloud confirm:true)
+    "firewall_set_profile",
 }
 
 
@@ -199,10 +208,25 @@ def network_disable_adapter_requires_confirm(params: Optional[dict] = None) -> b
     return not bool(params.get("dry_run", False))
 
 
+def network_adapter_apply_requires_confirm(params: Optional[dict] = None) -> bool:
+    """All mutating adapter apply ops require cloud confirm (contract 1.4.42)."""
+    return True
+
+
 def system_recovery_restore_requires_confirm(params: Optional[dict] = None) -> bool:
     """True for mutating system recovery; False for dry-run (contract 1.4.13)."""
     params = params or {}
     return not bool(params.get("dry_run", False))
+
+
+def firewall_rule_requires_confirm(params: Optional[dict] = None) -> bool:
+    """True for delete/add; False for enable/disable (contract 1.4.41)."""
+    try:
+        from client_firewall_inventory import firewall_rule_requires_confirm as _fn
+        return _fn(params)
+    except Exception:
+        op = str((params or {}).get("op") or "").strip().lower()
+        return op in ("delete", "add")
 
 # Hard-skip only (AGENT_DISABLE_ALL_USERS_PROMPT) — Administrator is NOT here
 _SKIP_DISABLE_ALWAYS: Set[str] = {
@@ -1608,6 +1632,100 @@ class RemoteCommandExecutor:
                     "data": {"blocks": len(blocks)},
                 }
             return {"success": False, "error": "sync_api_unavailable"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _cmd_list_firewall(self, params: dict) -> dict:
+        """Host firewall inventory (contract ≥1.4.41 — scope=all MMC parity)."""
+        try:
+            from client_firewall_inventory import list_firewall
+            data = list_firewall(params or {})
+            n_in = len(data.get("inbound_rules") or [])
+            n_out = len(data.get("outbound_rules") or [])
+            n_ar = len(data.get("asteria_rules") or [])
+            return {
+                "success": True,
+                "message": (
+                    f"Firewall inventory (in={n_in} out={n_out} asteria={n_ar})"
+                ),
+                "data": data,
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _cmd_firewall_set_profile(self, params: dict) -> dict:
+        """Change Domain/Private/Public/(all) profile (confirm-gated; C-FW-PROF)."""
+        params = params or {}
+        try:
+            from client_firewall_inventory import list_firewall, set_firewall_profile
+            result = set_firewall_profile(
+                profile=params.get("profile") or "",
+                state=params.get("state"),
+                inbound=params.get("inbound"),
+                outbound=params.get("outbound"),
+            )
+            if not result.get("ok"):
+                return {
+                    "success": False,
+                    "error": result.get("error") or "set_profile_failed",
+                    "message": result.get("message") or "",
+                    "data": result,
+                }
+            # Prefer updated profiles; attach light inventory snapshot
+            inventory = list_firewall({
+                "scope": "asteria",
+                "include_profiles": True,
+                "include_inbound": False,
+                "include_outbound": False,
+                "include_asteria_rules": True,
+                "include_counts": True,
+            })
+            profiles = result.get("profiles") or inventory.get("profiles")
+            return {
+                "success": True,
+                "message": (
+                    f"Profile {result.get('profile')} updated "
+                    f"({', '.join(result.get('changes') or [])})"
+                ),
+                "data": {
+                    "profile_change": result,
+                    "profiles": profiles,
+                    **{k: v for k, v in inventory.items() if k != "profiles"},
+                },
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _cmd_firewall_rule(self, params: dict) -> dict:
+        """Enable/disable/delete/add a WFAS rule (contract ≥1.4.41)."""
+        params = params or {}
+        try:
+            from client_firewall_inventory import firewall_rule, list_firewall
+            result = firewall_rule(params)
+            if not result.get("ok"):
+                return {
+                    "success": False,
+                    "error": result.get("error") or "firewall_rule_failed",
+                    "message": result.get("message") or "",
+                    "data": result,
+                }
+            # C-FW-RULE-4 — light refresh (asteria scope keeps payload small)
+            snapshot = list_firewall({
+                "scope": "asteria",
+                "include_profiles": True,
+                "include_inbound": False,
+                "include_outbound": False,
+                "include_asteria_rules": True,
+                "include_counts": True,
+            })
+            return {
+                "success": True,
+                "message": f"firewall_rule {result.get('op')} {result.get('name')}",
+                "data": {
+                    "rule_change": result,
+                    **snapshot,
+                },
+            }
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -3153,6 +3271,28 @@ class RemoteCommandExecutor:
                 ),
                 "data": out,
                 "error": out.get("error"),
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _cmd_network_adapter_apply(self, params: dict) -> dict:
+        """NIC enable/disable/IPv4/DNS with local golden watchdog (1.4.42)."""
+        ng = getattr(self, "network_guard", None)
+        if ng is None:
+            return {"success": False, "error": "NetworkGuard not available"}
+        try:
+            out = ng.adapter_apply(params or {})
+            ok = bool(out.get("ok"))
+            err = out.get("error")
+            return {
+                "success": ok,
+                "error": None if ok else err,
+                "message": (
+                    f"Adapter {out.get('op')} ok"
+                    if ok
+                    else (err or "network_adapter_apply_failed")
+                ),
+                "data": out,
             }
         except Exception as e:
             return {"success": False, "error": str(e)}

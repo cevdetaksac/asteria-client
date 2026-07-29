@@ -794,6 +794,171 @@ def diff_connectivity(baseline: Optional[dict], current: dict) -> dict:
     }
 
 
+# ── Adapter apply helpers (contract 1.4.42) ───────────────────────────
+
+_VALID_ADAPTER_OPS = frozenset({
+    "enable", "disable", "set_ipv4", "set_dns", "set_config",
+})
+
+
+def clamp_watchdog_sec(value: Any, default: int = 10) -> int:
+    try:
+        sec = int(value if value is not None else default)
+    except (TypeError, ValueError):
+        sec = default
+    return max(5, min(15, sec))
+
+
+def probe_mode_ok(conn: dict, mode: str) -> bool:
+    mode = (mode or "internet").strip().lower()
+    internet_ok = bool(conn.get("internet_ok"))
+    gateway_ok = bool(conn.get("gateway_ok"))
+    if mode == "gateway":
+        return gateway_ok
+    if mode == "internet_and_gateway":
+        return internet_ok and gateway_ok
+    return internet_ok
+
+
+def _find_adapter(adapters: List[dict], name: str) -> Optional[dict]:
+    want = (name or "").strip().lower()
+    for a in adapters or []:
+        if str(a.get("name") or "").strip().lower() == want:
+            return a
+    return None
+
+
+def _adapter_has_mgmt_path(adapter: Optional[dict]) -> bool:
+    if not adapter:
+        return False
+    state = str(adapter.get("state") or "").lower()
+    if state not in ("up", "connected"):
+        return False
+    gw = str(adapter.get("gateway") or "").strip()
+    return bool(gw)
+
+
+def is_last_mgmt_adapter(
+    name: str,
+    live_adapters: List[dict],
+    baseline: Optional[dict] = None,
+) -> bool:
+    """True if disabling *name* would remove the last default-route NIC (C-NAD-7)."""
+    name_l = (name or "").strip().lower()
+    live_mgmt = [
+        a for a in (live_adapters or [])
+        if _adapter_has_mgmt_path(a)
+    ]
+    if not live_mgmt and baseline:
+        live_mgmt = [
+            a for a in (baseline.get("adapters") or [])
+            if _adapter_has_mgmt_path(a)
+        ]
+    if not live_mgmt:
+        # No known mgmt path — refuse disable of any currently-up adapter
+        up = [
+            a for a in (live_adapters or [])
+            if str(a.get("state") or "").lower() in ("up", "connected")
+        ]
+        if len(up) <= 1 and any(
+            str(a.get("name") or "").strip().lower() == name_l for a in up
+        ):
+            return True
+        return False
+    if len(live_mgmt) > 1:
+        return False
+    return str(live_mgmt[0].get("name") or "").strip().lower() == name_l
+
+
+def _classify_adapter_net_error(text: str) -> Optional[str]:
+    low = (text or "").lower()
+    if not low.strip():
+        return None
+    if "access is denied" in low or "erişim engellendi" in low or "erisim engellendi" in low:
+        return "ACCESS_DENIED"
+    if "group policy" in low or "gpo" in low or "grup ilkesi" in low:
+        return "GPO_LOCKED"
+    return None
+
+
+def _apply_ipv4(name: str, ipv4: dict) -> Optional[str]:
+    ipv4 = ipv4 or {}
+    dhcp = bool(ipv4.get("dhcp", False))
+    if dhcp:
+        out = _run([
+            "netsh", "interface", "ip", "set", "address",
+            f"name={name}", "dhcp",
+        ], timeout=15.0)
+        classified = _classify_adapter_net_error(out)
+        if classified:
+            return classified
+        low = (out or "").lower()
+        if "error" in low and "ok" not in low:
+            return classified or "set_ipv4_failed"
+        return None
+    address = str(ipv4.get("address") or "").strip()
+    if not address:
+        return "missing_ipv4_address"
+    try:
+        pfx = int(ipv4.get("prefix_length") if ipv4.get("prefix_length") is not None else 24)
+    except (TypeError, ValueError):
+        pfx = 24
+    mask = _prefix_to_netmask(pfx)
+    gw = str(ipv4.get("gateway") or "").strip()
+    cmd = [
+        "netsh", "interface", "ip", "set", "address",
+        f"name={name}", "static", address, mask,
+    ]
+    if gw:
+        cmd.append(gw)
+    out = _run(cmd, timeout=15.0)
+    classified = _classify_adapter_net_error(out)
+    if classified:
+        return classified
+    low = (out or "").lower()
+    if "error" in low and "ok" not in low:
+        return "set_ipv4_failed"
+    return None
+
+
+def _apply_dns(
+    name: str,
+    dns: Any,
+    *,
+    dns_from_dhcp: bool = False,
+) -> Optional[str]:
+    if dns_from_dhcp or dns == "dhcp" or dns == ["dhcp"]:
+        out = _run([
+            "netsh", "interface", "ip", "set", "dns",
+            f"name={name}", "dhcp",
+        ], timeout=15.0)
+        return _classify_adapter_net_error(out)
+    if dns is None:
+        return None
+    if not isinstance(dns, (list, tuple)):
+        return "invalid_dns"
+    servers = [str(x).strip() for x in dns if str(x).strip() and str(x).strip().lower() != "dhcp"]
+    if not servers:
+        out = _run([
+            "netsh", "interface", "ip", "set", "dns",
+            f"name={name}", "dhcp",
+        ], timeout=15.0)
+        return _classify_adapter_net_error(out)
+    out = _run([
+        "netsh", "interface", "ip", "set", "dns",
+        f"name={name}", "static", servers[0],
+    ], timeout=15.0)
+    classified = _classify_adapter_net_error(out)
+    if classified:
+        return classified
+    for idx, extra in enumerate(servers[1:], start=2):
+        _run([
+            "netsh", "interface", "ip", "add", "dns",
+            f"name={name}", extra, f"index={idx}",
+        ], timeout=15.0)
+    return None
+
+
 # ── NetworkGuard ─────────────────────────────────────────────────────
 
 class NetworkGuard:
@@ -816,6 +981,8 @@ class NetworkGuard:
         self._NET_CUT_PERSIST_SEC = 15
         self._last_auto_restore_mono = 0.0
         self._AUTO_RESTORE_DEDUPE_SEC = 300
+        # Operator adapter apply watchdog (contract 1.4.42) — pause Guard restore
+        self._adapter_apply_pause_until = 0.0
         # Additive surface inform (contract 1.4.17) — soft, never auto-disable
         self._inform_changes: List[dict] = []
         self._inform_fp: str = ""
@@ -989,6 +1156,9 @@ class NetworkGuard:
             return
         if get_maintenance().get("active"):
             return
+        # C-NAD-PRE-4 — pause while operator apply watchdog is armed
+        if time.time() < float(getattr(self, "_adapter_apply_pause_until", 0) or 0):
+            return
         if not baseline or not verify_baseline(baseline):
             return
         now = time.time()
@@ -1112,13 +1282,228 @@ class NetworkGuard:
         # Empty output usually means success for netsh set interface.
         if out.strip() == "":
             ok = True
+        classified = _classify_adapter_net_error(out)
         log(f"[NET-GUARD] disable_adapter name={name!r} ok={ok}")
         return {
             "ok": bool(ok),
             "plan": plan,
             "restore_actions": [f"adapter_disable:{name}"] if ok else [],
-            "error": None if ok else (out.strip() or "disable_failed"),
+            "error": None if ok else (classified or out.strip() or "disable_failed"),
         }
+
+    def enable_adapter(self, name: str, *, dry_run: bool = False) -> dict:
+        name = (name or "").strip()
+        if not name:
+            return {"ok": False, "error": "missing_name"}
+        plan = [{"target": "adapter", "action": "enable", "interface": name}]
+        if dry_run:
+            return {"ok": True, "dry_run": True, "plan": plan}
+        out = _run([
+            "netsh", "interface", "set", "interface",
+            f"name={name}", "admin=ENABLED",
+        ])
+        low = (out or "").lower()
+        ok = "error" not in low and "not found" not in low and "bulunamad" not in low
+        if out.strip() == "":
+            ok = True
+        classified = _classify_adapter_net_error(out)
+        return {
+            "ok": bool(ok),
+            "plan": plan,
+            "restore_actions": [f"adapter_enable:{name}"] if ok else [],
+            "error": None if ok else (classified or out.strip() or "enable_failed"),
+        }
+
+    def adapter_apply(self, params: Optional[dict] = None) -> dict:
+        """Operator NIC mutate + local golden watchdog (contract 1.4.42)."""
+        params = params or {}
+        name = str(params.get("adapter") or params.get("name") or "").strip()
+        op = str(params.get("op") or "").strip().lower()
+        if not name:
+            return {"ok": False, "error": "missing_adapter", "applied": False}
+        if op not in ("enable", "disable", "set_ipv4", "set_dns", "set_config"):
+            return {"ok": False, "error": "invalid_op", "applied": False}
+
+        baseline = self._last_baseline or load_baseline()
+        if not baseline or not verify_baseline(baseline):
+            return {"ok": False, "error": "NO_GOLDEN", "applied": False}
+        base_conn = baseline.get("connectivity") or {}
+        if base_conn.get("internet_ok") is False:
+            return {"ok": False, "error": "GOLDEN_UNHEALTHY", "applied": False}
+
+        live = collect_adapters()
+        if op == "disable" and is_last_mgmt_adapter(name, live, baseline):
+            return {
+                "ok": False,
+                "error": "LAST_MGMT_ADAPTER",
+                "applied": False,
+                "adapter": name,
+                "op": op,
+            }
+
+        watchdog_sec = clamp_watchdog_sec(params.get("watchdog_sec"))
+        on_fail = str(params.get("on_fail") or "restore_golden").strip().lower()
+        if on_fail != "restore_golden":
+            return {"ok": False, "error": "invalid_on_fail", "applied": False}
+        on_success = str(params.get("on_success") or "keep").strip().lower()
+        if on_success not in ("keep", "accept_surface"):
+            on_success = "keep"
+        probe_mode = str(params.get("probe") or "internet").strip().lower()
+        if probe_mode not in ("internet", "gateway", "internet_and_gateway"):
+            probe_mode = "internet"
+
+        # C-NAD-PRE-4 — pause auto_restore for watchdog window (+5s slack)
+        self._adapter_apply_pause_until = time.time() + watchdog_sec + 5.0
+
+        apply_err = self._adapter_apply_mutate(name, op, params)
+        if apply_err:
+            self._adapter_apply_pause_until = 0.0
+            return {
+                "ok": False,
+                "error": apply_err,
+                "applied": False,
+                "adapter": name,
+                "op": op,
+                "rolled_back": False,
+            }
+
+        probe = self._adapter_apply_watchdog(probe_mode, watchdog_sec)
+        golden_version = baseline.get("version")
+
+        if not probe.get("ok"):
+            restored = self.restore_network(
+                baseline=baseline,
+                targets=["adapter", "ipv4", "dns"],
+                adapter_names=[name],
+            )
+            self._adapter_apply_pause_until = 0.0
+            self._emit_adapter_apply_rolled_back(name, op, probe, restored)
+            actions = restored.get("restore_actions") or []
+            return {
+                "ok": False,
+                "error": "WATCHDOG_ROLLBACK",
+                "adapter": name,
+                "op": op,
+                "applied": True,
+                "rolled_back": True,
+                "watchdog_sec": watchdog_sec,
+                "probe": probe,
+                "restore_actions": actions,
+                "golden_version": golden_version,
+            }
+
+        if on_success == "accept_surface":
+            try:
+                accepted = self.accept_surface()
+                golden_version = accepted.get("version") or golden_version
+            except Exception as e:
+                log(f"[NET-GUARD] accept_surface after apply failed: {e}")
+
+        self._adapter_apply_pause_until = 0.0
+        live_now = _find_adapter(collect_adapters(), name) or {"name": name}
+        return {
+            "ok": True,
+            "adapter": name,
+            "op": op,
+            "applied": True,
+            "rolled_back": False,
+            "watchdog_sec": watchdog_sec,
+            "probe": probe,
+            "on_success": on_success,
+            "golden_version": golden_version,
+            "live_adapter": live_now,
+        }
+
+    def _adapter_apply_mutate(self, name: str, op: str, params: dict) -> Optional[str]:
+        """Apply the NIC change. Return error code string or None on success."""
+        if op == "enable":
+            out = self.enable_adapter(name)
+            return None if out.get("ok") else (out.get("error") or "enable_failed")
+        if op == "disable":
+            out = self.disable_adapter(name)
+            err = out.get("error")
+            if not out.get("ok"):
+                return _classify_adapter_net_error(str(err or "")) or err or "disable_failed"
+            return None
+        if op in ("set_ipv4", "set_config"):
+            err = _apply_ipv4(name, params.get("ipv4") or {})
+            if err:
+                return err
+        if op in ("set_dns", "set_config"):
+            if "dns" in params or params.get("dns_from_dhcp"):
+                err = _apply_dns(name, params.get("dns"), dns_from_dhcp=bool(params.get("dns_from_dhcp")))
+                if err:
+                    return err
+            elif op == "set_dns":
+                return "missing_dns"
+        return None
+
+    def _adapter_apply_watchdog(self, probe_mode: str, watchdog_sec: int) -> dict:
+        started = time.time()
+        deadline = started + float(watchdog_sec)
+        last: dict = {}
+        while True:
+            last = check_connectivity()
+            ok = probe_mode_ok(last, probe_mode)
+            elapsed_ms = int((time.time() - started) * 1000)
+            if ok:
+                return {
+                    "mode": probe_mode,
+                    "ok": True,
+                    "internet_ok": bool(last.get("internet_ok")),
+                    "dns_ok": bool(last.get("dns_ok")),
+                    "gateway_ok": bool(last.get("gateway_ok")),
+                    "elapsed_ms": elapsed_ms,
+                }
+            if time.time() >= deadline:
+                return {
+                    "mode": probe_mode,
+                    "ok": False,
+                    "internet_ok": bool(last.get("internet_ok")),
+                    "dns_ok": bool(last.get("dns_ok")),
+                    "gateway_ok": bool(last.get("gateway_ok")),
+                    "elapsed_ms": elapsed_ms,
+                }
+            time.sleep(0.5)
+
+    def _emit_adapter_apply_rolled_back(
+        self, name: str, op: str, probe: dict, restored: dict
+    ) -> None:
+        log(
+            f"[NET-GUARD] adapter_apply rolled back adapter={name!r} op={op} "
+            f"probe_ok={probe.get('ok')}"
+        )
+        if not self.alert_pipeline:
+            return
+        alert = {
+            "severity": "warning",
+            "threat_type": "network_adapter_apply_rolled_back",
+            "title": "Ağ adaptör değişikliği geri alındı",
+            "description": (
+                f"{op} on {name} broke connectivity — restored from golden"
+            ),
+            "threat_score": 45,
+            "target_service": "SYSTEM",
+            "recommended_action": "review_network",
+            "force_urgent": False,
+            "system_context": {
+                "network_guard": {
+                    "trigger": "network_adapter_apply_rolled_back",
+                    "adapter": name,
+                    "op": op,
+                    "probe": probe,
+                    "restore_actions": restored.get("restore_actions") or [],
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                }
+            },
+        }
+        try:
+            if hasattr(self.alert_pipeline, "handle_alert"):
+                self.alert_pipeline.handle_alert(alert)
+            elif hasattr(self.alert_pipeline, "send_urgent"):
+                self.alert_pipeline.send_urgent(alert)
+        except Exception as e:
+            log(f"[NET-GUARD] adapter_apply rollback alert failed: {e}")
 
     def _emit_surface_restored(self, changes: List[dict], restored: dict) -> None:
         if not self.alert_pipeline:
@@ -1324,7 +1709,8 @@ class NetworkGuard:
     def restore_network(self, baseline: Optional[dict] = None,
                         targets: Optional[List[str]] = None,
                         dry_run: bool = False,
-                        rollback_version: Optional[int] = None) -> dict:
+                        rollback_version: Optional[int] = None,
+                        adapter_names: Optional[List[str]] = None) -> dict:
         if rollback_version is not None:
             baseline = load_baseline_version(int(rollback_version))
             if not baseline:
@@ -1344,16 +1730,33 @@ class NetworkGuard:
                 "connectivity": check_connectivity(),
             }
         do = lambda t: (targets is None or t in targets)
+        name_filter = None
+        if adapter_names:
+            name_filter = {str(n).strip() for n in adapter_names if str(n).strip()}
         actions: List[str] = []
+
+        def _want(a: dict) -> bool:
+            if not name_filter:
+                return True
+            return str(a.get("name") or "").strip() in name_filter
 
         if do("adapter"):
             for a in baseline.get("adapters", []):
+                if not _want(a):
+                    continue
                 if str(a.get("state")).lower() == "up" and a.get("name"):
                     _run(["netsh", "interface", "set", "interface",
                           f'name={a["name"]}', "admin=enable"])
                     actions.append(f"adapter_enable:{a['name']}")
+                elif str(a.get("state")).lower() != "up" and a.get("name") and name_filter:
+                    # Scoped rollback of intentional disable → match golden down
+                    _run(["netsh", "interface", "set", "interface",
+                          f'name={a["name"]}', "admin=DISABLED"])
+                    actions.append(f"adapter_disable:{a['name']}")
         if do("ipv4"):
             for a in baseline.get("adapters", []):
+                if not _want(a):
+                    continue
                 name = a.get("name")
                 if not name or str(a.get("state")).lower() != "up":
                     continue
@@ -1364,7 +1767,6 @@ class NetworkGuard:
                 elif a.get("ipv4"):
                     ip = str(a.get("ipv4") or "").split(",")[0].strip()
                     pfx = int(a.get("prefix_length") or 24)
-                    # netsh wants dotted mask; derive from prefix
                     mask = _prefix_to_netmask(pfx)
                     gw = str(a.get("gateway") or "").split(",")[0].strip()
                     cmd = ["netsh", "interface", "ip", "set", "address",
@@ -1375,28 +1777,36 @@ class NetworkGuard:
                     actions.append(f"ipv4_static:{name}")
         if do("dns"):
             for a in baseline.get("adapters", []):
+                if not _want(a):
+                    continue
                 dns = a.get("dns") or []
-                if dns and a.get("name"):
+                name = a.get("name")
+                if not name:
+                    continue
+                if dns:
                     _run(["netsh", "interface", "ip", "set", "dns",
-                          f'name={a["name"]}', "static", dns[0]])
+                          f"name={name}", "static", dns[0]])
                     for extra in dns[1:]:
                         _run(["netsh", "interface", "ip", "add", "dns",
-                              f'name={a["name"]}', extra, "index=2"])
-                    actions.append(f"dns_restore:{a['name']}")
-        if do("firewall"):
+                              f"name={name}", extra, "index=2"])
+                    actions.append(f"dns_restore:{name}")
+                elif name_filter:
+                    _run(["netsh", "interface", "ip", "set", "dns",
+                          f"name={name}", "dhcp"])
+                    actions.append(f"dns_dhcp:{name}")
+        if do("firewall") and not name_filter:
             fw = baseline.get("firewall") or {}
             for prof in ("domain", "private", "public"):
                 if fw.get(prof) == "on":
                     _run(["netsh", "advfirewall", "set", f"{prof}profile",
                           "state", "on"])
             actions.append("firewall_restore")
-        if do("mapped_drive"):
+        if do("mapped_drive") and not name_filter:
             for d in baseline.get("mapped_drives", []):
                 if d.get("persistent") and d.get("letter") and d.get("unc"):
                     _run(["net", "use", d["letter"], d["unc"], "/persistent:yes"])
                     actions.append(f"netuse:{d['letter']}")
 
-        # verify connectivity after restore
         conn = check_connectivity()
         log(f"[NET-GUARD] restore actions={actions} internet_ok={conn['internet_ok']}")
         return {

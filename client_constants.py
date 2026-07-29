@@ -42,7 +42,8 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.51"  # sidebar foot: TR|EN · Motor|Version · tray
+VERSION = "4.9.54"  # network_adapter_apply golden watchdog (contract 1.4.42)
+
 
 CLIENT_VERSION = VERSION  # Main version constant
 __version__ = VERSION  # Export for compatibility
