@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.59"  # Contract 1.4.45 service port relocate sync + GUI
+VERSION = "4.9.60"  # Contract 1.4.45 relocate close-out (C-REL gaps)
 
 
 

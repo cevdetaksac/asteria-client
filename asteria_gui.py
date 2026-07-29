@@ -1239,17 +1239,44 @@ class MotorBridge:
                 targets = prefill_targets_from_tunnel(
                     tunnel if isinstance(tunnel, dict) else None
                 )
+                state = {}
+                if isinstance(tunnel, dict) and isinstance(tunnel.get("relocate_state"), dict):
+                    state = tunnel.get("relocate_state") or {}
                 current_rdp = ServiceController.get_rdp_port() or 3389
                 rows = []
                 for svc, safe in targets.items():
-                    cur = int(current_rdp) if svc == "RDP" else well_known_port(svc)
+                    entry = state.get(svc) or state.get(svc.lower()) or {}
+                    if not isinstance(entry, dict):
+                        entry = {}
+                    cur = entry.get("current_port")
+                    try:
+                        cur_n = int(cur) if cur is not None else None
+                    except (TypeError, ValueError):
+                        cur_n = None
+                    if cur_n is None:
+                        cur_n = int(current_rdp) if svc == "RDP" else well_known_port(svc)
+                    target_busy = False
+                    try:
+                        from client_service_relocate import _bind_ok
+
+                        target_busy = bool(_bind_ok(int(safe))) and int(safe) != int(cur_n)
+                    except Exception:
+                        target_busy = False
                     rows.append(
                         {
                             "service": svc,
-                            "well_known": well_known_port(svc),
-                            "current_port": cur,
+                            "well_known": int(entry.get("classic_port") or well_known_port(svc)),
+                            "current_port": cur_n,
                             "target_port": int(safe),
-                            "default_safe_port": default_safe_port(svc),
+                            "default_safe_port": int(
+                                entry.get("default_safe_port") or default_safe_port(svc)
+                            ),
+                            "relocated": bool(entry.get("relocated")),
+                            "relocating": bool(entry.get("relocating")),
+                            "port_available": entry.get("port_available"),
+                            "target_busy": target_busy,
+                            "last_status": entry.get("last_status"),
+                            "last_reason": entry.get("last_reason"),
                             "supported": svc != "FTP",
                         }
                     )
@@ -1260,9 +1287,7 @@ class MotorBridge:
                     "services": rows,
                     "defaults": dict(DEFAULT_SAFE_PORTS),
                     "well_known": dict(WELL_KNOWN_PORTS),
-                    "relocate_state": (tunnel or {}).get("relocate_state")
-                    if isinstance(tunnel, dict)
-                    else {},
+                    "relocate_state": state,
                 }
 
             if act == "status":
@@ -1291,14 +1316,31 @@ class MotorBridge:
                 target = default_safe_port(svc)
             forbid = is_forbidden_target_port(target)
             if forbid:
-                return {"ok": False, "error": forbid, "new_port": target}
+                return {"ok": False, "error": forbid, "target_port": target, "status": "error"}
             if not is_admin():
-                return {"ok": False, "error": "ADMIN_REQUIRED"}
+                return {"ok": False, "error": "ADMIN_REQUIRED", "status": "error"}
 
-            out = relocate_service({"service": svc, "port": int(target), "verify_sec": 10})
+            # Local bind busy check before mutate (GUI rule)
+            try:
+                from client_service_relocate import _bind_ok
+
+                if _bind_ok(int(target)):
+                    return {
+                        "ok": False,
+                        "error": "TARGET_BUSY",
+                        "reason": "target_port_in_use",
+                        "status": "error",
+                        "target_port": int(target),
+                    }
+            except Exception:
+                pass
+
+            out = relocate_service(
+                {"service": svc, "target_port": int(target), "verify_sec": 10}
+            )
             status = str(out.get("status") or ("ok" if out.get("ok") else "error"))
             old_port = out.get("old_port")
-            new_port = out.get("new_port") or target
+            new_port = out.get("new_port") or out.get("target_port") or target
 
             # Optional bait on well-known after successful real relocate
             bait_started = False

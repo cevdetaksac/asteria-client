@@ -2,25 +2,27 @@
 # -*- coding: utf-8 -*-
 """Service Port Relocate — contract 1.4.45 (client ≥4.9.45).
 
-Flow (C-REL): golden snapshot → firewall → config → restart → ≤10s verify
-→ local golden rollback on failure.
+Flow: pre-check → golden (disk) → firewall → config → restart → ≤10s verify
+→ local golden rollback on failure (C-REL-1…9).
 
 Defaults use 4XXXX safe ports (not 53389 / 9XXXX).
-One relocate at a time (process-wide lock).
+One relocate at a time (C-REL-3).
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from client_helpers import log
 from client_utils import ServiceController, is_admin
 
-# C-REL-7 — default_safe_port (4XXXX). Never 53389 / 9XXXX.
+# Fallback defaults only — prefer cloud relocate_state.saved_target_port
 DEFAULT_SAFE_PORTS: Dict[str, int] = {
     "RDP": 43389,
     "MSSQL": 41433,
@@ -91,24 +93,161 @@ def well_known_port(service: str) -> int:
 
 
 def is_forbidden_target_port(port: int) -> Optional[str]:
-    """C-REL-6: reject 53389 and 9XXXX targets."""
-    p = int(port)
+    """C-REL-6 + obsolete bans: 1024–65535 only; never 53389 / 9XXXX."""
+    try:
+        p = int(port)
+    except (TypeError, ValueError):
+        return "invalid_port"
     if p == 53389:
         return "FORBIDDEN_PORT_53389"
     if 90000 <= p <= 99999:
         return "FORBIDDEN_PORT_9XXXX"
-    if not (1 <= p <= 65535):
+    if p < 1024:
+        return "privileged_port"
+    if p > 65535:
         return "invalid_port"
     return None
 
 
 def clamp_verify_sec(raw: Any, default: float = 10.0) -> float:
-    """C-REL-4: verify window ≤10s (allow slightly lower for tests)."""
+    """C-REL-4: verify window ≤10s."""
     try:
         v = float(raw)
     except (TypeError, ValueError):
         return default
     return max(3.0, min(10.0, v))
+
+
+def _parse_target_port(params: dict, service_id: str) -> int:
+    """Accept contract `target_port` plus legacy aliases."""
+    for key in ("target_port", "port", "to_port", "new_port"):
+        if params.get(key) is None or params.get(key) == "":
+            continue
+        try:
+            n = int(params.get(key))
+            if n > 0:
+                return n
+        except (TypeError, ValueError):
+            continue
+    return default_safe_port(service_id)
+
+
+def reserved_ports(extra_relocated: Optional[Dict[str, int]] = None) -> Set[int]:
+    """C-REL-7 — classic (+ known relocated) ports of other services."""
+    reserved = set(int(v) for v in WELL_KNOWN_PORTS.values())
+    if isinstance(extra_relocated, dict):
+        for v in extra_relocated.values():
+            try:
+                reserved.add(int(v))
+            except (TypeError, ValueError):
+                pass
+    return reserved
+
+
+def _golden_dir() -> Path:
+    try:
+        from client_utils import _programdata_client_dir
+
+        base = Path(_programdata_client_dir())
+    except Exception:
+        base = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "Asteria" / "Client"
+    path = base / "relocate_golden"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _golden_path(service: str) -> Path:
+    return _golden_dir() / f"{str(service).upper()}.json"
+
+
+def save_golden_snapshot(payload: dict) -> bool:
+    """C-REL-2 — persist golden to disk before config mutate."""
+    try:
+        svc = str(payload.get("service") or "").upper()
+        if not svc:
+            return False
+        path = _golden_path(svc)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(str(tmp), str(path))
+        return True
+    except Exception as exc:
+        log(f"[RELOCATE] golden save failed: {exc}")
+        return False
+
+
+def load_golden_snapshot(service: str) -> Optional[dict]:
+    try:
+        path = _golden_path(service)
+        if not path.is_file():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def clear_golden_snapshot(service: str) -> None:
+    try:
+        path = _golden_path(service)
+        if path.is_file():
+            path.unlink()
+    except Exception:
+        pass
+
+
+def firewall_rule_name(service: str, port: int) -> str:
+    """C-REL-5 — AR-RELOCATE-<SVC>-<PORT>."""
+    svc = re.sub(r"[^A-Z0-9]+", "", str(service or "SVC").upper()) or "SVC"
+    return f"AR-RELOCATE-{svc}-{int(port)}"
+
+
+def _ensure_firewall(service: str, port: int) -> None:
+    """Add inbound allow for target before restart (C-REL-5)."""
+    name = firewall_rule_name(service, port)
+    try:
+        from client_winproc import run_hidden
+
+        run_hidden(
+            ["netsh", "advfirewall", "firewall", "delete", "rule", f"name={name}"],
+            timeout=8,
+        )
+    except Exception:
+        pass
+    try:
+        from client_winproc import run_hidden
+
+        run_hidden(
+            [
+                "netsh",
+                "advfirewall",
+                "firewall",
+                "add",
+                "rule",
+                f"name={name}",
+                "dir=in",
+                "action=allow",
+                "protocol=TCP",
+                f"localport={int(port)}",
+            ],
+            timeout=10,
+        )
+    except Exception as exc:
+        log(f"[RELOCATE] firewall ensure {name}: {exc}")
+
+
+def _remove_firewall(service: str, port: int) -> None:
+    """Remove AR-RELOCATE rule on rollback / cleanup (C-REL-5)."""
+    name = firewall_rule_name(service, port)
+    try:
+        from client_winproc import run_hidden
+
+        run_hidden(
+            ["netsh", "advfirewall", "firewall", "delete", "rule", f"name={name}"],
+            timeout=8,
+        )
+    except Exception as exc:
+        log(f"[RELOCATE] firewall remove {name}: {exc}")
 
 
 def resolve_service(params: dict) -> Tuple[Optional[str], Optional[Dict[str, Any]], Optional[str]]:
@@ -179,46 +318,6 @@ def _write_dword(path: str, value: str, port: int) -> bool:
     except Exception as exc:
         log(f"[RELOCATE] write {path}\\{value}={port} failed: {exc}")
         return False
-
-
-def _ensure_firewall(port: int) -> None:
-    """C-REL-3 — open inbound allow for new_port before restart."""
-    try:
-        from client_winproc import run_hidden
-
-        run_hidden(
-            [
-                "netsh",
-                "advfirewall",
-                "firewall",
-                "delete",
-                "rule",
-                f"name=Asteria Relocate {int(port)}",
-            ],
-            timeout=8,
-        )
-    except Exception:
-        pass
-    try:
-        from client_winproc import run_hidden
-
-        run_hidden(
-            [
-                "netsh",
-                "advfirewall",
-                "firewall",
-                "add",
-                "rule",
-                f"name=Asteria Relocate {int(port)}",
-                "dir=in",
-                "action=allow",
-                "protocol=TCP",
-                f"localport={int(port)}",
-            ],
-            timeout=10,
-        )
-    except Exception as exc:
-        log(f"[RELOCATE] firewall ensure :{port} best-effort: {exc}")
 
 
 def _bind_ok(port: int) -> bool:
@@ -596,14 +695,14 @@ def relocate_service(
     global _RELOCATE_BUSY
     params = params if isinstance(params, dict) else {}
 
-    # C-REL-1 — one relocate at a time
+    # C-REL-3 — serialize: one relocate at a time per host
     if not _RELOCATE_LOCK.acquire(blocking=False):
         return {
             "success": False,
             "ok": False,
             "status": "error",
             "error": "RELOCATE_BUSY",
-            "reason": "RELOCATE_BUSY",
+            "reason": "relocate_busy",
             "applied": False,
             "rolled_back": False,
         }
@@ -615,7 +714,7 @@ def relocate_service(
                 "ok": False,
                 "status": "error",
                 "error": "RELOCATE_BUSY",
-                "reason": "RELOCATE_BUSY",
+                "reason": "relocate_busy",
                 "applied": False,
                 "rolled_back": False,
             }
@@ -647,18 +746,13 @@ def _relocate_unlocked(params: dict, *, sleep_fn: Callable[[float], None]) -> di
             "ok": False,
             "status": "error",
             "error": "unsupported_service",
-            "reason": "FTP_RELOCATE_NOT_SUPPORTED",
+            "reason": "ftp_relocate_not_supported",
             "service": "FTP",
             "applied": False,
             "rolled_back": False,
         }
 
-    try:
-        target = int(params.get("port") or params.get("to_port") or params.get("new_port") or 0)
-    except (TypeError, ValueError):
-        target = 0
-    if target <= 0:
-        target = default_safe_port(sid)
+    target = _parse_target_port(params, sid)
 
     forbid = is_forbidden_target_port(target)
     if forbid:
@@ -669,6 +763,26 @@ def _relocate_unlocked(params: dict, *, sleep_fn: Callable[[float], None]) -> di
             "error": forbid,
             "reason": forbid,
             "service": sid,
+            "old_port": None,
+            "target_port": int(target),
+            "new_port": int(target),
+            "applied": False,
+            "rolled_back": False,
+        }
+
+    # C-REL-7 — cannot land on another service's classic (or known relocated) port
+    extra = params.get("reserved_ports") if isinstance(params.get("reserved_ports"), dict) else None
+    reserved = reserved_ports(extra)
+    own_classic = well_known_port(sid)
+    if int(target) in reserved and int(target) != own_classic:
+        return {
+            "success": False,
+            "ok": False,
+            "status": "error",
+            "error": "PORT_RESERVED",
+            "reason": "port_reserved_classic",
+            "service": sid,
+            "target_port": int(target),
             "new_port": int(target),
             "applied": False,
             "rolled_back": False,
@@ -693,7 +807,7 @@ def _relocate_unlocked(params: dict, *, sleep_fn: Callable[[float], None]) -> di
             "ok": False,
             "status": "error",
             "error": "ADMIN_REQUIRED",
-            "reason": "ADMIN_REQUIRED",
+            "reason": "admin_required",
             "service": sid,
             "applied": False,
             "rolled_back": False,
@@ -702,8 +816,9 @@ def _relocate_unlocked(params: dict, *, sleep_fn: Callable[[float], None]) -> di
     scm = _resolve_scm(profile, params)
     verify_sec = clamp_verify_sec(params.get("verify_sec") or params.get("watchdog_sec") or 10)
     ensure_fw = params.get("ensure_firewall", True) is not False
+    skip_precheck = bool(params.get("skip_precheck"))
 
-    # C-REL-2 — golden snapshot
+    # Golden = current listen/config port
     golden_port = _read_golden(profile, params)
     if golden_port is None:
         return {
@@ -711,7 +826,7 @@ def _relocate_unlocked(params: dict, *, sleep_fn: Callable[[float], None]) -> di
             "ok": False,
             "status": "error",
             "error": "NO_GOLDEN",
-            "reason": "NO_GOLDEN",
+            "reason": "no_golden",
             "service": sid,
             "applied": False,
             "rolled_back": False,
@@ -726,9 +841,10 @@ def _relocate_unlocked(params: dict, *, sleep_fn: Callable[[float], None]) -> di
                     "ok": False,
                     "status": "error",
                     "error": "PORT_MISMATCH",
-                    "reason": "PORT_MISMATCH",
+                    "reason": "port_mismatch",
                     "service": sid,
                     "old_port": int(golden_port),
+                    "target_port": int(target),
                     "new_port": int(target),
                     "applied": False,
                     "rolled_back": False,
@@ -741,6 +857,7 @@ def _relocate_unlocked(params: dict, *, sleep_fn: Callable[[float], None]) -> di
         "scm": scm,
         "old_port": int(golden_port),
         "new_port": int(target),
+        "target_port": int(target),
         "verify_sec": verify_sec,
     }
 
@@ -757,48 +874,97 @@ def _relocate_unlocked(params: dict, *, sleep_fn: Callable[[float], None]) -> di
             **base,
         }
 
+    # Pre-check: target must be free (1c); classic-in-use is soft warning only
+    if not skip_precheck:
+        if _bind_ok(int(target)):
+            return {
+                "success": False,
+                "ok": False,
+                "status": "error",
+                "error": "TARGET_BUSY",
+                "reason": "target_port_in_use",
+                "applied": False,
+                "rolled_back": False,
+                **base,
+            }
+
+    # C-REL-2 — persist golden to disk before mutate
+    golden_payload = {
+        "service": sid,
+        "scm": scm,
+        "old_port": int(golden_port),
+        "target_port": int(target),
+        "kind": profile.get("kind"),
+        "registry_path": profile.get("registry_path"),
+        "registry_value": profile.get("registry_value"),
+        "saved_at": time.time(),
+    }
+    if not save_golden_snapshot(golden_payload):
+        return {
+            "success": False,
+            "ok": False,
+            "status": "error",
+            "error": "GOLDEN_PERSIST_FAILED",
+            "reason": "golden_persist_failed",
+            "applied": False,
+            "rolled_back": False,
+            **base,
+        }
+
+    def _reason_token(reason: str) -> str:
+        mapping = {
+            "START_FAILED": "start_failed",
+            "BIND_FAILED": "bind_verify_failed",
+            "CONFIG_DRIFT": "config_drift",
+        }
+        return mapping.get(reason, str(reason or "error").lower())
+
     def _rollback(reason: str) -> dict:
-        # C-REL-5
-        log(f"[RELOCATE] rollback -> :{golden_port} ({reason})")
+        # C-REL-1 — local rollback; C-REL-5 — drop new-port firewall
+        token = _reason_token(reason)
+        log(f"[RELOCATE] rollback -> :{golden_port} ({token})")
+        if ensure_fw:
+            _remove_firewall(sid, int(target))
         wrote = _write_config(profile, int(golden_port))
         ServiceController.stop(scm, timeout=40, log_func=log)
         sleep_fn(1.0)
         started = ServiceController.start(scm, timeout=40, log_func=log)
         sleep_fn(1.0)
         bind = _verify_bind(int(golden_port), min(verify_sec, 8.0), settle=0.4)
+        # Keep golden on disk until success so crash recovery can use it
         return {
             "success": False,
             "ok": False,
             "status": "rollback",
             "error": "GOLDEN_ROLLBACK",
-            "reason": reason,
+            "reason": token,
             "applied": True,
             "rolled_back": True,
             "rollback_wrote": wrote,
             "rollback_started": bool(started),
             "bind_ok": bool(bind),
-            "message": f"{sid} relocate failed ({reason}); restored :{golden_port}",
+            "message": f"{sid} relocate failed ({token}); restored :{golden_port}",
             **base,
         }
 
-    # C-REL-3 — firewall before config/restart
+    # C-REL-5 — firewall before config/restart
     if ensure_fw:
-        _ensure_firewall(int(target))
+        _ensure_firewall(sid, int(target))
 
-    # Config change (service may still be running — restart applies)
     if not _write_config(profile, int(target)):
+        if ensure_fw:
+            _remove_firewall(sid, int(target))
         return {
             "success": False,
             "ok": False,
             "status": "error",
             "error": "CONFIG_FAILED",
-            "reason": "CONFIG_FAILED",
+            "reason": "config_failed",
             "applied": False,
             "rolled_back": False,
             **base,
         }
 
-    # Restart = stop + start
     ServiceController.stop(scm, timeout=40, log_func=log)
     sleep_fn(1.0)
     if not ServiceController.start(scm, timeout=40, log_func=log):
@@ -808,6 +974,7 @@ def _relocate_unlocked(params: dict, *, sleep_fn: Callable[[float], None]) -> di
     if not _verify_bind(int(target), verify_sec):
         return _rollback("BIND_FAILED")
 
+    clear_golden_snapshot(sid)
     log(f"[RELOCATE] {sid} :{golden_port} -> :{target} OK")
     return {
         "success": True,

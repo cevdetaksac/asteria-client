@@ -1,3 +1,12 @@
+# v4.9.60
+
+## Contract 1.4.45 relocate close-out
+- Accept dashboard `target_port`; golden snapshot **on disk** (C-REL-2)
+- Pre-check target free; reject `<1024` / classic-port collisions (C-REL-6/7)
+- Firewall `AR-RELOCATE-<SVC>-<PORT>`; remove on rollback (C-REL-5)
+- Rollback result: `status:rollback` + `reason:bind_verify_failed` + `target_port`
+- GUI: relocated/relocating badges, target-busy / port_available hints
+
 # v4.9.59
 
 ## Contract 1.4.45 — Service Port Relocate (sync + GUI)

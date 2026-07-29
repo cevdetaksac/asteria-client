@@ -3176,7 +3176,8 @@ class RemoteCommandExecutor:
         ok = status == "ok"
         service = out.get("service")
         old_port = out.get("old_port")
-        new_port = out.get("new_port")
+        new_port = out.get("new_port") or out.get("target_port")
+        target_port = out.get("target_port") or new_port
         # Normative commands/result payload (1.4.45)
         result = {
             "success": ok,
@@ -3191,6 +3192,8 @@ class RemoteCommandExecutor:
         if not ok:
             result["error"] = out.get("error") or status.upper()
             result["reason"] = out.get("reason") or out.get("error") or status
+            # Contract rollback shape uses target_port
+            result["target_port"] = target_port
         # Preserve extras for dashboard debugging without breaking SoT fields
         for key in ("scm", "applied", "rolled_back", "bind_ok", "noop", "verify_sec"):
             if key in out:

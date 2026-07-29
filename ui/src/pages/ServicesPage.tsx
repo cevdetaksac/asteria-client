@@ -17,6 +17,12 @@ type RelocateRow = {
   target_port: number
   default_safe_port: number
   supported?: boolean
+  relocated?: boolean
+  relocating?: boolean
+  port_available?: boolean | null
+  target_busy?: boolean
+  last_status?: string | null
+  last_reason?: string | null
 }
 
 const FALLBACK_ROWS: RelocateRow[] = [
@@ -74,6 +80,12 @@ export function ServicesPage({ onToast }: Props) {
           target_port: Number(row.target_port || row.default_safe_port || 0),
           default_safe_port: Number(row.default_safe_port || 0),
           supported: row.supported !== false,
+          relocated: Boolean(row.relocated),
+          relocating: Boolean(row.relocating),
+          port_available: row.port_available as boolean | null | undefined,
+          target_busy: Boolean(row.target_busy),
+          last_status: row.last_status ? String(row.last_status) : null,
+          last_reason: row.last_reason ? String(row.last_reason) : null,
         })),
       )
     }
@@ -156,8 +168,16 @@ export function ServicesPage({ onToast }: Props) {
 
   const runRelocate = async (row: RelocateRow) => {
     const target = Number(targets[row.service] ?? row.target_port ?? row.default_safe_port)
-    if (!target || target === 53389 || (target >= 90000 && target <= 99999)) {
+    if (!target || target < 1024 || target > 65535 || target === 53389 || (target >= 90000 && target <= 99999)) {
       onToast(t('relocate_forbidden_port'), 'err')
+      return
+    }
+    if (row.target_busy || row.port_available === false) {
+      onToast(t('relocate_target_busy', { port: target }), 'err')
+      return
+    }
+    if (row.relocating) {
+      onToast(t('relocate_in_progress'), 'err')
       return
     }
     if (!window.confirm(t('relocate_confirm', { service: row.service, port: target }))) return
@@ -169,7 +189,7 @@ export function ServicesPage({ onToast }: Props) {
           t('toast_relocate_ok', {
             service: row.service,
             old: String(result.old_port ?? row.current_port),
-            port: String(result.new_port ?? target),
+            port: String(result.new_port ?? result.target_port ?? target),
           }),
           'ok',
         )
@@ -271,29 +291,47 @@ export function ServicesPage({ onToast }: Props) {
             <tbody>
               {relocateRows.map((row) => {
                 const target = targets[row.service] ?? row.target_port
-                const busyRow = relocateBusy === row.service
+                const busyRow = relocateBusy === row.service || Boolean(row.relocating)
+                const anyBusy = Boolean(relocateBusy) || relocateRows.some((r) => r.relocating)
                 return (
                   <tr key={row.service}>
-                    <td><strong>{row.service}</strong></td>
+                    <td>
+                      <strong>{row.service}</strong>
+                      {row.relocated ? (
+                        <span className="pill ok" style={{ marginLeft: 8 }}>{t('relocate_badge_ok', { port: row.current_port })}</span>
+                      ) : null}
+                      {row.relocating ? (
+                        <span className="pill muted" style={{ marginLeft: 8 }}>{t('relocate_badge_busy')}</span>
+                      ) : null}
+                    </td>
                     <td className="mono">{row.well_known}</td>
                     <td className="mono">{row.current_port}</td>
                     <td>
                       <input
                         className="input sm mono"
                         type="number"
-                        min={1}
+                        min={1024}
                         max={65535}
                         value={target}
                         disabled={busyRow || row.supported === false}
                         onChange={(e) => setTarget(row.service, e.target.value)}
                         aria-label={`${row.service} target port`}
                       />
+                      {row.target_busy || row.port_available === false ? (
+                        <div className="muted" style={{ fontSize: 11 }}>{t('relocate_target_busy', { port: target })}</div>
+                      ) : null}
                     </td>
                     <td className="actions-cell">
                       <button
                         type="button"
                         className="btn sm"
-                        disabled={busyRow || row.supported === false || Boolean(relocateBusy)}
+                        disabled={
+                          busyRow
+                          || row.supported === false
+                          || anyBusy
+                          || row.target_busy
+                          || row.port_available === false
+                        }
                         onClick={() => void runRelocate(row)}
                       >
                         {busyRow ? t('label_loading') : t('relocate_btn')}
