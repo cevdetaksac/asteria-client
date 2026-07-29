@@ -147,5 +147,127 @@ class TestSelectSessionRow(unittest.TestCase):
         self.assertEqual(pick["username"], "alice")
 
 
+class TestWinlogonStartContract(unittest.TestCase):
+    """C-RD-CON-2/3 — omit SID → console; never bind username on winlogon."""
+
+    def _make_rd(self):
+        from client_remote_desktop import RemoteDesktopStreamer
+        return RemoteDesktopStreamer(api_client=None, token_getter=lambda: "")
+
+    def test_omit_session_id_uses_console_not_rdp(self):
+        rd = self._make_rd()
+        sessions = [
+            {
+                "session_id": 1,
+                "username": "rdpuser",
+                "protocol": "RDP",
+                "status": "Active",
+            },
+            {
+                "session_id": 3,
+                "username": "",
+                "protocol": "Console",
+                "status": "Connected",
+                "pre_logon": True,
+                "desktop": "winlogon",
+                "can_capture": True,
+            },
+        ]
+
+        with mock.patch.object(
+            rd, "_enumerate_sessions", return_value=sessions
+        ), mock.patch(
+            "client_rd_winlogon.console_session_id", return_value=3
+        ), mock.patch.object(
+            rd, "_session_ids", return_value=(0, 3)
+        ), mock.patch.object(
+            rd, "_attach_input_desktop", return_value=False
+        ), mock.patch.object(
+            rd, "_grab_jpeg", return_value=(None, 0, 0)
+        ), mock.patch.object(
+            rd, "_grab_via_user_helper", return_value=(None, 0, 0)
+        ), mock.patch.object(
+            rd, "emit_stream_progress"
+        ):
+            result = rd.start(
+                prefer="winlogon",
+                pre_logon=True,
+                desktop="Winlogon",
+                username="should-be-ignored",
+            )
+        self.assertEqual(rd._target_session_id, 3)
+        self.assertEqual(rd._target_username, "")
+        self.assertTrue(rd._winlogon_mode)
+        self.assertFalse(result.get("success"))
+
+    def test_winlogon_strips_username_even_when_sid_given(self):
+        rd = self._make_rd()
+        sessions = [
+            {
+                "session_id": 2,
+                "username": "alice",
+                "protocol": "Console",
+                "status": "Active",
+            },
+            {
+                "session_id": 2,
+                "username": "",
+                "pre_logon": True,
+                "desktop": "winlogon",
+                "protocol": "Console",
+                "can_capture": True,
+            },
+        ]
+        with mock.patch.object(
+            rd, "_enumerate_sessions", return_value=sessions
+        ), mock.patch.object(
+            rd, "_session_ids", return_value=(0, 2)
+        ), mock.patch.object(
+            rd, "_attach_input_desktop", return_value=False
+        ), mock.patch.object(
+            rd, "_grab_jpeg", return_value=(None, 0, 0)
+        ), mock.patch.object(
+            rd, "_grab_via_user_helper", return_value=(None, 0, 0)
+        ), mock.patch.object(
+            rd, "emit_stream_progress"
+        ):
+            rd.start(
+                session_id=2,
+                prefer="winlogon",
+                pre_logon=True,
+                username="alice",
+            )
+        self.assertEqual(rd._target_session_id, 2)
+        self.assertEqual(rd._target_username, "")
+        self.assertTrue(rd._winlogon_mode)
+
+
+class TestAttachStrictWinlogon(unittest.TestCase):
+    def test_strict_rejects_non_winlogon_input(self):
+        from client_rd_winlogon import attach_console_desktop
+
+        fake_user32 = mock.MagicMock()
+        fake_user32.OpenDesktopW.return_value = 0
+        fake_user32.OpenInputDesktop.return_value = 99
+        fake_user32.SetThreadDesktop.return_value = True
+        fake_user32.CloseDesktop.return_value = True
+
+        with mock.patch("client_rd_winlogon._user32", fake_user32), mock.patch(
+            "client_rd_winlogon._kernel32.SetLastError"
+        ), mock.patch(
+            "client_rd_winlogon._kernel32.GetLastError", return_value=5
+        ), mock.patch(
+            "client_rd_winlogon.desktop_name", return_value="Default"
+        ), mock.patch(
+            "client_rd_winlogon.switch_to_winsta0", return_value=(True, "WinSta0")
+        ):
+            ok, detail, hdesk = attach_console_desktop(
+                prefer_winlogon=True, strict_winlogon=True
+            )
+        self.assertFalse(ok)
+        self.assertIsNone(hdesk)
+        self.assertIn("strict Winlogon", detail)
+
+
 if __name__ == "__main__":
     unittest.main()

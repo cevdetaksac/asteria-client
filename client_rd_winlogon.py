@@ -68,13 +68,21 @@ def switch_to_winsta0() -> Tuple[bool, str]:
 def attach_console_desktop(
     *,
     prefer_winlogon: bool = True,
+    strict_winlogon: bool = False,
+    follow_input: bool = False,
     close_previous: Optional[int] = None,
 ) -> Tuple[bool, str, Optional[int]]:
     """Bind the calling thread to the console input desktop.
 
     When ``prefer_winlogon`` is True, try the named ``Winlogon`` desktop first
-    (logon / lock UI). OpenInputDesktop is only a fallback — when a user is
-    logged on unlocked it returns ``Default`` and would skip the logon surface.
+    (logon / lock UI). OpenInputDesktop alone is insufficient when Default is
+    active (C-RD-CON-4).
+
+    ``strict_winlogon=True`` refuses falling through to Default — Logon-ekranı
+    start must not claim Winlogon while capturing Default.
+
+    ``follow_input=True`` skips named OpenDesktop and binds whatever the console
+    currently presents (Winlogon while locked; Default after logon — C-RD-CON-6).
 
     Returns ``(ok, desktop_name_or_error, hdesk)``.
     Caller owns ``hdesk`` and should CloseDesktop when replacing.
@@ -89,8 +97,50 @@ def attach_console_desktop(
     if not ok_ws:
         log(f"[RD-WINLOGON] {ws_detail}")
 
-    names = ("Winlogon", "Default") if prefer_winlogon else ("Default", "Winlogon")
     tried = []
+
+    def _try_input_desktop() -> Tuple[bool, str, Optional[int]]:
+        try:
+            _kernel32.SetLastError(0)
+            hdesk = _user32.OpenInputDesktop(0, False, DESKTOP_GENERIC_ALL)
+            if not hdesk:
+                tried.append(f"OpenInputDesktop err={_kernel32.GetLastError()}")
+                return False, "", None
+            resolved = desktop_name(hdesk) or "Input"
+            if prefer_winlogon and strict_winlogon and resolved.lower() != "winlogon":
+                tried.append(f"OpenInputDesktop={resolved} (rejected: strict Winlogon)")
+                try:
+                    _user32.CloseDesktop(hdesk)
+                except Exception:
+                    pass
+                return False, "", None
+            if _user32.SetThreadDesktop(hdesk):
+                log(f"[RD-WINLOGON] attached via OpenInputDesktop name={resolved}")
+                return True, resolved, int(hdesk)
+            tried.append(f"Input/SetThread err={_kernel32.GetLastError()}")
+            try:
+                _user32.CloseDesktop(hdesk)
+            except Exception:
+                pass
+            return False, "", None
+        except Exception as exc:
+            tried.append(f"OpenInputDesktop: {exc}")
+            return False, "", None
+
+    if follow_input:
+        ok, name, hdesk = _try_input_desktop()
+        if ok:
+            return True, name, hdesk
+        detail = "; ".join(tried)[:240] or "attach_failed"
+        log(f"[RD-WINLOGON] follow_input failed: {detail}")
+        return False, detail, None
+
+    if prefer_winlogon and strict_winlogon:
+        names = ("Winlogon",)
+    elif prefer_winlogon:
+        names = ("Winlogon", "Default")
+    else:
+        names = ("Default", "Winlogon")
 
     OpenDesktopW = _user32.OpenDesktopW
     OpenDesktopW.argtypes = [
@@ -119,23 +169,9 @@ def attach_console_desktop(
             tried.append(f"OpenDesktop({name}): {exc}")
 
     # Fallback: current input desktop (may be Winlogon at pre-logon / lock).
-    try:
-        _kernel32.SetLastError(0)
-        hdesk = _user32.OpenInputDesktop(0, False, DESKTOP_GENERIC_ALL)
-        if hdesk:
-            if _user32.SetThreadDesktop(hdesk):
-                name = desktop_name(hdesk) or "Input"
-                log(f"[RD-WINLOGON] attached via OpenInputDesktop name={name}")
-                return True, name, int(hdesk)
-            tried.append(f"Input/SetThread err={_kernel32.GetLastError()}")
-            try:
-                _user32.CloseDesktop(hdesk)
-            except Exception:
-                pass
-        else:
-            tried.append(f"OpenInputDesktop err={_kernel32.GetLastError()}")
-    except Exception as exc:
-        tried.append(f"OpenInputDesktop: {exc}")
+    ok, name, hdesk = _try_input_desktop()
+    if ok:
+        return True, name, hdesk
 
     detail = "; ".join(tried)[:240] or "attach_failed"
     log(f"[RD-WINLOGON] attach failed: {detail}")
@@ -144,7 +180,9 @@ def attach_console_desktop(
 
 def probe_winlogon_capture(max_width: int = 1280) -> dict:
     """One-shot BitBlt of the console desktop (Winlogon or Default)."""
-    ok, name, hdesk = attach_console_desktop(prefer_winlogon=True)
+    ok, name, hdesk = attach_console_desktop(
+        prefer_winlogon=True, strict_winlogon=True
+    )
     if not ok:
         return {
             "ok": False,

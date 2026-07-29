@@ -464,6 +464,9 @@ class RemoteDesktopStreamer:
                     "data": self.get_status(),
                 }
 
+            # C-RD-CON-3: Winlogon / Logon path never binds a username (Default stick).
+            bind_username = None if want_winlogon else username
+
             resolved_sid: Optional[int] = None
             if session_id is not None:
                 try:
@@ -476,7 +479,7 @@ class RemoteDesktopStreamer:
                     if int(s.get("session_id") or 0) == resolved_sid
                 ]
                 match = self._select_session_row(
-                    same_sid, want_winlogon=want_winlogon, username=username
+                    same_sid, want_winlogon=want_winlogon, username=bind_username
                 )
                 if match is None:
                     err = "NO_INTERACTIVE_SESSION"
@@ -491,28 +494,54 @@ class RemoteDesktopStreamer:
                     }
                 self._target_session_id = resolved_sid
                 if want_winlogon or match.get("pre_logon"):
-                    self._target_username = (username or "").strip()
+                    self._target_username = ""
                 else:
                     self._target_username = (
-                        (username or "").strip()
+                        (bind_username or "").strip()
                         or str(match.get("username") or "")
                     )
             else:
-                pool = interactive
+                # C-RD-CON-2: omit session_id → WTSGetActiveConsoleSessionId (never SID=1).
                 if want_winlogon:
-                    pre_rows = [s for s in interactive if s.get("pre_logon")]
-                    if pre_rows:
-                        pool = pre_rows
-                picked = self._pick_default_session(pool)
-                self._target_session_id = int(picked["session_id"])
-                if want_winlogon or picked.get("pre_logon"):
-                    self._target_username = (username or "").strip()
+                    try:
+                        from client_rd_winlogon import console_session_id
+                        csid = int(console_session_id() or 0)
+                    except Exception:
+                        csid = 0
+                    if csid > 0:
+                        same_sid = [
+                            s for s in interactive
+                            if int(s.get("session_id") or 0) == csid
+                        ]
+                        if not same_sid:
+                            same_sid = [
+                                s for s in interactive if s.get("pre_logon")
+                            ] or interactive
+                        picked = self._select_session_row(
+                            same_sid, want_winlogon=True, username=None
+                        ) or same_sid[0]
+                        self._target_session_id = csid
+                        self._target_username = ""
+                        match = picked
+                        log(
+                            f"[REMOTE-DESKTOP] winlogon omit-sid → console "
+                            f"WTSGetActiveConsoleSessionId={csid}"
+                        )
+                    else:
+                        pre_rows = [s for s in interactive if s.get("pre_logon")]
+                        pool = pre_rows or interactive
+                        picked = self._pick_default_session(pool)
+                        self._target_session_id = int(picked["session_id"])
+                        self._target_username = ""
+                        match = picked
                 else:
+                    picked = self._pick_default_session(interactive)
+                    self._target_session_id = int(picked["session_id"])
                     self._target_username = (
-                        (username or "").strip()
+                        (bind_username or "").strip()
                         or str(picked.get("username") or "")
                     )
-                match = picked
+                    match = picked
 
             match_meta = match if isinstance(match, dict) else {}
             self._winlogon_mode = bool(
@@ -524,6 +553,8 @@ class RemoteDesktopStreamer:
                 )
                 or str(match_meta.get("desktop") or "").lower() == "winlogon"
             )
+            if self._winlogon_mode:
+                self._target_username = ""
 
             pid_sid, csid = self._session_ids()
             # Capture other user's desktop via helper when not already in that session.
@@ -1953,11 +1984,24 @@ class RemoteDesktopStreamer:
             return True
         try:
             from client_rd_winlogon import attach_console_desktop
-            prefer_wl = bool(self._winlogon_mode) or force
-            ok, name, hdesk = attach_console_desktop(
-                prefer_winlogon=prefer_wl,
-                close_previous=self._input_desktop if force else None,
-            )
+            # C-RD-CON-4: start / steady Winlogon attach is strict named Winlogon.
+            # C-RD-CON-6: periodic reattach follows OpenInputDesktop (Default after logon).
+            if force and self._winlogon_mode:
+                ok, name, hdesk = attach_console_desktop(
+                    follow_input=True,
+                    close_previous=self._input_desktop,
+                )
+            elif self._winlogon_mode:
+                ok, name, hdesk = attach_console_desktop(
+                    prefer_winlogon=True,
+                    strict_winlogon=True,
+                    close_previous=None,
+                )
+            else:
+                ok, name, hdesk = attach_console_desktop(
+                    prefer_winlogon=False,
+                    close_previous=self._input_desktop if force else None,
+                )
             if ok and hdesk:
                 self._input_desktop = hdesk
                 self._desktop_attached = True
@@ -1967,10 +2011,18 @@ class RemoteDesktopStreamer:
                     self._winlogon_mode = False
                     log("[REMOTE-DESKTOP] desktop switched Winlogon→Default (post-logon)")
                 return True
+            if self._winlogon_mode and not force:
+                # C-RD-CON-4: do not silently capture Default while claiming Winlogon.
+                log(f"[REMOTE-DESKTOP] strict Winlogon attach failed: {name}")
+                return False
         except Exception as e:
             log(f"[REMOTE-DESKTOP] winlogon attach error: {e}")
+            if self._winlogon_mode and not force:
+                return False
 
         # Legacy fallback (same session / already on WinSta0)
+        if self._winlogon_mode and not force:
+            return False
         try:
             import ctypes
             user32 = ctypes.windll.user32
@@ -1990,10 +2042,29 @@ class RemoteDesktopStreamer:
                 except Exception:
                     pass
                 return False
+            # Resolve real name; reject Default while still in strict winlogon start.
+            try:
+                from client_rd_winlogon import desktop_name as _desk_name
+                resolved = (_desk_name(hdesk) or "Input").strip()
+            except Exception:
+                resolved = "Input"
+            if self._winlogon_mode and resolved.lower() not in ("winlogon", "input"):
+                log(
+                    f"[REMOTE-DESKTOP] legacy input desktop={resolved} "
+                    "rejected under winlogon_mode"
+                )
+                try:
+                    user32.CloseDesktop(hdesk)
+                except Exception:
+                    pass
+                return False
             self._input_desktop = hdesk
             self._desktop_attached = True
-            self._desktop_name = "Input"
-            log("[REMOTE-DESKTOP] attached to input desktop")
+            self._desktop_name = resolved
+            if resolved.lower() == "default" and self._winlogon_mode:
+                self._winlogon_mode = False
+                log("[REMOTE-DESKTOP] desktop switched Winlogon→Default (post-logon)")
+            log(f"[REMOTE-DESKTOP] attached to input desktop name={resolved}")
             return True
         except Exception as e:
             log(f"[REMOTE-DESKTOP] desktop attach error: {e}")

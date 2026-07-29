@@ -1239,20 +1239,32 @@ class RemoteCommandExecutor:
             or params.get("command_id")
             or ""
         )
+        prefer = params.get("prefer") or None
+        desktop = params.get("desktop") or None
+        pre_logon = (
+            bool(params.get("pre_logon"))
+            if params.get("pre_logon") is not None
+            else None
+        )
+        prefer_l = str(prefer or "").strip().lower()
+        desktop_l = str(desktop or "").strip().lower()
+        want_winlogon = bool(
+            prefer_l in ("winlogon", "console", "pre_logon", "pre-logon")
+            or desktop_l in ("winlogon",)
+            or pre_logon is True
+        )
+        # C-RD-CON-3: cloud strips username; client also refuses bind on this path.
+        username = None if want_winlogon else (params.get("username") or None)
         result = rd.start(
             fps=float(params.get("fps", 6.0) or 6.0),
             quality=int(params.get("quality", 35) or 35),
             max_width=int(params.get("max_width", 1280) or 1280),
             session_id=sid,
-            username=(params.get("username") or None),
+            username=username,
             monitor=mon,
-            prefer=(params.get("prefer") or None),
-            desktop=(params.get("desktop") or None),
-            pre_logon=(
-                bool(params.get("pre_logon"))
-                if params.get("pre_logon") is not None
-                else None
-            ),
+            prefer=prefer,
+            desktop=desktop,
+            pre_logon=pre_logon,
             command_id=cmd_id or None,
         )
         if result.get("success"):
@@ -1287,8 +1299,47 @@ class RemoteCommandExecutor:
         return rd.apply_input(params or {})
 
     def _cmd_remote_send_sas(self, params: dict) -> dict:
-        """Ctrl+Alt+Del Secure Attention Sequence via SendSAS (sas.dll)."""
+        """Ctrl+Alt+Del Secure Attention Sequence via SendSAS (sas.dll).
+
+        C-RD-CON-7: target the same console/session as the live stream; omit
+        username on Winlogon CAD. Attach Winlogon before SendSAS when streaming
+        the logon surface.
+        """
         session_id = params.get("session_id")
+        try:
+            session_id = (
+                int(session_id)
+                if session_id is not None and str(session_id).strip() != ""
+                else None
+            )
+        except (TypeError, ValueError):
+            session_id = None
+
+        rd = self._get_remote_desktop()
+        if session_id is None:
+            try:
+                sid = getattr(rd, "_target_session_id", None)
+                session_id = int(sid) if sid is not None else None
+            except (TypeError, ValueError):
+                session_id = None
+        if session_id is None:
+            try:
+                from client_rd_winlogon import console_session_id
+                csid = int(console_session_id() or 0)
+                session_id = csid if csid > 0 else None
+            except Exception:
+                session_id = None
+
+        # Bind calling thread to the stream desktop so SAS lands on Winlogon/Default.
+        try:
+            if getattr(rd, "_winlogon_mode", False):
+                from client_rd_winlogon import attach_console_desktop
+                attach_console_desktop(prefer_winlogon=True, strict_winlogon=True)
+            elif getattr(rd, "_running", False):
+                rd._attach_input_desktop()
+        except Exception as exc:
+            log(f"[REMOTE-CMD] remote_send_sas desktop attach: {exc}")
+
         try:
             ok, detail = self._send_sas(session_id=session_id)
             if ok:

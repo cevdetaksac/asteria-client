@@ -1,6 +1,6 @@
 # Asteria Client
 
-**Current Version: 4.9.54**
+**Current Version: 4.9.55**
 
 Windows agent for [Asteria](https://asteria.run): honeypot tunnels, threat response, remote desktop, and firewall sync. Open-source client; cloud/dashboard features may require a license.
 

@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.54"  # network_adapter_apply golden watchdog (contract 1.4.42)
+VERSION = "4.9.55"  # remote console parity C-RD-CON-* (contract 1.4.43)
 
 
 CLIENT_VERSION = VERSION  # Main version constant

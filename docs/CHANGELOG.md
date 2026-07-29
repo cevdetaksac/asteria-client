@@ -1,3 +1,13 @@
+# v4.9.55
+
+## Remote console parity (contract 1.4.43)
+- **C-RD-CON-2:** omit `session_id` on Logon Start → `WTSGetActiveConsoleSessionId` (never assume SID 1 / Active RDP).
+- **C-RD-CON-3:** Winlogon path never binds username.
+- **C-RD-CON-4/5:** strict named `WinSta0\Winlogon` attach; sustained `gdi+black` still fails.
+- **C-RD-CON-6:** periodic reattach follows input desktop → Default after logon (no second Start).
+- **C-RD-CON-7:** `remote_send_sas` uses stream/console SID + Winlogon attach before SendSAS.
+- **C-RD-CON-8:** Health/`list_sessions` Logon/Lock `pre_logon:true` sibling (unchanged, kept).
+
 # v4.9.54
 
 ## Network Adapter Admin (contract 1.4.42)
