@@ -421,6 +421,7 @@ export function ThreatPage({ onToast }: Props) {
             <h3>
               {t('threat_alerts_title')}
               {recentAlerts.length > 0 ? <span className="pill danger threat-count-pill">{recentAlerts.length}</span> : null}
+              {!threatsReady && <span className="inline-spinner" />}
             </h3>
             <p className="muted">{t('threat_alerts_blurb')}</p>
           </div>
@@ -440,11 +441,9 @@ export function ThreatPage({ onToast }: Props) {
               </tr>
             </thead>
             <tbody>
-              {recentAlerts.length === 0 && (
+              {threatsReady && recentAlerts.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="empty">
-                    {!threatsReady ? t('status_section_loading') : t('threat_alerts_empty')}
-                  </td>
+                  <td colSpan={5} className="empty">{t('threat_alerts_empty')}</td>
                 </tr>
               )}
               {recentAlerts.map((row, idx) => {
@@ -524,7 +523,7 @@ export function ThreatPage({ onToast }: Props) {
         <div className="page-head" style={{ marginBottom: 12, paddingBottom: 0, border: 'none' }}>
           <div>
             <p className="eyebrow">{t('threat_attackers_eyebrow')}</p>
-            <h3>{t('threat_attackers_title')}</h3>
+            <h3>{t('threat_attackers_title')}{!threatsReady && <span className="inline-spinner" />}</h3>
             <p className="muted">{t('threat_attackers_blurb')}</p>
           </div>
         </div>
@@ -541,11 +540,9 @@ export function ThreatPage({ onToast }: Props) {
               </tr>
             </thead>
             <tbody>
-              {attackers.length === 0 && (
+              {threatsReady && attackers.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="empty">
-                    {!threatsReady ? t('status_section_loading') : t('threat_empty')}
-                  </td>
+                  <td colSpan={6} className="empty">{t('threat_empty')}</td>
                 </tr>
               )}
               {attackers.map((row) => {
@@ -640,7 +637,7 @@ export function ThreatPage({ onToast }: Props) {
         <div className="page-head" style={{ marginBottom: 12, paddingBottom: 0, border: 'none' }}>
           <div>
             <p className="eyebrow">{t('threat_harden_eyebrow')}</p>
-            <h3>{t('threat_harden_title')}</h3>
+            <h3>{t('threat_harden_title')}{!extrasReady && <span className="inline-spinner" />}</h3>
             <p className="muted">
               {warnCount > 0
                 ? t('threat_harden_warn', { count: warnCount })
@@ -649,10 +646,8 @@ export function ThreatPage({ onToast }: Props) {
           </div>
         </div>
         <div className="check-list">
-          {checks.length === 0 && (
-            <p className="muted">
-              {!extrasReady ? t('status_section_loading') : t('status_harden_loading')}
-            </p>
+          {extrasReady && checks.length === 0 && (
+            <p className="muted">{t('status_harden_loading')}</p>
           )}
           {checks.map((c) => (
             <div key={String(c.id || c.label)} className="check-row">
@@ -673,7 +668,7 @@ export function ThreatPage({ onToast }: Props) {
       <div className="split" style={{ marginBottom: 18 }}>
         <article className="panel">
           <p className="eyebrow">{t('threat_shares_eyebrow')}</p>
-          <h3>{t('threat_shares_title')}</h3>
+          <h3>{t('threat_shares_title')}{!extrasReady && <span className="inline-spinner" />}</h3>
           <p className="muted">
             {shareCustom > 0
               ? t('threat_shares_custom', { count: shareCustom })
@@ -689,11 +684,9 @@ export function ThreatPage({ onToast }: Props) {
                 </tr>
               </thead>
               <tbody>
-                {shares.length === 0 && (
+                {extrasReady && shares.length === 0 && (
                   <tr>
-                    <td colSpan={3} className="empty">
-                      {!extrasReady ? t('status_section_loading') : t('threat_shares_empty')}
-                    </td>
+                    <td colSpan={3} className="empty">{t('threat_shares_empty')}</td>
                   </tr>
                 )}
                 {shares.map((row) => {
@@ -735,7 +728,7 @@ export function ThreatPage({ onToast }: Props) {
 
         <article className="panel">
           <p className="eyebrow">{t('threat_svc_eyebrow')}</p>
-          <h3>{t('threat_svc_title')}</h3>
+          <h3>{t('threat_svc_title')}{!extrasReady && <span className="inline-spinner" />}</h3>
           <p className="muted">
             {svcUnknown > 0
               ? t('threat_svc_unknown', { count: svcUnknown })
@@ -751,11 +744,9 @@ export function ThreatPage({ onToast }: Props) {
                 </tr>
               </thead>
               <tbody>
-                {thirdParty.length === 0 && (
+                {extrasReady && thirdParty.length === 0 && (
                   <tr>
-                    <td colSpan={3} className="empty">
-                      {!extrasReady ? t('status_section_loading') : t('threat_svc_empty')}
-                    </td>
+                    <td colSpan={3} className="empty">{t('threat_svc_empty')}</td>
                   </tr>
                 )}
                 {thirdParty.map((row) => {
@@ -799,7 +790,7 @@ export function ThreatPage({ onToast }: Props) {
       <div className="split" style={{ marginBottom: 18 }}>
         <article className="panel">
           <p className="eyebrow">{t('threat_sessions_eyebrow')}</p>
-          <h3>{t('threat_sessions_title')}</h3>
+          <h3>{t('threat_sessions_title')}{!usersReady && <span className="inline-spinner" />}</h3>
           <div className="table-wrap" style={{ marginTop: 10 }}>
             <table>
               <thead>
@@ -810,11 +801,9 @@ export function ThreatPage({ onToast }: Props) {
                 </tr>
               </thead>
               <tbody>
-                {sessions.length === 0 && (
+                {usersReady && sessions.length === 0 && (
                   <tr>
-                    <td colSpan={3} className="empty">
-                      {!usersReady ? t('status_section_loading') : t('threat_sessions_empty')}
-                    </td>
+                    <td colSpan={3} className="empty">{t('threat_sessions_empty')}</td>
                   </tr>
                 )}
                 {sessions.map((u) => (
@@ -854,7 +843,7 @@ export function ThreatPage({ onToast }: Props) {
           <div className="page-head" style={{ marginBottom: 8, paddingBottom: 0, border: 'none' }}>
             <div>
               <p className="eyebrow">{t('threat_cmd_eyebrow')}</p>
-              <h3>{t('threat_cmd_title')}</h3>
+              <h3>{t('threat_cmd_title')}{!extrasReady && <span className="inline-spinner" />}</h3>
             </div>
             <TextActionBtn
               label={t('btn_refresh')}
@@ -871,11 +860,9 @@ export function ThreatPage({ onToast }: Props) {
                 </tr>
               </thead>
               <tbody>
-                {commands.length === 0 && (
+                {extrasReady && commands.length === 0 && (
                   <tr>
-                    <td colSpan={2} className="empty">
-                      {!extrasReady ? t('status_section_loading') : t('threat_cmd_empty')}
-                    </td>
+                    <td colSpan={2} className="empty">{t('threat_cmd_empty')}</td>
                   </tr>
                 )}
                 {commands.slice(0, 12).map((row, idx) => {
@@ -903,7 +890,7 @@ export function ThreatPage({ onToast }: Props) {
         >
           <div>
             <p className="eyebrow">{t('threat_ir_eyebrow')}</p>
-            <h3>{t('threat_users_title')}</h3>
+            <h3>{t('threat_users_title')}{!usersReady && <span className="inline-spinner" />}</h3>
             <p className="muted">
               {t('threat_card_accounts_meta', {
                 active: userCounts.active,
@@ -929,11 +916,9 @@ export function ThreatPage({ onToast }: Props) {
                 </tr>
               </thead>
               <tbody>
-                {users.length === 0 && (
+                {usersReady && users.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="empty">
-                      {!usersReady ? t('status_section_loading') : t('threat_users_empty')}
-                    </td>
+                    <td colSpan={6} className="empty">{t('threat_users_empty')}</td>
                   </tr>
                 )}
                 {users.map((u) => {

@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.57"  # GUI loading honesty — no fake Off while refreshing
+VERSION = "4.9.59"  # Contract 1.4.45 service port relocate sync + GUI
 
 
 
@@ -97,7 +97,7 @@ TEST_MODE = get_from_config("debug.test_mode", False)
 FORCE_NO_EXIT = True  # Prevent any early exits during testing
 
 # RDP secure port configuration
-RDP_SECURE_PORT = get_from_config("services.rdp_port", 53389)
+RDP_SECURE_PORT = get_from_config("services.rdp_port", 43389)
 
 # Windows Defender compatibility metadata
 DEFENDER_MARKERS = {

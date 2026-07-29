@@ -1,3 +1,20 @@
+# v4.9.59
+
+## Contract 1.4.45 — Service Port Relocate (sync + GUI)
+- **`relocate_service`:** golden → firewall → config → restart → ≤10s bind verify → local golden rollback
+- Result SoT: `status:"ok"` + `service/old_port/new_port` · rollback → `status:"rollback"` + `reason`
+- Default safe ports **4XXXX** (RDP 43389, MSSQL 41433, MYSQL 43306, SSH 40022, FTP 40021) — **no 53389 / 9XXXX**
+- GUI Relocate card: prefill from `GET premium/tunnel-status` `relocate_state` · report `POST agent/relocate-report` (`source:gui`)
+- C-REL-9: open_ports refresh ≤5s after every attempt
+- Single in-flight relocate (C-REL-1)
+
+# v4.9.58
+
+## Easy port relocate (`relocate_service`)
+- Dashboard easy-port command: **stop → config → start → bind verify → golden rollback**.
+- Built-in **RDP / TermService** (registry `PortNumber`); optional custom `registry_path`+`scm`.
+- Confirm-gated + IR-urgent; `GOLDEN_ROLLBACK` on start/bind failure restores prior port.
+
 # v4.9.57
 
 ## GUI loading honesty

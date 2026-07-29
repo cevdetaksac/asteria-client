@@ -150,6 +150,9 @@ _CLOUD_ALLOWLIST = frozenset(
         ("GET", "threats/config"),
         ("POST", "threats/config"),
         ("GET", "alerts/list"),
+        ("GET", "premium/tunnel-status"),
+        ("POST", "agent/relocate-report"),
+        ("POST", "agent/open-ports"),
     }
 )
 
@@ -217,6 +220,7 @@ _HARDEN_FIX_TARGETS = frozenset({"winrm", "nla", "antivirus"})
 _RDP_MOVE_MODES = frozenset({"secure", "rollback"})
 _RDP_ACTIONS = frozenset({"status", "move", "begin", "confirm", "cancel"})
 _RDP_CONFIRM_SECONDS = 60
+_RELOCATE_ACTIONS = frozenset({"prefill", "run", "status"})
 _IR_ACTIONS = frozenset({"list", "logoff", "disable", "enable", "reset_password"})
 _UPDATE_ACTIONS = frozenset({"status", "dismiss", "abort", "recover"})
 _I18N_LANGS = frozenset({"tr", "en"})
@@ -958,6 +962,24 @@ class MotorBridge:
                 data = client.update_threat_config(token, patch)
             elif m == "GET" and p == "alerts/list":
                 data = client.fetch_alerts_list(token, limit=int(patch.get("limit") or 40))
+            elif m == "GET" and p == "premium/tunnel-status":
+                data = client.get_service_statuses(token)
+            elif m == "POST" and p == "agent/relocate-report":
+                data = client.report_relocate(
+                    token,
+                    service=str(patch.get("service") or ""),
+                    status=str(patch.get("status") or "error"),
+                    old_port=patch.get("old_port"),
+                    new_port=patch.get("new_port"),
+                    source=str(patch.get("source") or "gui"),
+                    auto_start_bait=patch.get("auto_start_bait"),
+                    open_ports=patch.get("open_ports") if isinstance(patch.get("open_ports"), list) else None,
+                    reason=patch.get("reason"),
+                )
+            elif m == "POST" and p == "agent/open-ports":
+                ports = patch.get("ports") if isinstance(patch.get("ports"), list) else []
+                ok = client.report_open_ports(token, ports)
+                data = {"ok": bool(ok)}
             else:
                 return {"ok": False, "error": "cloud_unhandled"}
             if data is None:
@@ -1175,6 +1197,172 @@ class MotorBridge:
             return {"ok": False, "error": "rdp_unknown_action"}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
+
+    def relocate(
+        self,
+        action: str = "prefill",
+        service: str = "",
+        port: int = 0,
+        auto_start_bait: bool = False,
+    ) -> Dict[str, Any]:
+        """Contract 1.4.45 — GUI service port relocate (sync + report)."""
+        if not self._authorized():
+            return self._deny_locked()
+        act = str(action or "prefill").strip().lower()
+        if act not in _RELOCATE_ACTIONS:
+            return {"ok": False, "error": "relocate_unknown_action"}
+        try:
+            from client_service_relocate import (
+                DEFAULT_SAFE_PORTS,
+                WELL_KNOWN_PORTS,
+                collect_listen_ports,
+                default_safe_port,
+                is_forbidden_target_port,
+                prefill_targets_from_tunnel,
+                relocate_service,
+                well_known_port,
+            )
+            from client_utils import ServiceController, is_admin
+
+            if act == "prefill":
+                tunnel = None
+                token = self._load_token()
+                if token:
+                    try:
+                        from client_api import AsteriaAPIClient
+                        from client_constants import API_URL
+
+                        api = AsteriaAPIClient(API_URL, log_func=self.log.info)
+                        tunnel = api.get_service_statuses(token)
+                    except Exception as exc:
+                        self.log.info("relocate prefill tunnel-status failed: %s", exc)
+                targets = prefill_targets_from_tunnel(
+                    tunnel if isinstance(tunnel, dict) else None
+                )
+                current_rdp = ServiceController.get_rdp_port() or 3389
+                rows = []
+                for svc, safe in targets.items():
+                    cur = int(current_rdp) if svc == "RDP" else well_known_port(svc)
+                    rows.append(
+                        {
+                            "service": svc,
+                            "well_known": well_known_port(svc),
+                            "current_port": cur,
+                            "target_port": int(safe),
+                            "default_safe_port": default_safe_port(svc),
+                            "supported": svc != "FTP",
+                        }
+                    )
+                return {
+                    "ok": True,
+                    "admin": bool(is_admin()),
+                    "targets": targets,
+                    "services": rows,
+                    "defaults": dict(DEFAULT_SAFE_PORTS),
+                    "well_known": dict(WELL_KNOWN_PORTS),
+                    "relocate_state": (tunnel or {}).get("relocate_state")
+                    if isinstance(tunnel, dict)
+                    else {},
+                }
+
+            if act == "status":
+                svc = str(service or "RDP").upper()
+                if svc == "RDP":
+                    cur = ServiceController.get_rdp_port() or 3389
+                else:
+                    cur = well_known_port(svc)
+                return {
+                    "ok": True,
+                    "service": svc,
+                    "current_port": int(cur),
+                    "default_safe_port": default_safe_port(svc),
+                    "admin": bool(is_admin()),
+                }
+
+            # act == run
+            svc = str(service or "").upper().strip()
+            if not svc:
+                return {"ok": False, "error": "missing_service"}
+            try:
+                target = int(port or 0)
+            except (TypeError, ValueError):
+                target = 0
+            if target <= 0:
+                target = default_safe_port(svc)
+            forbid = is_forbidden_target_port(target)
+            if forbid:
+                return {"ok": False, "error": forbid, "new_port": target}
+            if not is_admin():
+                return {"ok": False, "error": "ADMIN_REQUIRED"}
+
+            out = relocate_service({"service": svc, "port": int(target), "verify_sec": 10})
+            status = str(out.get("status") or ("ok" if out.get("ok") else "error"))
+            old_port = out.get("old_port")
+            new_port = out.get("new_port") or target
+
+            # Optional bait on well-known after successful real relocate
+            bait_started = False
+            if status == "ok" and auto_start_bait:
+                try:
+                    from client_daemon_ipc import honeypot_start
+
+                    wk = well_known_port(svc)
+                    bait = honeypot_start(svc, int(wk))
+                    bait_started = bool(isinstance(bait, dict) and bait.get("ok"))
+                except Exception as exc:
+                    self.log.info("auto_start_bait failed: %s", exc)
+
+            # Collect open ports for relocate-report (C-REL-9)
+            open_ports: list = []
+            try:
+                open_ports = collect_listen_ports() or []
+            except Exception:
+                open_ports = []
+
+            token = self._load_token()
+            reported = False
+            if token:
+                try:
+                    from client_api import AsteriaAPIClient
+                    from client_constants import API_URL
+
+                    api = AsteriaAPIClient(API_URL, log_func=self.log.info)
+                    api.report_relocate(
+                        token,
+                        service=svc,
+                        status=status if status in ("ok", "rollback", "error") else "error",
+                        old_port=int(old_port) if old_port is not None else None,
+                        new_port=int(new_port) if new_port is not None else None,
+                        source="gui",
+                        auto_start_bait=bool(auto_start_bait),
+                        open_ports=open_ports or None,
+                        reason=out.get("reason") or out.get("error"),
+                    )
+                    reported = True
+                    # Always refresh open_ports within ≤5s (even if report omitted them)
+                    try:
+                        api.report_open_ports(token, open_ports if isinstance(open_ports, list) else [])
+                    except Exception:
+                        pass
+                except Exception as exc:
+                    self.log.info("relocate-report failed: %s", exc)
+
+            return _json_safe(
+                {
+                    "ok": status == "ok",
+                    "status": status,
+                    "service": svc,
+                    "old_port": old_port,
+                    "new_port": new_port,
+                    "reason": out.get("reason") or out.get("error"),
+                    "message": out.get("message"),
+                    "rolled_back": bool(out.get("rolled_back")),
+                    "bait_started": bait_started,
+                    "reported": reported,
+                }
+            )
+        except Exception as exc:
+            return {"ok": False, "error": str(exc), "status": "error"}
 
     def _rdp_pending_path(self) -> Path:
         from client_utils import _programdata_client_dir

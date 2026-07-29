@@ -327,7 +327,7 @@ class MotorBridgeTests(unittest.TestCase):
             began = self.bridge.rdp("begin", "secure")
             self.assertTrue(began["ok"])
             self.assertTrue(began["pending"])
-            self.assertEqual(began["to_port"], 53389)
+            self.assertEqual(began["to_port"], 43389)
             self.assertGreater(began["seconds_left"], 0)
             self.assertEqual(store.get("mode"), "secure")
             confirmed = self.bridge.rdp("confirm")

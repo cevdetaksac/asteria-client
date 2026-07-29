@@ -59,6 +59,7 @@ _hidden = [
     'client_rdp_nla',
     'client_honeypots',
     'client_service_manager',
+    'client_service_relocate',
     'client_gui_lock',
     'client_uninstall_gate',
     'client_logon_challenge',

@@ -952,6 +952,20 @@ h1, h2, h3, p { margin: 0; }
 .rdp-tool-card h3 {
   margin: 4px 0 6px;
 }
+.relocate-bait {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  margin-bottom: 4px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.input.sm {
+  width: 96px;
+  padding: 4px 8px;
+  font-size: 13px;
+}
 .rdp-tool-steps {
   margin: 0 0 16px;
   padding-left: 18px;
@@ -1952,6 +1966,20 @@ input::-ms-clear { display: none; }
   color: var(--cyan);
   background: rgba(46, 168, 209, 0.12);
 }
+
+/* Inline spinner for card titles */
+.inline-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  margin-left: 8px;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  vertical-align: middle;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 1100px) {
   .cards { grid-template-columns: repeat(2, 1fr); }

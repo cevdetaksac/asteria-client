@@ -47,6 +47,7 @@ export function StatusPage({ status, online, statusLoading = false, updatedAt, o
   const [checks, setChecks] = useState<HardenCheck[]>([])
   const [busy, setBusy] = useState(false)
   const [extrasLoading, setExtrasLoading] = useState(true)
+  const [extrasHydrated, setExtrasHydrated] = useState(false)
   const [watching, setWatching] = useState<IpRow[]>([])
   const [blocked, setBlocked] = useState<IpRow[]>([])
   const [whitelist, setWhitelist] = useState<IpRow[]>([])
@@ -103,6 +104,7 @@ export function StatusPage({ status, online, statusLoading = false, updatedAt, o
       setWatching(watchRows)
       setBlocked(blockRows)
       setWhitelist(wlRows)
+      setExtrasHydrated(true)
     } finally {
       setExtrasLoading(false)
     }
@@ -242,8 +244,11 @@ export function StatusPage({ status, online, statusLoading = false, updatedAt, o
     <article className="panel ip-col">
       <div className="ip-col-head">
         <div>
-          <p className="eyebrow">{title}</p>
-          <h3>{extrasLoading ? '…' : total}</h3>
+          <p className="eyebrow">
+            {title}
+            {extrasLoading && extrasHydrated && <span className="inline-spinner" aria-label={t('label_loading')} />}
+          </p>
+          <h3>{total}</h3>
         </div>
         <button
           type="button"
@@ -256,9 +261,9 @@ export function StatusPage({ status, online, statusLoading = false, updatedAt, o
         </button>
       </div>
       <div className="ip-col-list">
-        {extrasLoading && <p className="muted empty-ip">{t('status_section_loading')}</p>}
-        {!extrasLoading && rows.length === 0 && <p className="muted empty-ip">{t(emptyKey)}</p>}
-        {!extrasLoading && rows.slice(0, IP_PREVIEW).map((row) => (
+        {!extrasHydrated && <p className="muted empty-ip">{t('status_section_loading')}</p>}
+        {extrasHydrated && rows.length === 0 && <p className="muted empty-ip">{t(emptyKey)}</p>}
+        {extrasHydrated && rows.slice(0, IP_PREVIEW).map((row) => (
           <div key={`${kind}-${row.ip}`} className="ip-row">
             <div className="ip-row-main">
               <strong className="mono">{row.ip}</strong>
@@ -317,7 +322,7 @@ export function StatusPage({ status, online, statusLoading = false, updatedAt, o
             </div>
           </div>
         ))}
-        {!extrasLoading && total > IP_PREVIEW && (
+        {extrasHydrated && total > IP_PREVIEW && (
           <button type="button" className="btn ghost sm" onClick={() => onNavigate('iplist')}>
             {t('status_ip_more', { count: total - IP_PREVIEW })}
           </button>

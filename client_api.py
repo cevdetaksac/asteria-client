@@ -359,6 +359,42 @@ class AsteriaAPIClient:
             self.log(f"[API] Açık portları raporlama hatası: {e}")
             return False
 
+    def report_relocate(
+        self,
+        token: str,
+        *,
+        service: str,
+        status: str,
+        old_port: Optional[int] = None,
+        new_port: Optional[int] = None,
+        source: str = "gui",
+        auto_start_bait: Optional[bool] = None,
+        open_ports: Optional[list] = None,
+        reason: Optional[str] = None,
+    ) -> Optional[Dict]:
+        """POST /api/agent/relocate-report — GUI/local relocate sync (contract 1.4.45)."""
+        try:
+            payload: Dict[str, Any] = {
+                "token": token,
+                "service": str(service or "").upper(),
+                "status": str(status or "error"),
+                "source": str(source or "gui"),
+            }
+            if old_port is not None:
+                payload["old_port"] = int(old_port)
+            if new_port is not None:
+                payload["new_port"] = int(new_port)
+            if auto_start_bait is not None:
+                payload["auto_start_bait"] = bool(auto_start_bait)
+            if open_ports is not None:
+                payload["open_ports"] = list(open_ports)
+            if reason:
+                payload["reason"] = str(reason)
+            return self.api_request("POST", "agent/relocate-report", data=payload)
+        except Exception as e:
+            self.log(f"[API] relocate-report error: {e}")
+            return None
+
     def report_service_action(self, token: str, service: str, action: str, port: Optional[int] = None) -> bool:
         """Bir servis eylemini (başlatma/durdurma) API'ye bildirir."""
         try:

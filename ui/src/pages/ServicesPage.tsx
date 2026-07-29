@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from 'react'
 import { motorBridge } from '../bridge'
 import { DetailModal } from '../components/DetailModal'
 import { FeatureGuide } from '../components/FeatureGuide'
-import { RdpSecureMoveModal, type RdpMoveInfo } from '../components/RdpSecureMoveModal'
 import { t } from '../i18n'
 
 type Props = {
@@ -11,37 +10,80 @@ type Props = {
 
 type CatalogService = { port: string; service: string }
 
+type RelocateRow = {
+  service: string
+  well_known: number
+  current_port: number
+  target_port: number
+  default_safe_port: number
+  supported?: boolean
+}
+
+const FALLBACK_ROWS: RelocateRow[] = [
+  { service: 'RDP', well_known: 3389, current_port: 3389, target_port: 43389, default_safe_port: 43389, supported: true },
+  { service: 'MSSQL', well_known: 1433, current_port: 1433, target_port: 41433, default_safe_port: 41433, supported: true },
+  { service: 'MYSQL', well_known: 3306, current_port: 3306, target_port: 43306, default_safe_port: 43306, supported: true },
+  { service: 'SSH', well_known: 22, current_port: 22, target_port: 40022, default_safe_port: 40022, supported: true },
+  { service: 'FTP', well_known: 21, current_port: 21, target_port: 40021, default_safe_port: 40021, supported: false },
+]
+
 export function ServicesPage({ onToast }: Props) {
   const [catalog, setCatalog] = useState<CatalogService[]>([])
   const [running, setRunning] = useState<string[]>([])
   const [busy, setBusy] = useState<string>('')
   const [loading, setLoading] = useState(true)
-  const [rdp, setRdp] = useState<RdpMoveInfo | null>(null)
-  const [rdpModal, setRdpModal] = useState(false)
-  const [rdpBusy, setRdpBusy] = useState(false)
-  const [secondsLeft, setSecondsLeft] = useState(0)
+  const [catalogHydrated, setCatalogHydrated] = useState(false)
   const [pageHelp, setPageHelp] = useState(false)
+  const [relocateRows, setRelocateRows] = useState<RelocateRow[]>(FALLBACK_ROWS)
+  const [relocateBusy, setRelocateBusy] = useState<string>('')
+  const [autoBait, setAutoBait] = useState(true)
+  const [targets, setTargets] = useState<Record<string, number>>({})
 
-  const refreshRdp = useCallback(async () => {
-    const result = await motorBridge.rdp('status')
-    if (!result.ok) return null
-    const info: RdpMoveInfo = {
-      protected: Boolean(result.protected),
-      current_port: Number(result.current_port || 3389),
-      secure_port: Number(result.secure_port || 53389),
-      standard_port: Number(result.standard_port || 3389),
-      admin: result.admin !== false,
-      pending: Boolean(result.pending),
-      pending_mode: result.pending_mode ? String(result.pending_mode) : undefined,
-      pending_from: result.pending_from != null ? Number(result.pending_from) : undefined,
-      pending_to: result.pending_to != null ? Number(result.pending_to) : undefined,
-      seconds_left: Number(result.seconds_left || 0),
-      confirm_seconds: Number(result.confirm_seconds || 60),
+  const refreshRelocate = useCallback(async () => {
+    const result = await motorBridge.relocate('prefill')
+    if (!result.ok) {
+      // Prefer cloud tunnel-status via host allowlist when relocate bridge missing
+      const tunnel = await motorBridge.cloud('GET', 'premium/tunnel-status')
+      if (tunnel.ok && tunnel.data && typeof tunnel.data === 'object') {
+        const state = (tunnel.data as Record<string, unknown>).relocate_state
+        if (state && typeof state === 'object') {
+          setRelocateRows((prev) =>
+            prev.map((row) => {
+              const entry = (state as Record<string, unknown>)[row.service]
+              let target = row.default_safe_port
+              if (entry && typeof entry === 'object') {
+                const saved = (entry as Record<string, unknown>).saved_target_port
+                const dsp = (entry as Record<string, unknown>).default_safe_port
+                const n = Number(saved ?? dsp ?? target)
+                if (n > 0 && n !== 53389 && !(n >= 90000 && n <= 99999)) target = n
+              }
+              return { ...row, target_port: target }
+            }),
+          )
+        }
+      }
+      return
     }
-    setRdp(info)
-    setSecondsLeft(info.seconds_left || 0)
-    if (info.pending) setRdpModal(true)
-    return info
+    const services = Array.isArray(result.services) ? (result.services as RelocateRow[]) : []
+    if (services.length) {
+      setRelocateRows(
+        services.map((row) => ({
+          service: String(row.service || '').toUpperCase(),
+          well_known: Number(row.well_known || 0),
+          current_port: Number(row.current_port || row.well_known || 0),
+          target_port: Number(row.target_port || row.default_safe_port || 0),
+          default_safe_port: Number(row.default_safe_port || 0),
+          supported: row.supported !== false,
+        })),
+      )
+    }
+    if (result.targets && typeof result.targets === 'object') {
+      const next: Record<string, number> = {}
+      for (const [k, v] of Object.entries(result.targets as Record<string, unknown>)) {
+        next[k] = Number(v)
+      }
+      setTargets(next)
+    }
   }, [])
 
   const refresh = useCallback(async () => {
@@ -53,6 +95,7 @@ export function ServicesPage({ onToast }: Props) {
         motorBridge.status(),
       ])
       setCatalog(Array.isArray(cat.services) ? cat.services : [])
+      setCatalogHydrated(true)
       const fromList = Array.isArray(list.services) ? list.services : []
       const names = fromList
         .map((row) => {
@@ -67,28 +110,19 @@ export function ServicesPage({ onToast }: Props) {
         ? status.running_services.map((s) => String(s).toUpperCase())
         : []
       setRunning(Array.from(new Set([...names, ...fromStatus])))
-      await refreshRdp()
+      await refreshRelocate()
     } catch (reason) {
       onToast(reason instanceof Error ? reason.message : String(reason), 'err')
     } finally {
       setLoading(false)
     }
-  }, [onToast, refreshRdp])
+  }, [onToast, refreshRelocate])
 
   useEffect(() => {
     void refresh()
-    const timer = window.setInterval(() => void refresh(), 6000)
+    const timer = window.setInterval(() => void refresh(), 12000)
     return () => window.clearInterval(timer)
   }, [refresh])
-
-  useEffect(() => {
-    if (!rdp?.pending) return
-    const tick = window.setInterval(() => {
-      setSecondsLeft((n) => Math.max(0, n - 1))
-      void refreshRdp()
-    }, 1000)
-    return () => window.clearInterval(tick)
-  }, [rdp?.pending, refreshRdp])
 
   const toggle = async (svc: CatalogService, start: boolean) => {
     setBusy(svc.service)
@@ -110,58 +144,50 @@ export function ServicesPage({ onToast }: Props) {
     }
   }
 
-  const beginRdp = async () => {
-    setRdpBusy(true)
+  const setTarget = (service: string, value: string) => {
+    const n = Number(value)
+    setRelocateRows((rows) =>
+      rows.map((row) => (row.service === service ? { ...row, target_port: Number.isFinite(n) ? n : row.target_port } : row)),
+    )
+    if (Number.isFinite(n)) {
+      setTargets((prev) => ({ ...prev, [service]: n }))
+    }
+  }
+
+  const runRelocate = async (row: RelocateRow) => {
+    const target = Number(targets[row.service] ?? row.target_port ?? row.default_safe_port)
+    if (!target || target === 53389 || (target >= 90000 && target <= 99999)) {
+      onToast(t('relocate_forbidden_port'), 'err')
+      return
+    }
+    if (!window.confirm(t('relocate_confirm', { service: row.service, port: target }))) return
+    setRelocateBusy(row.service)
     try {
-      const mode = rdp?.protected ? 'rollback' : 'secure'
-      const result = await motorBridge.rdp('begin', mode)
-      if (!result.ok) {
-        onToast(String(result.error || result.detail || t('toast_rdp_fail')), 'err')
-        return
+      const result = await motorBridge.relocate('run', row.service, target, autoBait)
+      if (result.ok || result.status === 'ok') {
+        onToast(
+          t('toast_relocate_ok', {
+            service: row.service,
+            old: String(result.old_port ?? row.current_port),
+            port: String(result.new_port ?? target),
+          }),
+          'ok',
+        )
+      } else if (result.status === 'rollback') {
+        onToast(
+          t('toast_relocate_rollback', {
+            service: row.service,
+            reason: String(result.reason || result.error || 'rollback'),
+          }),
+          'err',
+        )
+      } else {
+        onToast(String(result.error || result.reason || t('toast_relocate_fail')), 'err')
       }
-      onToast(t('toast_rdp_moved', { port: String(result.to_port || result.current_port || '') }), 'ok')
-      await refreshRdp()
+      await refreshRelocate()
     } finally {
-      setRdpBusy(false)
+      setRelocateBusy('')
     }
-  }
-
-  const confirmRdp = async () => {
-    setRdpBusy(true)
-    try {
-      const result = await motorBridge.rdp('confirm')
-      if (!result.ok) {
-        onToast(String(result.error || t('toast_rdp_fail')), 'err')
-        return
-      }
-      onToast(t('toast_rdp_confirmed', { port: String(result.current_port || '') }), 'ok')
-      setRdpModal(false)
-      await refresh()
-    } finally {
-      setRdpBusy(false)
-    }
-  }
-
-  const cancelRdp = async () => {
-    setRdpBusy(true)
-    try {
-      const result = await motorBridge.rdp('cancel')
-      onToast(
-        result.ok
-          ? t('toast_rdp_reverted', { port: String(result.current_port || '') })
-          : String(result.error || t('toast_rdp_fail')),
-        result.ok ? 'ok' : 'err',
-      )
-      setRdpModal(false)
-      await refresh()
-    } finally {
-      setRdpBusy(false)
-    }
-  }
-
-  const openRdpModal = async () => {
-    const info = await refreshRdp()
-    if (info) setRdpModal(true)
   }
 
   return (
@@ -169,7 +195,7 @@ export function ServicesPage({ onToast }: Props) {
       <div className="page-head">
         <div>
           <p className="eyebrow">{t('services_eyebrow')}</p>
-          <h2>{t('services_title')}</h2>
+          <h2>{t('services_title')}{loading && catalogHydrated && <span className="inline-spinner" />}</h2>
           <p className="muted">{t('services_blurb')}</p>
         </div>
         <div className="btn-row">
@@ -181,12 +207,11 @@ export function ServicesPage({ onToast }: Props) {
       </div>
 
       <div className="service-grid">
-        {loading && catalog.length === 0 && <p className="muted">{t('status_section_loading')}</p>}
-        {!loading && catalog.length === 0 && <p className="muted">{t('services_empty')}</p>}
+        {!catalogHydrated && <p className="muted">{t('status_section_loading')}</p>}
+        {catalogHydrated && catalog.length === 0 && <p className="muted">{t('services_empty')}</p>}
         {catalog.map((svc) => {
           const active = running.includes(svc.service.toUpperCase())
-          const isRdp = svc.service.toUpperCase() === 'RDP'
-          const listenPort = isRdp ? Number(svc.port || 3389) : Number(svc.port)
+          const listenPort = Number(svc.port)
           const rowBusy = loading || busy === svc.service
           return (
             <article
@@ -216,60 +241,77 @@ export function ServicesPage({ onToast }: Props) {
         })}
       </div>
 
-      <article className={`panel rdp-tool-card${loading && !rdp ? ' loading' : ''}`}>
+      <article className={`panel rdp-tool-card${loading ? ' loading' : ''}`}>
         <div className="rdp-tool-head">
           <div>
-            <p className="eyebrow">{t('services_rdp_tool_eyebrow')}</p>
-            <h3>{t('services_rdp_tool_title')}</h3>
-            <p className="muted">{t('services_rdp_tool_blurb')}</p>
+            <p className="eyebrow">{t('relocate_eyebrow')}</p>
+            <h3>{t('relocate_title')}</h3>
+            <p className="muted">{t('relocate_blurb')}</p>
           </div>
-          {loading && !rdp ? (
-            <span className="pill muted">{t('label_loading')}</span>
-          ) : rdp ? (
-            <span className={`pill ${rdp.protected ? 'ok' : 'off'}`}>
-              {rdp.protected
-                ? t('services_rdp_protected', { port: rdp.current_port })
-                : t('services_rdp_standard', { port: rdp.current_port })}
-            </span>
-          ) : null}
         </div>
-        <ol className="rdp-tool-steps">
-          <li>{t('services_rdp_step_1')}</li>
-          <li>{t('services_rdp_step_2')}</li>
-          <li>{t('services_rdp_step_3')}</li>
-        </ol>
-        {rdp?.pending && (
-          <p className="muted rdp-status">{t('services_rdp_pending', { sec: secondsLeft })}</p>
-        )}
-        <div className="btn-row">
-          <button type="button" className="btn" disabled={rdpBusy} onClick={() => void openRdpModal()}>
-            {t('services_rdp_secure_btn')}
-          </button>
-          <button type="button" className="btn ghost" disabled={rdpBusy} onClick={() => void refreshRdp()}>
-            {t('btn_refresh')}
-          </button>
+        <label className="relocate-bait">
+          <input
+            type="checkbox"
+            checked={autoBait}
+            onChange={(e) => setAutoBait(e.target.checked)}
+          />
+          <span>{t('relocate_auto_bait')}</span>
+        </label>
+        <div className="table-wrap" style={{ marginTop: 12 }}>
+          <table>
+            <thead>
+              <tr>
+                <th>{t('relocate_col_service')}</th>
+                <th>{t('relocate_col_known')}</th>
+                <th>{t('relocate_col_current')}</th>
+                <th>{t('relocate_col_target')}</th>
+                <th className="actions-head">{t('threat_col_actions')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {relocateRows.map((row) => {
+                const target = targets[row.service] ?? row.target_port
+                const busyRow = relocateBusy === row.service
+                return (
+                  <tr key={row.service}>
+                    <td><strong>{row.service}</strong></td>
+                    <td className="mono">{row.well_known}</td>
+                    <td className="mono">{row.current_port}</td>
+                    <td>
+                      <input
+                        className="input sm mono"
+                        type="number"
+                        min={1}
+                        max={65535}
+                        value={target}
+                        disabled={busyRow || row.supported === false}
+                        onChange={(e) => setTarget(row.service, e.target.value)}
+                        aria-label={`${row.service} target port`}
+                      />
+                    </td>
+                    <td className="actions-cell">
+                      <button
+                        type="button"
+                        className="btn sm"
+                        disabled={busyRow || row.supported === false || Boolean(relocateBusy)}
+                        onClick={() => void runRelocate(row)}
+                      >
+                        {busyRow ? t('label_loading') : t('relocate_btn')}
+                      </button>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
         </div>
+        <p className="muted" style={{ marginTop: 10, fontSize: 12 }}>{t('relocate_hint_4xxxx')}</p>
       </article>
 
-      {rdpModal && rdp && (
-        <RdpSecureMoveModal
-          info={rdp}
-          busy={rdpBusy}
-          secondsLeft={secondsLeft}
-          onClose={() => {
-            if (!rdp.pending) setRdpModal(false)
-          }}
-          onBegin={beginRdp}
-          onConfirm={confirmRdp}
-          onCancel={cancelRdp}
-        />
-      )}
       {pageHelp && (
         <DetailModal
           title={t('services_title')}
-          eyebrow={t('services_eyebrow')}
-          blurb={t('services_blurb')}
-          guide={<FeatureGuide prefix="help_hp" />}
+          guide={<FeatureGuide prefix="help_services" />}
           onClose={() => setPageHelp(false)}
         />
       )}

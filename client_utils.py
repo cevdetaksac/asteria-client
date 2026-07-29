@@ -794,7 +794,7 @@ DEFAULT_CONFIG: dict = {
     },
     "services": {
         "auto_start": False,
-        "rdp_port": 53389,
+        "rdp_port": 43389,
         "honeypots": [
             {"port": 3389, "service": "RDP", "enabled": True},
             {"port": 1433, "service": "MSSQL", "enabled": False},
@@ -913,9 +913,9 @@ def get_rdp_secure_port():
         int: RDP secure port number
     """
     try:
-        return get_config_value("services.rdp_port", 53389)
+        return get_config_value("services.rdp_port", 43389)
     except Exception:
-        return 53389
+        return 43389
 
 def set_config_value(key_path: str, value) -> bool:
     """Set a configuration value using dot notation"""

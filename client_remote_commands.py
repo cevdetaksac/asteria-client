@@ -82,6 +82,8 @@ ALLOWED_COMMANDS: Set[str] = {
     "allow_process", "list_allowed_processes",
     "isolate_host", "lift_isolation",
     "stop_service", "start_service", "restart_service", "disable_service",
+    # Easy port relocate (dashboard) — stop→config→start→bind verify→golden rollback
+    "relocate_service",
     "emergency_lockdown", "lift_lockdown",
     "enable_lockdown", "disable_lockdown",  # aliases
     "unlock_ransomware_quarantine", "list_ransomware_quarantine",
@@ -126,6 +128,7 @@ _IR_URGENT_COMMANDS = frozenset({
     "block_ip", "unblock_ip",
     "disable_account", "disable_all_users", "reset_password",
     "stop_service", "start_service", "restart_service", "disable_service",
+    "relocate_service",
     "tunnel_start", "tunnel_stop",
     "list_services",
     "emergency_lockdown", "lift_lockdown",
@@ -193,6 +196,8 @@ REQUIRES_CONFIRMATION: Set[str] = {
     "set_gui_pin", "clear_gui_pin",
     # Firewall Management — profile mutate (cloud confirm:true)
     "firewall_set_profile",
+    # Easy port relocate — TermService/RDP listen move (anti-brick golden rollback)
+    "relocate_service",
 }
 
 
@@ -3161,6 +3166,76 @@ class RemoteCommandExecutor:
             "error": None if ok else (start.get("error") or "FAILED"),
             "data": {"name": svc, "service_name": svc, "stop": stop, "start": start},
         }
+
+    def _cmd_relocate_service(self, params: dict) -> dict:
+        """Contract 1.4.45: golden→firewall→config→restart→≤10s verify→rollback."""
+        from client_service_relocate import relocate_service as _relocate
+
+        out = _relocate(params or {})
+        status = str(out.get("status") or ("ok" if out.get("ok") else "error"))
+        ok = status == "ok"
+        service = out.get("service")
+        old_port = out.get("old_port")
+        new_port = out.get("new_port")
+        # Normative commands/result payload (1.4.45)
+        result = {
+            "success": ok,
+            "status": status,
+            "service": service,
+            "old_port": old_port,
+            "new_port": new_port,
+            "message": out.get("message") or (
+                f"{service} relocated :{old_port} -> :{new_port}" if ok else "Service relocate failed"
+            ),
+        }
+        if not ok:
+            result["error"] = out.get("error") or status.upper()
+            result["reason"] = out.get("reason") or out.get("error") or status
+        # Preserve extras for dashboard debugging without breaking SoT fields
+        for key in ("scm", "applied", "rolled_back", "bind_ok", "noop", "verify_sec"):
+            if key in out:
+                result[key] = out[key]
+
+        # C-REL-9 — open_ports refresh ≤5s after every attempt
+        try:
+            self._schedule_open_ports_refresh(delay_sec=2.0)
+        except Exception as exc:
+            log(f"[REMOTE-CMD] open_ports refresh schedule failed: {exc}")
+        return result
+
+    def _schedule_open_ports_refresh(self, delay_sec: float = 2.0) -> None:
+        """Best-effort POST /api/agent/open-ports shortly after relocate (C-REL-9)."""
+
+        def _run():
+            try:
+                time.sleep(max(0.0, min(5.0, float(delay_sec))))
+                token = self.token_getter() if callable(self.token_getter) else ""
+                if not token or not self.api_client:
+                    return
+                ports = []
+                try:
+                    hm = self.health_monitor
+                    main = getattr(hm, "main_app", None) if hm is not None else None
+                    if main is not None and hasattr(main, "report_open_ports_once"):
+                        main.report_open_ports_once()
+                        return
+                    if main is not None and hasattr(main, "_collect_open_ports_windows"):
+                        ports = main._collect_open_ports_windows() or []
+                except Exception:
+                    ports = []
+                if not ports:
+                    try:
+                        from client_service_relocate import collect_listen_ports
+
+                        ports = collect_listen_ports() or []
+                    except Exception:
+                        ports = []
+                if hasattr(self.api_client, "report_open_ports"):
+                    self.api_client.report_open_ports(token, ports if isinstance(ports, list) else [])
+            except Exception as exc:
+                log(f"[REMOTE-CMD] open_ports refresh error: {exc}")
+
+        threading.Thread(target=_run, name="Relocate-OpenPorts", daemon=True).start()
 
     def _cmd_disable_service(self, params: dict) -> dict:
         svc = self._service_name_from_params(params)

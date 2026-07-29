@@ -49,6 +49,7 @@ type AsteriaApi = {
   account(action?: string, email?: string, password?: string, pin?: string): Promise<BridgeResult>
   harden(action?: string, target?: string): Promise<BridgeResult>
   rdp(action?: string, mode?: string): Promise<BridgeResult>
+  relocate(action?: string, service?: string, port?: number, autoStartBait?: boolean): Promise<BridgeResult>
   ir(action: string, username?: string, newPassword?: string): Promise<BridgeResult>
   update_banner(action?: string): Promise<BridgeResult>
   i18n(lang?: string): Promise<BridgeResult>
@@ -146,6 +147,8 @@ export const motorBridge = {
     optional('account', (api) => api.account(action, email, password, pin)),
   harden: (action = 'status', target = '') => optional('harden', (api) => api.harden(action, target)),
   rdp: (action = 'status', mode = '') => optional('rdp', (api) => api.rdp(action, mode)),
+  relocate: (action = 'prefill', service = '', port = 0, autoStartBait = false) =>
+    optional('relocate', (api) => api.relocate(action, service, port, autoStartBait)),
   ir: (action: string, username = '', newPassword = '') =>
     optional('ir', (api) => api.ir(action, username, newPassword)),
   update_banner: (action = 'status') => optional('update_banner', (api) => api.update_banner(action)),

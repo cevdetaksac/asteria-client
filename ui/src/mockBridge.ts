@@ -20,6 +20,7 @@ type AsteriaApi = {
   account(action?: string, email?: string, password?: string, pin?: string): Promise<Record<string, unknown>>
   harden(action?: string, target?: string): Promise<Record<string, unknown>>
   rdp(action?: string, mode?: string): Promise<Record<string, unknown>>
+  relocate?(action?: string, service?: string, port?: number, autoStartBait?: boolean): Promise<Record<string, unknown>>
   ir(action: string, username?: string, newPassword?: string): Promise<Record<string, unknown>>
   update_banner(action?: string): Promise<Record<string, unknown>>
   i18n(lang?: string): Promise<Record<string, unknown>>
@@ -431,8 +432,8 @@ export function installMockBridge(): void {
         return {
           ok: true,
           protected: rdpProtected,
-          current_port: rdpProtected ? 53389 : 3389,
-          secure_port: 53389,
+          current_port: rdpProtected ? 43389 : 3389,
+          secure_port: 43389,
           standard_port: 3389,
           admin: true,
           confirm_seconds: 60,
@@ -448,10 +449,10 @@ export function installMockBridge(): void {
           mode: mv,
           pending: action === 'begin',
           protected: rdpProtected,
-          current_port: rdpProtected ? 53389 : 3389,
-          secure_port: 53389,
-          from_port: mv === 'secure' ? 3389 : 53389,
-          to_port: rdpProtected ? 53389 : 3389,
+          current_port: rdpProtected ? 43389 : 3389,
+          secure_port: 43389,
+          from_port: mv === 'secure' ? 3389 : 43389,
+          to_port: rdpProtected ? 43389 : 3389,
           seconds_left: action === 'begin' ? 60 : 0,
           confirm_seconds: 60,
         }
@@ -461,8 +462,8 @@ export function installMockBridge(): void {
           ok: true,
           confirmed: true,
           protected: rdpProtected,
-          current_port: rdpProtected ? 53389 : 3389,
-          secure_port: 53389,
+          current_port: rdpProtected ? 43389 : 3389,
+          secure_port: 43389,
         }
       }
       if (action === 'cancel') {
@@ -471,11 +472,56 @@ export function installMockBridge(): void {
           ok: true,
           cancelled: true,
           protected: rdpProtected,
-          current_port: rdpProtected ? 53389 : 3389,
-          secure_port: 53389,
+          current_port: rdpProtected ? 43389 : 3389,
+          secure_port: 43389,
         }
       }
       return { ok: false, error: 'rdp_unknown_action' }
+    },
+    async relocate(action = 'prefill', service = '', port = 0, autoStartBait = false) {
+      if (locked) return { ok: false, error: 'gui_locked' }
+      const defaults: Record<string, number> = {
+        RDP: 43389, MSSQL: 41433, MYSQL: 43306, SSH: 40022, FTP: 40021,
+      }
+      const known: Record<string, number> = {
+        RDP: 3389, MSSQL: 1433, MYSQL: 3306, SSH: 22, FTP: 21,
+      }
+      if (action === 'prefill') {
+        return {
+          ok: true,
+          admin: true,
+          targets: defaults,
+          services: Object.keys(defaults).map((svc) => ({
+            service: svc,
+            well_known: known[svc],
+            current_port: svc === 'RDP' && rdpProtected ? 43389 : known[svc],
+            target_port: defaults[svc],
+            default_safe_port: defaults[svc],
+            supported: svc !== 'FTP',
+          })),
+          defaults,
+          well_known: known,
+          relocate_state: {},
+        }
+      }
+      if (action === 'run') {
+        const svc = String(service || 'RDP').toUpperCase()
+        const target = Number(port || defaults[svc] || 0)
+        if (target === 53389 || (target >= 90000 && target <= 99999)) {
+          return { ok: false, error: 'FORBIDDEN_PORT_53389', status: 'error' }
+        }
+        if (svc === 'RDP') rdpProtected = target !== 3389
+        return {
+          ok: true,
+          status: 'ok',
+          service: svc,
+          old_port: known[svc] || 0,
+          new_port: target,
+          bait_started: Boolean(autoStartBait),
+          reported: true,
+        }
+      }
+      return { ok: false, error: 'relocate_unknown_action' }
     },
     async ir(action, username = '', newPassword = '') {
       if (locked) return { ok: false, error: 'gui_locked' }
