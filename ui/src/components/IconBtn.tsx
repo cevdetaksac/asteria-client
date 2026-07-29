@@ -53,3 +53,36 @@ export function IconBtn({ icon, title, onClick, disabled, danger, className = ''
     </button>
   )
 }
+
+type TextActionProps = {
+  label: string
+  onClick?: (event: MouseEvent<HTMLButtonElement>) => void
+  disabled?: boolean
+  danger?: boolean
+  ghost?: boolean
+  title?: string
+}
+
+/** Visible labeled row action — preferred in dense tables over icon-only. */
+export function TextActionBtn({
+  label,
+  onClick,
+  disabled,
+  danger,
+  ghost = true,
+  title,
+}: TextActionProps) {
+  const kind = danger ? 'danger' : ghost ? 'ghost' : ''
+  return (
+    <button
+      type="button"
+      className={`btn sm ${kind}`.trim()}
+      disabled={disabled}
+      title={title || label}
+      aria-label={title || label}
+      onClick={onClick}
+    >
+      {label}
+    </button>
+  )
+}

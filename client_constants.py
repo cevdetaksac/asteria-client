@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.55"  # remote console parity C-RD-CON-* (contract 1.4.43)
+VERSION = "4.9.56"  # Threat Center labeled row actions + table overflow fix
 
 
 CLIENT_VERSION = VERSION  # Main version constant

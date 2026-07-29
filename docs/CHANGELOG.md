@@ -1,3 +1,10 @@
+# v4.9.56
+
+## Threat Center GUI
+- Row actions use visible labeled buttons (`TextActionBtn`) instead of clipped icon-only controls.
+- Tables allow horizontal scroll (`overflow-x: auto`, `table-layout: auto`) so action columns stay reachable.
+- Accounts accordion defaults open; unblock + whitelist wired on attacker/IP rows.
+
 # v4.9.55
 
 ## Remote console parity (contract 1.4.43)

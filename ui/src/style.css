@@ -1390,14 +1390,14 @@ tr.row-self td {
 .panel .eyebrow { color: var(--cyan); font-family: var(--font-brand); letter-spacing: 0.18em; }
 
 .table-wrap {
-  /* clip stray horizontal scroll; tooltips use absolute + high z-index */
-  overflow-x: clip;
+  /* allow horizontal scroll so action columns stay reachable */
+  overflow-x: auto;
   overflow-y: visible;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: rgba(10, 15, 24, 0.7);
 }
-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+table { width: 100%; border-collapse: collapse; table-layout: auto; }
 .ip-cols .table-wrap table {
   table-layout: auto;
 }
@@ -1427,15 +1427,22 @@ td .btn + .btn { margin-left: 6px; }
 td.actions-cell,
 th.actions-head {
   width: 1%;
+  min-width: 168px;
   white-space: nowrap;
   vertical-align: middle;
   text-align: right;
 }
-td.actions-cell .ip-row-actions {
+td.actions-cell .ip-row-actions,
+td.actions-cell .row-actions {
   display: inline-flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   align-items: center;
   gap: 6px;
+  max-width: 320px;
+}
+.row-actions .btn.sm {
+  white-space: nowrap;
 }
 
 .inline-form {

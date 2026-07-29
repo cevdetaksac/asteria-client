@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { motorBridge, type MotorStatus } from '../bridge'
 import { DetailModal } from '../components/DetailModal'
 import { FeatureGuide } from '../components/FeatureGuide'
-import { IconBtn, icons } from '../components/IconBtn'
+import { TextActionBtn, icons } from '../components/IconBtn'
 import { t } from '../i18n'
 import { asRecord, pick } from '../lib'
 
@@ -96,7 +96,7 @@ export function ThreatPage({ onToast }: Props) {
   const [busy, setBusy] = useState(false)
   const [pwdUser, setPwdUser] = useState<string | null>(null)
   const [pwdValue, setPwdValue] = useState('')
-  const [accountsOpen, setAccountsOpen] = useState(false)
+  const [accountsOpen, setAccountsOpen] = useState(true)
   const [blockIp, setBlockIp] = useState('')
   const [checks, setChecks] = useState<HardenCheck[]>([])
   const [commands, setCommands] = useState<Array<Record<string, unknown>>>([])
@@ -106,6 +106,7 @@ export function ThreatPage({ onToast }: Props) {
   const [shareCustom, setShareCustom] = useState(0)
   const [thirdParty, setThirdParty] = useState<Array<Record<string, unknown>>>([])
   const [svcUnknown, setSvcUnknown] = useState(0)
+  const [whitelist, setWhitelist] = useState<string[]>([])
 
   const refreshThreats = useCallback(async () => {
     const result = await motorBridge.ipc('THREAT_TOP')
@@ -148,11 +149,12 @@ export function ThreatPage({ onToast }: Props) {
   }, [onToast])
 
   const refreshExtras = useCallback(async () => {
-    const [h, status, sh, sv] = await Promise.all([
+    const [h, status, sh, sv, cloud] = await Promise.all([
       motorBridge.harden('status'),
       motorBridge.status() as Promise<MotorStatus>,
       motorBridge.ipc('SHARES_LIST'),
       motorBridge.ipc('SVC_LIST'),
+      motorBridge.cloud('GET', 'threats/config'),
     ])
     if (h.ok && Array.isArray(h.checks)) setChecks(h.checks as HardenCheck[])
     const recent = Array.isArray(status.commands_recent)
@@ -166,6 +168,10 @@ export function ThreatPage({ onToast }: Props) {
     if (sv.ok && Array.isArray(sv.services)) {
       setThirdParty(sv.services as Array<Record<string, unknown>>)
       setSvcUnknown(Number(sv.unknown_count || 0) || 0)
+    }
+    if (cloud.ok && cloud.data && typeof cloud.data === 'object') {
+      const wl = (cloud.data as Record<string, unknown>).whitelist_ips
+      if (Array.isArray(wl)) setWhitelist(wl.map(String).filter(Boolean))
     }
   }, [])
 
@@ -183,13 +189,45 @@ export function ThreatPage({ onToast }: Props) {
   const warnCount = useMemo(() => checks.filter((c) => c.ok === false).length, [checks])
 
   const block = async (ip: string) => {
-    if (!ip) return
+    if (!ip || ip === '—') return
     setBusy(true)
     try {
       const result = await motorBridge.ipc('BLOCK_IP', { ip, reason: 'threat_center' })
       onToast(result.ok ? t('toast_blocked', { ip }) : String(result.error || 'Block'), result.ok ? 'ok' : 'err')
       setBlockIp('')
       await refreshThreats()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const unblock = async (ip: string) => {
+    if (!ip || ip === '—') return
+    setBusy(true)
+    try {
+      const result = await motorBridge.ipc('UNBLOCK_IP', { ip, reason: 'threat_center' })
+      onToast(
+        result.ok ? t('toast_unblocked', { ip }) : String(result.error || 'Unblock'),
+        result.ok ? 'ok' : 'err',
+      )
+      await refreshThreats()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const addWhitelist = async (ip: string) => {
+    if (!ip || ip === '—') return
+    if (whitelist.includes(ip)) {
+      onToast(t('toast_wl_ok'), 'ok')
+      return
+    }
+    setBusy(true)
+    try {
+      const next = [...whitelist, ip]
+      const result = await motorBridge.cloud('POST', 'threats/config', { whitelist_ips: next })
+      onToast(result.ok ? t('toast_wl_ok') : String(result.error || 'Whitelist'), result.ok ? 'ok' : 'err')
+      if (result.ok) setWhitelist(next)
     } finally {
       setBusy(false)
     }
@@ -427,14 +465,42 @@ export function ThreatPage({ onToast }: Props) {
                       <span className={`score-pill ${Number(f.score) >= 80 ? 'high' : ''}`}>{f.score}</span>
                     </td>
                     <td className="actions-cell">
-                      <div className="ip-row-actions">
-                        <IconBtn
-                          icon={icons.block}
-                          title={t('btn_block')}
-                          danger
-                          disabled={busy || ip === '—'}
-                          onClick={() => void block(ip)}
-                        />
+                      <div className="row-actions">
+                        {ip !== '—' && (
+                          <>
+                            <TextActionBtn
+                              label={t('btn_block')}
+                              danger
+                              disabled={busy}
+                              onClick={() => void block(ip)}
+                            />
+                            <TextActionBtn
+                              label={t('btn_unblock')}
+                              disabled={busy}
+                              onClick={() => void unblock(ip)}
+                            />
+                            <TextActionBtn
+                              label={t('btn_whitelist_add')}
+                              disabled={busy || whitelist.includes(ip)}
+                              onClick={() => void addWhitelist(ip)}
+                            />
+                          </>
+                        )}
+                        {f.user !== '—' && f.user.toLowerCase() !== currentUser.toLowerCase() && (
+                          <>
+                            <TextActionBtn
+                              label={t('threat_logoff')}
+                              disabled={busy}
+                              onClick={() => void runIr('logoff', f.user)}
+                            />
+                            <TextActionBtn
+                              label={t('threat_disable')}
+                              danger
+                              disabled={busy}
+                              onClick={() => void runIr('disable', f.user)}
+                            />
+                          </>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -510,25 +576,39 @@ export function ThreatPage({ onToast }: Props) {
                     <td>{pick(r, 'failed_attempts', 'events', 'event_count', 'count')}</td>
                     <td className="muted">{formatThreatTime(r.last_seen ?? r.updated_at)}</td>
                     <td className="actions-cell">
-                      <div className="ip-row-actions">
-                        <IconBtn
-                          icon={icons.block}
-                          title={t('btn_block')}
-                          danger
-                          disabled={busy || ip === '—' || Boolean(r.is_blocked)}
-                          onClick={() => void block(ip)}
-                        />
+                      <div className="row-actions">
+                        {ip !== '—' && (
+                          <>
+                            {!r.is_blocked ? (
+                              <TextActionBtn
+                                label={t('btn_block')}
+                                danger
+                                disabled={busy}
+                                onClick={() => void block(ip)}
+                              />
+                            ) : (
+                              <TextActionBtn
+                                label={t('btn_unblock')}
+                                disabled={busy}
+                                onClick={() => void unblock(ip)}
+                              />
+                            )}
+                            <TextActionBtn
+                              label={t('btn_whitelist_add')}
+                              disabled={busy || whitelist.includes(ip)}
+                              onClick={() => void addWhitelist(ip)}
+                            />
+                          </>
+                        )}
                         {user !== '—' && user.toLowerCase() !== currentUser.toLowerCase() && (
                           <>
-                            <IconBtn
-                              icon={icons.logoff}
-                              title={t('threat_logoff')}
+                            <TextActionBtn
+                              label={t('threat_logoff')}
                               disabled={busy}
                               onClick={() => void runIr('logoff', user)}
                             />
-                            <IconBtn
-                              icon={icons.disable}
-                              title={t('threat_disable')}
+                            <TextActionBtn
+                              label={t('threat_disable')}
                               danger
                               disabled={busy}
                               onClick={() => void runIr('disable', user)}
@@ -613,15 +693,18 @@ export function ThreatPage({ onToast }: Props) {
                       </td>
                       <td className="muted">{path}</td>
                       <td className="actions-cell">
-                        {!isDefault && (
-                          <IconBtn
-                            icon={icons.removeWhitelist}
-                            title={t('threat_shares_remove')}
-                            danger
-                            disabled={busy}
-                            onClick={() => void removeShare(name)}
-                          />
-                        )}
+                        <div className="row-actions">
+                          {!isDefault ? (
+                            <TextActionBtn
+                              label={t('threat_shares_remove')}
+                              danger
+                              disabled={busy}
+                              onClick={() => void removeShare(name)}
+                            />
+                          ) : (
+                            <span className="muted" style={{ fontSize: 11 }}>—</span>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   )
@@ -668,15 +751,18 @@ export function ThreatPage({ onToast }: Props) {
                         {String(r.path || '—')}
                       </td>
                       <td className="actions-cell">
-                        {!known && (
-                          <IconBtn
-                            icon={icons.disable}
-                            title={t('threat_svc_stop')}
-                            danger
-                            disabled={busy}
-                            onClick={() => void stopService(name, display)}
-                          />
-                        )}
+                        <div className="row-actions">
+                          {!known ? (
+                            <TextActionBtn
+                              label={t('threat_svc_stop')}
+                              danger
+                              disabled={busy}
+                              onClick={() => void stopService(name, display)}
+                            />
+                          ) : (
+                            <span className="muted" style={{ fontSize: 11 }}>{t('threat_svc_known')}</span>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   )
@@ -709,14 +795,26 @@ export function ThreatPage({ onToast }: Props) {
                     <td className="mono">{u.username}</td>
                     <td className="muted">{u.session_status || t('threat_session_yes')}</td>
                     <td className="actions-cell">
-                      {u.can_logoff && (
-                        <IconBtn
-                          icon={icons.logoff}
-                          title={t('threat_logoff')}
-                          disabled={busy}
-                          onClick={() => void runIr('logoff', u.username)}
-                        />
-                      )}
+                      <div className="row-actions">
+                        {u.can_logoff && (
+                          <TextActionBtn
+                            label={t('threat_logoff')}
+                            disabled={busy}
+                            onClick={() => void runIr('logoff', u.username)}
+                          />
+                        )}
+                        {u.can_disable && (
+                          <TextActionBtn
+                            label={t('threat_disable')}
+                            danger
+                            disabled={busy}
+                            onClick={() => void runIr('disable', u.username)}
+                          />
+                        )}
+                        {!u.can_logoff && !u.can_disable && (
+                          <span className="muted" style={{ fontSize: 11 }}>{t('threat_badge_you')}</span>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -726,8 +824,17 @@ export function ThreatPage({ onToast }: Props) {
         </article>
 
         <article className="panel">
-          <p className="eyebrow">{t('threat_cmd_eyebrow')}</p>
-          <h3>{t('threat_cmd_title')}</h3>
+          <div className="page-head" style={{ marginBottom: 8, paddingBottom: 0, border: 'none' }}>
+            <div>
+              <p className="eyebrow">{t('threat_cmd_eyebrow')}</p>
+              <h3>{t('threat_cmd_title')}</h3>
+            </div>
+            <TextActionBtn
+              label={t('btn_refresh')}
+              disabled={busy}
+              onClick={() => void refreshExtras()}
+            />
+          </div>
           <div className="table-wrap" style={{ marginTop: 10 }}>
             <table>
               <thead>
@@ -742,9 +849,10 @@ export function ThreatPage({ onToast }: Props) {
                 )}
                 {commands.slice(0, 12).map((row, idx) => {
                   const r = asRecord(row)
+                  const cmdName = pick(r, 'command', 'cmd', 'type', 'name')
                   return (
-                    <tr key={`${pick(r, 'id', 'command', 'cmd')}-${idx}`}>
-                      <td className="mono">{pick(r, 'command', 'cmd', 'type', 'name')}</td>
+                    <tr key={`${cmdName}-${idx}`}>
+                      <td className="mono">{cmdName}</td>
                       <td className="muted">{pick(r, 'status', 'state', 'result')}</td>
                     </tr>
                   )
@@ -821,36 +929,32 @@ export function ThreatPage({ onToast }: Props) {
                       </td>
                       <td className="muted mono">{formatLogon(u.last_logon)}</td>
                       <td className="actions-cell">
-                        <div className="ip-row-actions">
+                        <div className="row-actions">
                           {u.can_logoff && (
-                            <IconBtn
-                              icon={icons.logoff}
-                              title={t('threat_logoff')}
+                            <TextActionBtn
+                              label={t('threat_logoff')}
                               disabled={busy}
                               onClick={() => void runIr('logoff', u.username)}
                             />
                           )}
                           {u.can_disable && (
-                            <IconBtn
-                              icon={icons.disable}
-                              title={t('threat_disable')}
+                            <TextActionBtn
+                              label={t('threat_disable')}
                               danger
                               disabled={busy}
                               onClick={() => void runIr('disable', u.username)}
                             />
                           )}
                           {u.can_enable && (
-                            <IconBtn
-                              icon={icons.ok}
-                              title={t('threat_enable')}
+                            <TextActionBtn
+                              label={t('threat_enable')}
                               disabled={busy}
                               onClick={() => void runIr('enable', u.username)}
                             />
                           )}
                           {u.can_reset_password && (
-                            <IconBtn
-                              icon={icons.password}
-                              title={t('threat_password')}
+                            <TextActionBtn
+                              label={t('threat_password')}
                               disabled={busy}
                               onClick={() => {
                                 setPwdUser(u.username)
