@@ -42,7 +42,8 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.56"  # Threat Center labeled row actions + table overflow fix
+VERSION = "4.9.57"  # GUI loading honesty — no fake Off while refreshing
+
 
 
 CLIENT_VERSION = VERSION  # Main version constant

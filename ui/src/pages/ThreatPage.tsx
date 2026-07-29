@@ -107,6 +107,9 @@ export function ThreatPage({ onToast }: Props) {
   const [thirdParty, setThirdParty] = useState<Array<Record<string, unknown>>>([])
   const [svcUnknown, setSvcUnknown] = useState(0)
   const [whitelist, setWhitelist] = useState<string[]>([])
+  const [threatsReady, setThreatsReady] = useState(false)
+  const [usersReady, setUsersReady] = useState(false)
+  const [extrasReady, setExtrasReady] = useState(false)
 
   const refreshThreats = useCallback(async () => {
     const result = await motorBridge.ipc('THREAT_TOP')
@@ -129,11 +132,13 @@ export function ThreatPage({ onToast }: Props) {
     // Prefer cloud (dashboard SoT) when present; else motor ring.
     const merged = cloudAlerts.length > 0 ? cloudAlerts : localAlerts
     setRecentAlerts(merged.slice(0, 40))
+    setThreatsReady(true)
   }, [])
 
   const refreshUsers = useCallback(async () => {
     const result = await motorBridge.ir('list')
     if (!result.ok) {
+      setUsersReady(true)
       onToast(String(result.error || t('threat_users_load_fail')), 'err')
       return
     }
@@ -146,6 +151,7 @@ export function ThreatPage({ onToast }: Props) {
       disabled: Number(counts.disabled ?? list.filter((u) => !u.enabled).length) || 0,
     })
     setCurrentUser(String(result.current_user || ''))
+    setUsersReady(true)
   }, [onToast])
 
   const refreshExtras = useCallback(async () => {
@@ -173,6 +179,7 @@ export function ThreatPage({ onToast }: Props) {
       const wl = (cloud.data as Record<string, unknown>).whitelist_ips
       if (Array.isArray(wl)) setWhitelist(wl.map(String).filter(Boolean))
     }
+    setExtrasReady(true)
   }, [])
 
   const refreshAll = useCallback(async () => {
@@ -435,7 +442,9 @@ export function ThreatPage({ onToast }: Props) {
             <tbody>
               {recentAlerts.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="empty">{t('threat_alerts_empty')}</td>
+                  <td colSpan={5} className="empty">
+                    {!threatsReady ? t('status_section_loading') : t('threat_alerts_empty')}
+                  </td>
                 </tr>
               )}
               {recentAlerts.map((row, idx) => {
@@ -534,7 +543,9 @@ export function ThreatPage({ onToast }: Props) {
             <tbody>
               {attackers.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="empty">{t('threat_empty')}</td>
+                  <td colSpan={6} className="empty">
+                    {!threatsReady ? t('status_section_loading') : t('threat_empty')}
+                  </td>
                 </tr>
               )}
               {attackers.map((row) => {
@@ -638,7 +649,11 @@ export function ThreatPage({ onToast }: Props) {
           </div>
         </div>
         <div className="check-list">
-          {checks.length === 0 && <p className="muted">{t('status_harden_loading')}</p>}
+          {checks.length === 0 && (
+            <p className="muted">
+              {!extrasReady ? t('status_section_loading') : t('status_harden_loading')}
+            </p>
+          )}
           {checks.map((c) => (
             <div key={String(c.id || c.label)} className="check-row">
               <div>
@@ -675,7 +690,11 @@ export function ThreatPage({ onToast }: Props) {
               </thead>
               <tbody>
                 {shares.length === 0 && (
-                  <tr><td colSpan={3} className="empty">{t('threat_shares_empty')}</td></tr>
+                  <tr>
+                    <td colSpan={3} className="empty">
+                      {!extrasReady ? t('status_section_loading') : t('threat_shares_empty')}
+                    </td>
+                  </tr>
                 )}
                 {shares.map((row) => {
                   const r = asRecord(row)
@@ -733,7 +752,11 @@ export function ThreatPage({ onToast }: Props) {
               </thead>
               <tbody>
                 {thirdParty.length === 0 && (
-                  <tr><td colSpan={3} className="empty">{t('threat_svc_empty')}</td></tr>
+                  <tr>
+                    <td colSpan={3} className="empty">
+                      {!extrasReady ? t('status_section_loading') : t('threat_svc_empty')}
+                    </td>
+                  </tr>
                 )}
                 {thirdParty.map((row) => {
                   const r = asRecord(row)
@@ -788,7 +811,11 @@ export function ThreatPage({ onToast }: Props) {
               </thead>
               <tbody>
                 {sessions.length === 0 && (
-                  <tr><td colSpan={3} className="empty">{t('threat_sessions_empty')}</td></tr>
+                  <tr>
+                    <td colSpan={3} className="empty">
+                      {!usersReady ? t('status_section_loading') : t('threat_sessions_empty')}
+                    </td>
+                  </tr>
                 )}
                 {sessions.map((u) => (
                   <tr key={`s-${u.username}`}>
@@ -845,7 +872,11 @@ export function ThreatPage({ onToast }: Props) {
               </thead>
               <tbody>
                 {commands.length === 0 && (
-                  <tr><td colSpan={2} className="empty">{t('threat_cmd_empty')}</td></tr>
+                  <tr>
+                    <td colSpan={2} className="empty">
+                      {!extrasReady ? t('status_section_loading') : t('threat_cmd_empty')}
+                    </td>
+                  </tr>
                 )}
                 {commands.slice(0, 12).map((row, idx) => {
                   const r = asRecord(row)
@@ -900,7 +931,9 @@ export function ThreatPage({ onToast }: Props) {
               <tbody>
                 {users.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="empty">{t('threat_users_empty')}</td>
+                    <td colSpan={6} className="empty">
+                      {!usersReady ? t('status_section_loading') : t('threat_users_empty')}
+                    </td>
                   </tr>
                 )}
                 {users.map((u) => {

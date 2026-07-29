@@ -15,6 +15,7 @@ export function ServicesPage({ onToast }: Props) {
   const [catalog, setCatalog] = useState<CatalogService[]>([])
   const [running, setRunning] = useState<string[]>([])
   const [busy, setBusy] = useState<string>('')
+  const [loading, setLoading] = useState(true)
   const [rdp, setRdp] = useState<RdpMoveInfo | null>(null)
   const [rdpModal, setRdpModal] = useState(false)
   const [rdpBusy, setRdpBusy] = useState(false)
@@ -44,6 +45,7 @@ export function ServicesPage({ onToast }: Props) {
   }, [])
 
   const refresh = useCallback(async () => {
+    setLoading(true)
     try {
       const [cat, list, status] = await Promise.all([
         motorBridge.catalog(),
@@ -68,6 +70,8 @@ export function ServicesPage({ onToast }: Props) {
       await refreshRdp()
     } catch (reason) {
       onToast(reason instanceof Error ? reason.message : String(reason), 'err')
+    } finally {
+      setLoading(false)
     }
   }, [onToast, refreshRdp])
 
@@ -177,13 +181,18 @@ export function ServicesPage({ onToast }: Props) {
       </div>
 
       <div className="service-grid">
-        {catalog.length === 0 && <p className="muted">{t('services_empty')}</p>}
+        {loading && catalog.length === 0 && <p className="muted">{t('status_section_loading')}</p>}
+        {!loading && catalog.length === 0 && <p className="muted">{t('services_empty')}</p>}
         {catalog.map((svc) => {
           const active = running.includes(svc.service.toUpperCase())
           const isRdp = svc.service.toUpperCase() === 'RDP'
           const listenPort = isRdp ? Number(svc.port || 3389) : Number(svc.port)
+          const rowBusy = loading || busy === svc.service
           return (
-            <article key={`${svc.service}-${svc.port}`} className={`service-card ${active ? 'active' : ''}`}>
+            <article
+              key={`${svc.service}-${svc.port}`}
+              className={`service-card ${active ? 'active' : ''}${loading ? ' loading' : ''}`}
+            >
               <h3 className="service-card-title">
                 {svc.service}
                 <span className="port"> : {listenPort}</span>
@@ -191,11 +200,15 @@ export function ServicesPage({ onToast }: Props) {
               <div className="service-actions">
                 <button
                   type="button"
-                  className={`btn ${active ? 'danger' : ''}`}
-                  disabled={busy === svc.service}
+                  className={`btn ${active && !loading ? 'danger' : ''}`}
+                  disabled={rowBusy}
                   onClick={() => void toggle(svc, !active)}
                 >
-                  {active ? t('layers_close') : t('layers_open')}
+                  {loading
+                    ? t('label_loading')
+                    : active
+                      ? t('layers_close')
+                      : t('layers_open')}
                 </button>
               </div>
             </article>
@@ -203,20 +216,22 @@ export function ServicesPage({ onToast }: Props) {
         })}
       </div>
 
-      <article className="panel rdp-tool-card">
+      <article className={`panel rdp-tool-card${loading && !rdp ? ' loading' : ''}`}>
         <div className="rdp-tool-head">
           <div>
             <p className="eyebrow">{t('services_rdp_tool_eyebrow')}</p>
             <h3>{t('services_rdp_tool_title')}</h3>
             <p className="muted">{t('services_rdp_tool_blurb')}</p>
           </div>
-          {rdp && (
+          {loading && !rdp ? (
+            <span className="pill muted">{t('label_loading')}</span>
+          ) : rdp ? (
             <span className={`pill ${rdp.protected ? 'ok' : 'off'}`}>
               {rdp.protected
                 ? t('services_rdp_protected', { port: rdp.current_port })
                 : t('services_rdp_standard', { port: rdp.current_port })}
             </span>
-          )}
+          ) : null}
         </div>
         <ol className="rdp-tool-steps">
           <li>{t('services_rdp_step_1')}</li>

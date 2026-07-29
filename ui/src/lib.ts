@@ -20,6 +20,15 @@ export function boolLabel(value: unknown, yes?: string, no?: string): string {
   return value ? (yes ?? 'ON') : (no ?? 'OFF')
 }
 
+/** On / Off / … — use when value may still be loading (undefined/null ≠ Off). */
+export function triLabel(
+  value: unknown,
+  opts: { yes: string; no: string; loading: string; pending?: boolean },
+): string {
+  if (opts.pending || value === undefined || value === null) return opts.loading
+  return value ? opts.yes : opts.no
+}
+
 export function formatBps(bps: unknown): string {
   if (bps == null || bps === '') return '—'
   const v = Number(bps)

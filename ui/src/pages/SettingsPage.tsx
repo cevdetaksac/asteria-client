@@ -138,6 +138,7 @@ export function SettingsPage({ pinEnabled, onToast, onSession }: Props) {
   const [pin, setPin] = useState('')
   const [pinCurrent, setPinCurrent] = useState('')
   const [busy, setBusy] = useState(false)
+  const [cfgReady, setCfgReady] = useState(false)
   const [linked, setLinked] = useState(false)
   const [accountEmail, setAccountEmail] = useState('')
   const [email, setEmail] = useState('')
@@ -149,6 +150,7 @@ export function SettingsPage({ pinEnabled, onToast, onSession }: Props) {
     if (result.ok && result.data && typeof result.data === 'object') {
       setDraft(result.data as Record<string, unknown>)
     }
+    setCfgReady(true)
   }
 
   const loadAccount = async () => {
@@ -281,11 +283,12 @@ export function SettingsPage({ pinEnabled, onToast, onSession }: Props) {
       </article>
 
       <form className="settings-form" onSubmit={(e) => void save(e)} style={{ marginTop: 24 }}>
+        {!cfgReady && <p className="muted status-loading-hint">{t('status_section_loading')}</p>}
         {FIELDS.map((field) => {
           const value = nestedGet(draft, field.key)
           const label = t(field.labelKey)
           return (
-            <div key={field.key} className="field field-stack">
+            <div key={field.key} className={`field field-stack${!cfgReady ? ' loading' : ''}`}>
               <div className="field-main">
                 <div className="field-copy">
                   <span className="field-label">{label}</span>
@@ -299,6 +302,8 @@ export function SettingsPage({ pinEnabled, onToast, onSession }: Props) {
                 {field.kind === 'bool' ? (
                   <Switch
                     checked={Boolean(value)}
+                    loading={!cfgReady}
+                    disabled={busy || !cfgReady}
                     label={label}
                     onChange={(next) => setDraft((prev) => nestedSet(prev, field.key, next))}
                   />
@@ -307,6 +312,7 @@ export function SettingsPage({ pinEnabled, onToast, onSession }: Props) {
                     type={field.kind === 'int' ? 'number' : 'text'}
                     min={field.min}
                     max={field.max}
+                    disabled={!cfgReady || busy}
                     value={value == null ? '' : String(value)}
                     onChange={(e) =>
                       setDraft((prev) =>

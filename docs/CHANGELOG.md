@@ -1,3 +1,10 @@
+# v4.9.57
+
+## GUI loading honesty
+- Switches/cards show **Yükleniyor…** (indeterminate) while status is unknown — never fake **KAPALI/Off**.
+- Keep last known motor status across silent polls; hard “ulaşılamıyor” only when never hydrated or update-stuck.
+- Threat / Services / Settings empty states wait for load before “alınamadı”.
+
 # v4.9.56
 
 ## Threat Center GUI

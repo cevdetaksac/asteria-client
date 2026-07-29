@@ -45,6 +45,8 @@ export default function App() {
   const [pin, setPin] = useState('')
   const [online, setOnline] = useState(false)
   const [status, setStatus] = useState<MotorStatus | null>(null)
+  const [statusLoading, setStatusLoading] = useState(true)
+  const [statusHydrated, setStatusHydrated] = useState(false)
   const [error, setError] = useState('')
   const [updatedAt, setUpdatedAt] = useState('')
   const [page, setPage] = useState<PageId>('status')
@@ -72,6 +74,8 @@ export default function App() {
   const enterLockScreen = useCallback(() => {
     setLocked(true)
     setStatus(null)
+    setStatusHydrated(false)
+    setStatusLoading(false)
     setBanner(null)
     setOnline(false)
     setError('')
@@ -219,7 +223,9 @@ export default function App() {
     }
   }, [accountEmail, enterLockScreen, refreshSession, showToast])
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (opts?: { silent?: boolean }) => {
+    const silent = Boolean(opts?.silent && statusHydrated)
+    if (!silent) setStatusLoading(true)
     try {
       const session = await refreshSession()
       if (session.locked) return
@@ -228,10 +234,17 @@ export default function App() {
       setOnline(pong.ok)
       setUpdateStuck(Boolean(pong.update_stuck) && !pong.ok)
       if (!pong.ok) {
-        setStatus(null)
-        setError(
-          pong.update_stuck ? t('motor_unreachable_update_stuck') : t('motor_unreachable'),
-        )
+        // Keep last known status so toggles don't flash Off while motor restarts.
+        if (!statusHydrated) {
+          setStatus(null)
+          setError(
+            pong.update_stuck ? t('motor_unreachable_update_stuck') : t('motor_unreachable'),
+          )
+        } else if (!silent || pong.update_stuck) {
+          setError(
+            pong.update_stuck ? t('motor_unreachable_update_stuck') : t('status_refreshing'),
+          )
+        }
         void refreshBanner()
         return
       }
@@ -243,14 +256,21 @@ export default function App() {
         return
       }
       setStatus(snapshot)
+      setStatusHydrated(true)
       setError(snapshot.ok === false ? String(snapshot.error ?? t('status_failed')) : '')
       setUpdatedAt(new Date().toLocaleTimeString(currentLang() === 'en' ? 'en-US' : 'tr-TR'))
       void refreshBanner()
     } catch (reason) {
       setOnline(false)
-      setError(reason instanceof Error ? reason.message : String(reason))
+      if (!statusHydrated) {
+        setError(reason instanceof Error ? reason.message : String(reason))
+      } else if (!silent) {
+        setError(t('status_refreshing'))
+      }
+    } finally {
+      if (!silent) setStatusLoading(false)
     }
-  }, [enterLockScreen, refreshBanner, refreshSession])
+  }, [enterLockScreen, refreshBanner, refreshSession, statusHydrated])
 
   // When motor bumps status_generation (remote cmd applied), refresh ASAP.
   const statusGeneration = Number((status as { status_generation?: number } | null)?.status_generation || 0)
@@ -278,7 +298,7 @@ export default function App() {
     // Fast poll so dashboard remote actions show up in GUI quickly.
     const ms = locked === false ? (statusGeneration > 0 ? 1500 : 2000) : 4000
     const timer = window.setInterval(() => {
-      if (locked === false) void refresh()
+      if (locked === false) void refresh({ silent: true })
       else void refreshSession()
     }, ms)
     return () => {
@@ -293,7 +313,7 @@ export default function App() {
   const onMenuAction = useCallback(
     (action: MenuAction) => {
       if (action === 'refresh') {
-        void refresh()
+        void refresh({ silent: false })
         return
       }
       if (action === 'link_account') {
@@ -586,9 +606,9 @@ export default function App() {
         </header>
 
         {error && (
-          <aside className="error">
+          <aside className={`error${error === t('status_refreshing') ? ' soft' : ''}`}>
             <span>{error}</span>
-            {(updateStuck || !online) && (
+            {(updateStuck || (!online && statusHydrated === false)) && (
               <button
                 type="button"
                 className="btn ghost sm"
@@ -604,8 +624,9 @@ export default function App() {
           <StatusPage
             status={status}
             online={online}
+            statusLoading={statusLoading || !statusHydrated}
             updatedAt={updatedAt}
-            onRefresh={() => void refresh()}
+            onRefresh={() => void refresh({ silent: false })}
             onToast={showToast}
             onNavigate={(next) => setPage(next)}
           />
@@ -614,7 +635,12 @@ export default function App() {
         {page === 'iplist' && <IpListPage onToast={showToast} />}
         {page === 'services' && <ServicesPage onToast={showToast} />}
         {page === 'layers' && (
-          <LayersPage status={status} onRefresh={() => void refresh()} onToast={showToast} />
+          <LayersPage
+            status={status}
+            statusLoading={statusLoading || !statusHydrated}
+            onRefresh={() => void refresh({ silent: false })}
+            onToast={showToast}
+          />
         )}
         {page === 'settings' && (
           <SettingsPage

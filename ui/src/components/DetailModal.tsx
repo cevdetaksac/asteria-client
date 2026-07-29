@@ -12,6 +12,7 @@ export type DetailRow = {
     onChange: (next: boolean) => void
     label?: string
     disabled?: boolean
+    loading?: boolean
   }
 }
 
@@ -71,6 +72,7 @@ export function DetailModal({
                       onChange={row.toggle.onChange}
                       label={row.toggle.label || String(row.label)}
                       disabled={row.toggle.disabled}
+                      loading={row.toggle.loading}
                     />
                   ) : null}
                 </div>
