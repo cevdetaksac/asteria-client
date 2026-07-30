@@ -28,6 +28,21 @@ class TestCallDownloadProgress(unittest.TestCase):
         self.assertEqual(seen, [10])
 
 
+class TestSelfUpdateResolveOrder(unittest.TestCase):
+    def test_default_url_preferred_before_github_api(self):
+        """Tag-only params must not wait on GitHub API before download URL exists."""
+        import inspect
+        from client_updater import run_self_update_command
+
+        src = inspect.getsource(run_self_update_command)
+        constructed = src.find("using constructed release URL")
+        github = src.find("GitHub resolve failed")
+        self.assertGreater(constructed, 0)
+        self.assertGreater(github, 0)
+        # First constructed-URL path must appear before GitHub resolve log
+        self.assertLess(constructed, github)
+
+
 class TestSelfUpdateProgressBus(unittest.TestCase):
     def test_phase_change_emits_immediately(self):
         seen = []
@@ -94,7 +109,7 @@ class TestCmdSelfUpdateProgressWire(unittest.TestCase):
         }
         reported = []
 
-        def _sync(cmd, result):
+        def _sync(cmd, result, timeout=8.0):
             reported.append((cmd.get("command_id"), result))
 
         ex._report_result_sync = _sync
@@ -123,6 +138,11 @@ class TestCmdSelfUpdateProgressWire(unittest.TestCase):
             ),
         ):
             out = ex._cmd_self_update({"tag": "v4.9.61", "force": True})
+
+        # Progress POST is async — wait briefly for the worker thread.
+        deadline = time.time() + 2.0
+        while not reported and time.time() < deadline:
+            time.sleep(0.05)
 
         self.assertEqual(out["message"], "update_started")
         self.assertEqual(out["phase"], "installing")

@@ -815,6 +815,16 @@ def download_installer_complete(
                 f"stall_timeout={_DOWNLOAD_STALL_TIMEOUT_SEC}s"
             )
             try:
+                if phase_callback:
+                    phase_callback("connecting")
+            except Exception:
+                pass
+            try:
+                if progress_callback:
+                    _call_download_progress(progress_callback, 0, 0, int(expected_size or 0))
+            except Exception:
+                pass
+            try:
                 response = requests.get(
                     url, stream=True, timeout=timeout, verify=resolve_tls_verify()
                 )
@@ -848,6 +858,14 @@ def download_installer_complete(
                 size_hint = int(content_length or expected_size or 0)
             except (TypeError, ValueError):
                 size_hint = 0
+
+            try:
+                if phase_callback:
+                    phase_callback("downloading")
+                if progress_callback and size_hint > 0:
+                    _call_download_progress(progress_callback, 1, 0, size_hint)
+            except Exception:
+                pass
 
             sha = hashlib.sha256()
             written = 0
@@ -1415,19 +1433,30 @@ def run_self_update_command(
     except Exception:
         pass
 
-    try:
-        from client_lifecycle import report_now
-        report_now(
-            "self_update_begin",
-            "dashboard_self_update",
-            {"from_version": from_version, "tag": tag, "force": force},
-            severity="info",
-            api_client=api_client,
-            token=None,
-            log_func=log,
-        )
-    except Exception:
-        pass
+    # Lifecycle must not block download start (API latency used to pin UI at 0%).
+    def _lifecycle_begin():
+        try:
+            from client_lifecycle import report_now
+            report_now(
+                "self_update_begin",
+                "dashboard_self_update",
+                {"from_version": from_version, "tag": tag, "force": force},
+                severity="info",
+                api_client=api_client,
+                token=None,
+                log_func=log,
+            )
+        except Exception:
+            pass
+
+    threading.Thread(target=_lifecycle_begin, daemon=True, name="SelfUpdateLifeBegin").start()
+
+    # Fast path: known tag → canonical GitHub asset BEFORE any GitHub API call.
+    # Hosts that hang on api.github.com used to sit at 0% after early ACK.
+    if tag and not download_url:
+        download_url = _default_installer_url(tag)
+        if download_url:
+            log(f"[SELF-UPDATE] using constructed release URL for v{tag}")
 
     # Resolve URL/tag if cloud omitted them
     if not download_url or not tag:
@@ -1458,7 +1487,7 @@ def run_self_update_command(
                 except Exception:
                     pass
 
-    # Last resort: known tag → canonical release asset (no GitHub API needed)
+    # Last resort again if tag arrived from cloud/API without URL
     if tag and not download_url:
         download_url = _default_installer_url(tag)
         if download_url:
@@ -1746,10 +1775,31 @@ def run_self_update_command(
                 )
 
             def _on_phase(phase: str):
+                ph = str(phase or "downloading").strip().lower()
+                if ph == "connecting":
+                    bus.tick(
+                        "downloading",
+                        progress_pct=0,
+                        bytes_done=0,
+                        bytes_total=int(expected_size or 0) or None,
+                        detail="connecting",
+                        force=True,
+                    )
+                    return
+                if ph == "downloading":
+                    bus.tick(
+                        "downloading",
+                        progress_pct=1,
+                        bytes_done=0,
+                        bytes_total=int(expected_size or 0) or None,
+                        detail="headers_received",
+                        force=True,
+                    )
+                    return
                 bus.tick(
-                    phase or "verifying",
+                    ph or "verifying",
                     progress_pct=92,
-                    detail=phase or "verifying",
+                    detail=ph or "verifying",
                     force=True,
                 )
                 if _set_ui:

@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.66"  # Fix launch_helper_failed: short schtasks TR + direct NSIS fallback
+VERSION = "4.9.67"  # Unstick self_update at 0%: async progress + session lock + fast URL
 
 
 

@@ -946,11 +946,11 @@ class RemoteCommandExecutor:
         if not token:
             return
         try:
-            self._post_command_result(cmd, result, token)
+            self._post_command_result(cmd, result, token, timeout=timeout)
         except Exception as e:
             log(f"[REMOTE-CMD] Sync result report error: {e}")
 
-    def _post_command_result(self, cmd: dict, result: dict, token: str):
+    def _post_command_result(self, cmd: dict, result: dict, token: str, timeout: float = 8.0):
         cmd_id = cmd.get("command_id", "")
         cmd_type = cmd.get("command_type", "")
         executed_at = datetime.now(timezone.utc).isoformat()
@@ -992,7 +992,9 @@ class RemoteCommandExecutor:
         except Exception:
             pass
 
-        self.api_client.api_request("POST", "commands/result", data=payload)
+        self.api_client.api_request(
+            "POST", "commands/result", data=payload, timeout=max(3.0, float(timeout))
+        )
 
     # ── Validation ────────────────────────────────────────────────
 
@@ -3809,10 +3811,17 @@ class RemoteCommandExecutor:
                 body.setdefault("ok", True)
                 body.setdefault("status", "running")
                 body.setdefault("message", "update_accepted")
-                try:
-                    self._report_result_sync(parent, body)
-                except Exception as exc:
-                    log(f"[REMOTE-CMD] self_update progress tick error: {exc}")
+                # Never block the download loop on commands/result — shared
+                # Session + sync POST caused 0%-stuck updates (heartbeat vs DL).
+                def _send():
+                    try:
+                        self._report_result_sync(parent, body, timeout=5.0)
+                    except Exception as exc:
+                        log(f"[REMOTE-CMD] self_update progress tick error: {exc}")
+
+                threading.Thread(
+                    target=_send, daemon=True, name="SelfUpdateProgTick"
+                ).start()
 
             return run_self_update_command(
                 params,

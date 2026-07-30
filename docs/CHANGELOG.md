@@ -1,3 +1,11 @@
+# v4.9.67
+
+## Unstick self_update at 0% (Command received, no bytes)
+- Progress `commands/result` ticks are async (no shared-session wedge vs download)
+- API client `RLock` around `api_request`
+- Lifecycle begin non-blocking; constructed release URL before GitHub API
+- Download phases: `connecting` / `headers_received` so UI leaves 0 B
+
 # v4.9.66
 
 ## Fix remote `launch_helper_failed` (schtasks TR + direct NSIS)

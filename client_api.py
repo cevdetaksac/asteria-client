@@ -51,7 +51,11 @@ class AsteriaAPIClient:
         self.session = self._create_session()
         self.log = log_func if log_func else print
         self._auth_token: Optional[str] = None
-        
+        # Progress heartbeat + download/command threads share this client — lock
+        # the session so concurrent api_request cannot wedge requests.Session.
+        import threading
+        self._request_lock = threading.RLock()
+
     def _create_session(self) -> requests.Session:
         """HTTP session oluştur"""
         session = requests.Session()
@@ -132,6 +136,29 @@ class AsteriaAPIClient:
                    params: Optional[Dict] = None, timeout: int = API_REQUEST_TIMEOUT,
                    verbose_logging: bool = False, token: Optional[str] = None) -> Optional[Dict]:
         """API isteği gönder (primary → legacy failover on transport/5xx failure)."""
+        lock = getattr(self, "_request_lock", None)
+        if lock is None:
+            return self._api_request_unlocked(
+                method, endpoint, data=data, params=params, timeout=timeout,
+                verbose_logging=verbose_logging, token=token,
+            )
+        with lock:
+            return self._api_request_unlocked(
+                method, endpoint, data=data, params=params, timeout=timeout,
+                verbose_logging=verbose_logging, token=token,
+            )
+
+    def _api_request_unlocked(
+        self,
+        method: str,
+        endpoint: str,
+        data: Optional[Dict] = None,
+        params: Optional[Dict] = None,
+        timeout: int = API_REQUEST_TIMEOUT,
+        verbose_logging: bool = False,
+        token: Optional[str] = None,
+    ) -> Optional[Dict]:
+        """API request body (caller holds ``_request_lock`` when present)."""
         try:
             from client_constants import VERBOSE_LOGGING
             ep = (endpoint or "").lstrip("/")
@@ -151,6 +178,7 @@ class AsteriaAPIClient:
                 "agent/sync-rules",
                 "agent/pending-blocks",
                 "agent/pending-unblocks",
+                "commands/result",
             } or ep.startswith("commands/")
             # Opt-in only: caller verbose_logging=True OR global VERBOSE_LOGGING.
             show_logs = bool(verbose_logging or VERBOSE_LOGGING) and not is_frequent_endpoint
