@@ -1,3 +1,11 @@
+# v4.9.62
+
+## Update brick harden (orphan_lock / Motoru kurtar)
+- `self_update` preempts stuck/orphan `update_in_progress.lock` even without `force` (no forever `busy`)
+- Force path no longer uses `release_update_lock(resume_updaters=False)` alone
+- Successful `operator_recover` clears the failed banner when motor is back (no sticky `operator_recover` strip)
+- Orphan lock finalize starts motor when down; clears banner if motor healthy
+
 # v4.9.61
 
 ## Contract 1.4.46 — self_update progress ticks

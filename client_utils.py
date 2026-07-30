@@ -1502,6 +1502,9 @@ def _finalize_cleared_update_lock(reason: str = "orphan_update_lock") -> None:
 
     Critical: a bare ``os.remove(lock)`` used to leave Background/SilentUpdater
     disabled and the GUI with no banner — hosts stayed motor-down indefinitely.
+
+    If the motor is (or becomes) healthy after the clear, do **not** leave a
+    scary failed banner — that was the 4.9.54→newer orphan_lock UX brick.
     """
     try:
         from client_resilience import clear_stand_down
@@ -1512,10 +1515,29 @@ def _finalize_cleared_update_lock(reason: str = "orphan_update_lock") -> None:
         resume_competing_updaters()
     except Exception:
         pass
+
+    motor_ok = False
     try:
-        from client_update_ui import set_update_ui_status, _read_raw
+        from client_daemon_ipc import is_motor_healthy
+        motor_ok = bool(is_motor_healthy())
+    except Exception:
+        motor_ok = False
+    if not motor_ok:
+        try:
+            from client_daemon_ipc import ensure_daemon_running
+            motor_ok = bool(ensure_daemon_running(log_func=lambda _m: None, wait_sec=12.0))
+        except Exception:
+            motor_ok = False
+
+    try:
+        from client_update_ui import set_update_ui_status, clear_update_ui_status, _read_raw
         prev = _read_raw() or {}
         phase = str(prev.get("phase") or "").strip().lower()
+        if motor_ok:
+            # Lock heal succeeded and motor answers — drop obsolete failure strip.
+            if phase in ("", "accepted", "downloading", "staging", "installing", "failed"):
+                clear_update_ui_status()
+            return
         # Don't overwrite a fresh "done"; only active/empty → failed.
         if phase in ("", "accepted", "downloading", "staging", "installing"):
             set_update_ui_status(

@@ -1562,14 +1562,47 @@ def run_self_update_command(
     except Exception:
         pass
 
+    # Preempt stuck/orphan locks — even without force. Old clients (≤4.9.54) often
+    # left update_in_progress.lock after os._exit; returning busy forever bricked upgrades.
     if is_update_in_progress():
-        if force:
-            log("[SELF-UPDATE] force=1 — clearing stale update lock")
-            try:
-                release_update_lock(resume_updaters=False)
-            except Exception:
-                pass
-        else:
+        preempted = False
+        try:
+            from client_update_recovery import diagnose_update_state, abort_stuck_update
+            diag = diagnose_update_state()
+            reasons = list(diag.get("reasons") or [])
+            should_preempt = bool(
+                force
+                or diag.get("stuck")
+                or diag.get("actionable")
+                or any(
+                    ("orphan" in str(r)) or str(r).startswith("motor_down") or str(r).startswith("no_heartbeat")
+                    for r in reasons
+                )
+            )
+            if should_preempt:
+                why = (
+                    "self_update_force_preempt"
+                    if force
+                    else (str(reasons[0]) if reasons else "self_update_preempt_stuck")
+                )
+                log(f"[SELF-UPDATE] preempting update lock reason={why}")
+                abort_stuck_update(
+                    reason=why,
+                    resume_motor=False,  # about to download; helper/motor restart later
+                    force=True,
+                    log_func=log,
+                )
+                preempted = True
+        except Exception as exc:
+            log(f"[SELF-UPDATE] preempt probe failed: {exc}")
+            if force:
+                try:
+                    release_update_lock(resume_updaters=True)
+                    preempted = True
+                except Exception:
+                    pass
+
+        if is_update_in_progress() and not preempted:
             try:
                 from client_update_ui import set_update_ui_status
                 set_update_ui_status(
@@ -1589,6 +1622,32 @@ def run_self_update_command(
                 "tag": f"v{tag}" if tag else "",
                 "phase": "failed",
             })
+        if is_update_in_progress():
+            # Still locked after abort — last resort clear (never resume=False alone)
+            try:
+                release_update_lock(resume_updaters=True)
+            except Exception:
+                pass
+            if is_update_in_progress():
+                try:
+                    from client_update_ui import set_update_ui_status
+                    set_update_ui_status(
+                        "failed", from_version=from_version, to_version=tag,
+                        detail="another_update_in_progress", error="busy",
+                    )
+                except Exception:
+                    pass
+                _lifecycle_fail(api_client, "busy", from_version, tag)
+                return _ret({
+                    "success": False,
+                    "ok": False,
+                    "error": "busy",
+                    "detail": "another_update_in_progress",
+                    "from_version": from_version,
+                    "to_version": tag,
+                    "tag": f"v{tag}" if tag else "",
+                    "phase": "failed",
+                })
 
     acquire_update_lock("dashboard-self-update")
     pause_competing_updaters()

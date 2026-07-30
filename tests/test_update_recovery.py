@@ -79,6 +79,37 @@ class TestDiagnoseAndAbort(unittest.TestCase):
         self.assertTrue(diag["stuck"])
         self.assertTrue(any("motor_down" in r for r in diag["reasons"]))
 
+    def test_abort_clears_banner_when_motor_ok(self):
+        self._write_lock(mtime_age=120)
+        with mock.patch("client_utils.release_update_lock"), \
+             mock.patch("client_resilience.clear_stand_down"), \
+             mock.patch("client_update_ui.set_update_ui_status"), \
+             mock.patch("client_update_ui.clear_update_ui_status") as clr, \
+             mock.patch.object(ur, "_motor_healthy", side_effect=[False, True, True]), \
+             mock.patch("client_daemon_ipc.ensure_daemon_running", return_value=True):
+            result = ur.abort_stuck_update(
+                reason="operator_recover", resume_motor=True, force=True
+            )
+        self.assertTrue(result["aborted"])
+        self.assertTrue(result["motor_ok"])
+        clr.assert_called()
+
+    def test_abort_keeps_failed_when_motor_still_down(self):
+        self._write_lock(mtime_age=120)
+        with mock.patch("client_utils.release_update_lock"), \
+             mock.patch("client_resilience.clear_stand_down"), \
+             mock.patch("client_update_ui.set_update_ui_status") as set_ui, \
+             mock.patch("client_update_ui.clear_update_ui_status") as clr, \
+             mock.patch.object(ur, "_motor_healthy", return_value=False), \
+             mock.patch("client_daemon_ipc.ensure_daemon_running", return_value=False):
+            result = ur.abort_stuck_update(
+                reason="operator_recover", resume_motor=True, force=True
+            )
+        self.assertTrue(result["aborted"])
+        self.assertFalse(result["motor_ok"])
+        set_ui.assert_called()
+        clr.assert_not_called()
+
     def test_maybe_auto_recover_calls_abort(self):
         self._write_lock(mtime_age=120)
         with mock.patch.object(ur, "abort_stuck_update", return_value={"aborted": True}) as ab:
@@ -110,6 +141,75 @@ class TestFinalizeClearedLock(unittest.TestCase):
             os.rmdir(tdir)
         except OSError:
             pass
+
+    def test_finalize_clears_banner_if_motor_healthy(self):
+        import client_utils as cu
+
+        with mock.patch("client_resilience.clear_stand_down"), \
+             mock.patch.object(cu, "resume_competing_updaters"), \
+             mock.patch("client_daemon_ipc.is_motor_healthy", return_value=True), \
+             mock.patch("client_update_ui.clear_update_ui_status") as clr, \
+             mock.patch("client_update_ui._read_raw", return_value={
+                 "phase": "failed", "from_version": "4.9.54", "to_version": "4.9.61",
+             }), \
+             mock.patch("client_update_ui.set_update_ui_status") as set_ui:
+            cu._finalize_cleared_update_lock("orphan_lock_dead_pid")
+        clr.assert_called()
+        set_ui.assert_not_called()
+
+
+class TestSelfUpdatePreempt(unittest.TestCase):
+    def test_preempts_orphan_without_force(self):
+        from client_updater import run_self_update_command
+
+        calls = {"abort": 0}
+        iup_iter = iter([True, False])
+
+        def _abort(**kwargs):
+            calls["abort"] += 1
+            return {"aborted": True, "ok": True}
+
+        with mock.patch("client_updater._current_installed_version", return_value="4.9.54"), \
+             mock.patch("client_utils.heal_update_machinery"), \
+             mock.patch(
+                 "client_utils.is_update_in_progress",
+                 side_effect=lambda *a, **k: next(iup_iter, False),
+             ), \
+             mock.patch(
+                 "client_update_recovery.diagnose_update_state",
+                 return_value={
+                     "stuck": True,
+                     "actionable": True,
+                     "reasons": ["orphan_lock_dead_or_foreign_pid"],
+                     "motor_ok": False,
+                 },
+             ), \
+             mock.patch("client_update_recovery.abort_stuck_update", side_effect=_abort), \
+             mock.patch("client_utils.acquire_update_lock", return_value=True), \
+             mock.patch("client_utils.pause_competing_updaters"), \
+             mock.patch(
+                 "client_updater._is_allowed_update_url", return_value=True
+             ), \
+             mock.patch(
+                 "client_updater.download_installer_complete",
+                 return_value=(False, "stop_early"),
+             ), \
+             mock.patch("client_utils.release_update_lock"), \
+             mock.patch("client_updater._lifecycle_fail"), \
+             mock.patch("client_update_ui.set_update_ui_status"):
+            out = run_self_update_command(
+                {
+                    "tag": "4.9.62",
+                    "download_url": (
+                        "https://github.com/cevdetaksac/asteria-client/"
+                        "releases/download/v4.9.62/cloud-client-installer.exe"
+                    ),
+                    "force": False,
+                },
+                api_client=None,
+            )
+        self.assertEqual(calls["abort"], 1)
+        self.assertEqual(out.get("error"), "download_failed")
 
 
 if __name__ == "__main__":

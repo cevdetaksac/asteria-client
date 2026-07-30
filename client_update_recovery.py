@@ -346,13 +346,32 @@ def abort_stuck_update(
                 _log(f"[UPDATE-RECOVERY] ensure_daemon_running → {motor_started}")
             except Exception as exc:
                 _log(f"[UPDATE-RECOVERY] ensure_daemon failed: {exc}")
+            # Second kick — schtasks can race with lock release
+            if not motor_started and not _motor_healthy():
+                try:
+                    from client_daemon_ipc import ensure_daemon_running
+                    motor_started = bool(ensure_daemon_running(log_func=_log, wait_sec=15.0))
+                    _log(f"[UPDATE-RECOVERY] ensure_daemon retry → {motor_started}")
+                except Exception as exc:
+                    _log(f"[UPDATE-RECOVERY] ensure_daemon retry failed: {exc}")
 
         after = diagnose_update_state()
+        motor_ok = bool(after.get("motor_ok")) or _motor_healthy()
+
+        # Successful recover must not leave "Güncelleme başarısız · operator_recover"
+        # (operators clicked Motoru kurtar — banner should clear when motor is up).
+        if motor_ok:
+            try:
+                from client_update_ui import clear_update_ui_status
+                clear_update_ui_status()
+            except Exception:
+                pass
+
         return {
             "ok": True,
             "aborted": True,
             "reason": reason,
-            "motor_ok": bool(after.get("motor_ok")),
+            "motor_ok": motor_ok,
             "motor_started": motor_started,
             "diagnosis_before": diag,
             "diagnosis_after": after,
