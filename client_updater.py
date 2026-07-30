@@ -1891,6 +1891,7 @@ def run_self_update_command(
             expect_exit_pid=os.getpid(),
             # True → auto-clears when IsUserAnAdmin (SYSTEM daemon). Keeps UAC for rare non-admin callers.
             elevate=True,
+            grace_wait_sec=30,
         )
         if not ok:
             # One emergency-bootstrap retry — covers launcher-only / parse-dead helpers
@@ -1912,7 +1913,7 @@ def run_self_update_command(
                 expect_exit_pid=os.getpid(),
                 elevate=True,
                 prefer_emergency=True,
-                grace_wait_sec=30,
+                grace_wait_sec=45,
             )
         if not ok:
             release_update_lock(resume_updaters=True)
@@ -1937,6 +1938,15 @@ def run_self_update_command(
                 "phase": "failed",
             })
 
+        try:
+            bus.tick(
+                "installing",
+                progress_pct=98,
+                detail="helper_running",
+                force=True,
+            )
+        except Exception:
+            pass
         # Double-check log — never claim success / exit without a live helper
         try:
             log_path = os.path.join(

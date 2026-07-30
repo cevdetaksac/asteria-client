@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.65"  # Quiet logs: throttle API/HEALTH/FW spam + size-cap daily files
+VERSION = "4.9.66"  # Fix launch_helper_failed: short schtasks TR + direct NSIS fallback
 
 
 

@@ -50,7 +50,10 @@ if (-not (Test-Path -LiteralPath $InstallerPath)) {
     Write-UpLog "ERROR: installer missing"
     exit 2
 }
-# Disable respawn
+# Disable respawn + Guardian (otherwise motor resurrects mid-kill)
+try { & sc.exe stop AsteriaGuardian 2>$null | Out-Null } catch {}
+Start-Sleep -Milliseconds 400
+try { & sc.exe delete AsteriaGuardian 2>$null | Out-Null } catch {}
 foreach ($n in @("AsteriaClientGuard","Asteria-Watchdog","Asteria-Background","Asteria-Tray","Asteria-MemoryRestart","Asteria-Updater","Asteria-SilentUpdater")) {
     try { schtasks /end /tn $n 2>$null | Out-Null } catch {}
     try { schtasks /change /tn $n /disable 2>$null | Out-Null } catch {}
@@ -74,14 +77,16 @@ if ($ExpectExitPid -gt 0) {
         Start-Sleep -Milliseconds 400
     }
 }
-# Force kill
+# Force kill motor + GUI (names matter: fleet is asteria-* now)
 $round = 0
 do {
     $round++
     Write-UpLog ("Kill round " + $round)
-    try { Get-Process -Name "honeypot-client" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue } catch {}
-    try { & taskkill.exe /F /IM asteria-client.exe 2>$null | Out-Null } catch {}
-    $left = @(Get-Process -Name "honeypot-client" -ErrorAction SilentlyContinue)
+    try { & taskkill.exe /F /T /IM asteria-client.exe 2>$null | Out-Null } catch {}
+    try { & taskkill.exe /F /T /IM asteria-gui.exe 2>$null | Out-Null } catch {}
+    try { & taskkill.exe /F /T /IM honeypot-client.exe 2>$null | Out-Null } catch {}
+    try { Get-Process -Name "asteria-client","asteria-gui","honeypot-client" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue } catch {}
+    $left = @(Get-Process -Name "asteria-client","asteria-gui","honeypot-client" -ErrorAction SilentlyContinue)
     if ($left.Count -eq 0) { break }
     Start-Sleep -Milliseconds 300
 } while ($round -lt $KillRounds)

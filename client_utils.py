@@ -2597,6 +2597,7 @@ def launch_safe_update_install(
 
         # --- Method 5: emergency bootstrap rewrite + WMI/schtasks retry ---
         # Covers: full helper still broken on disk, parse gate race, AV quarantine.
+        # schtasks /TR must stay short (legacy 261-char limit) — args live in the ps1.
         try:
             from client_update_hardening import write_emergency_bootstrap
             emergency = write_emergency_bootstrap(helper)
@@ -2615,11 +2616,22 @@ def launch_safe_update_install(
                         f"-ExpectExitPid {pid} -GraceWaitSec {grace} -KillRounds 4 {flag_str}\n"
                         "exit $LASTEXITCODE\n"
                     )
-                # Prefer schtasks SYSTEM one-shot for Session-0 immortality
                 task = f"Asteria-UpdateEmg-{pid}"
+                tr = (
+                    f'powershell.exe -NoProfile -ExecutionPolicy Bypass '
+                    f'-WindowStyle Hidden -File "{launcher}"'
+                )
+                try:
+                    with open(log_path, "a", encoding="ascii", errors="replace") as fh:
+                        fh.write(
+                            f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
+                            f"schtasks_tr_len={len(tr)} task={task}\n"
+                        )
+                except Exception:
+                    pass
                 subprocess.run(
                     [
-                        "schtasks", "/Create", "/TN", task, "/TR", ps_cmd,
+                        "schtasks", "/Create", "/TN", task, "/TR", tr,
                         "/SC", "ONCE", "/ST", "00:00", "/RU", "SYSTEM",
                         "/RL", "HIGHEST", "/F",
                     ],
@@ -2633,36 +2645,145 @@ def launch_safe_update_install(
                     timeout=15,
                     creationflags=subprocess.CREATE_NO_WINDOW,
                 )
-                helper_seen = bool(run.returncode == 0 and _wait_helper_log(30.0))
+                helper_seen = bool(run.returncode == 0 and _wait_helper_log(45.0))
+                if not helper_seen:
+                    # Slow hosts: do not delete yet — deleting kills a late start.
+                    helper_seen = _wait_helper_log(20.0)
+                if helper_seen:
+                    try:
+                        subprocess.run(
+                            ["schtasks", "/Delete", "/TN", task, "/F"],
+                            capture_output=True,
+                            timeout=10,
+                            creationflags=subprocess.CREATE_NO_WINDOW,
+                        )
+                    except Exception:
+                        pass
+                    return True
+                # Leave task for forensics / late start; attempt one more Run
                 try:
                     subprocess.run(
-                        ["schtasks", "/Delete", "/TN", task, "/F"],
+                        ["schtasks", "/Run", "/TN", task],
                         capture_output=True,
-                        timeout=10,
+                        timeout=15,
                         creationflags=subprocess.CREATE_NO_WINDOW,
                     )
+                    if _wait_helper_log(25.0):
+                        return True
                 except Exception:
                     pass
-                if helper_seen:
-                    return True
         except Exception:
             pass
 
-        # --- Method 6: last-resort direct emergency bootstrap via schtasks ---
+        # --- Method 6: short-TR emergency file (args embedded; no long /TR) ---
+        # Old Method 6 put -InstallerPath on schtasks /TR (~276 chars → silent create fail).
         try:
             from client_update_hardening import write_emergency_bootstrap
             task = f"Asteria-NsisOnce-{pid}"
+            emg_helper = os.path.join(staging, f"emg-helper-{pid}.ps1")
             nsis_launcher = os.path.join(staging, f"run-nsis-{pid}.ps1")
-            if write_emergency_bootstrap(nsis_launcher):
-                nsis_cmd = (
+            if write_emergency_bootstrap(emg_helper):
+                emg_q = emg_helper.replace("'", "''")
+                with open(nsis_launcher, "w", encoding="ascii", newline="\n") as fh:
+                    fh.write(
+                        "$ErrorActionPreference = 'Continue'\n"
+                        f"& '{emg_q}' -InstallerPath '{installer_q}' "
+                        f"-ExpectExitPid {pid} -GraceWaitSec {grace} "
+                        f"-KillRounds 4 -Silent\n"
+                        "exit $LASTEXITCODE\n"
+                    )
+                tr = (
                     f'powershell.exe -NoProfile -ExecutionPolicy Bypass '
-                    f'-WindowStyle Hidden -File "{nsis_launcher}" '
-                    f'-InstallerPath "{installer_path}" -ExpectExitPid {pid} '
-                    f'-GraceWaitSec {grace} -KillRounds 4 -Silent'
+                    f'-WindowStyle Hidden -File "{nsis_launcher}"'
                 )
+                if len(tr) >= 260:
+                    try:
+                        with open(log_path, "a", encoding="ascii", errors="replace") as fh:
+                            fh.write(
+                                f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
+                                f"method6_tr_too_long len={len(tr)}\n"
+                            )
+                    except Exception:
+                        pass
+                else:
+                    subprocess.run(
+                        [
+                            "schtasks", "/Create", "/TN", task, "/TR", tr,
+                            "/SC", "ONCE", "/ST", "00:00", "/RU", "SYSTEM",
+                            "/RL", "HIGHEST", "/F",
+                        ],
+                        capture_output=True,
+                        timeout=15,
+                        creationflags=subprocess.CREATE_NO_WINDOW,
+                    )
+                    run = subprocess.run(
+                        ["schtasks", "/Run", "/TN", task],
+                        capture_output=True,
+                        timeout=15,
+                        creationflags=subprocess.CREATE_NO_WINDOW,
+                    )
+                    helper_seen = bool(run.returncode == 0 and _wait_helper_log(45.0))
+                    if not helper_seen:
+                        helper_seen = _wait_helper_log(20.0)
+                    if helper_seen:
+                        try:
+                            subprocess.run(
+                                ["schtasks", "/Delete", "/TN", task, "/F"],
+                                capture_output=True,
+                                timeout=10,
+                                creationflags=subprocess.CREATE_NO_WINDOW,
+                            )
+                        except Exception:
+                            pass
+                        return True
+        except Exception:
+            pass
+
+        # --- Method 7: direct NSIS /S via short schtasks (no helper params on /TR) ---
+        try:
+            task = f"Asteria-DirectNsis-{pid}"
+            direct_ps1 = os.path.join(staging, f"run-direct-{pid}.ps1")
+            inst_q = installer_path.replace("'", "''")
+            with open(direct_ps1, "w", encoding="ascii", newline="\n") as fh:
+                fh.write(
+                    "$ErrorActionPreference = 'Continue'\n"
+                    "$logDir = Join-Path $env:ProgramData 'Asteria'\n"
+                    "if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }\n"
+                    "$log = Join-Path $logDir 'update-install.log'\n"
+                    "function W([string]$m){ Add-Content -Path $log -Value ('['+(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')+'] '+$m) -Encoding ASCII }\n"
+                    "W '=== update-and-install start ==='\n"
+                    "W 'direct_nsis_launch=1'\n"
+                    "try { sc.exe stop AsteriaGuardian 2>$null | Out-Null } catch {}\n"
+                    "Start-Sleep -Milliseconds 400\n"
+                    "try { sc.exe delete AsteriaGuardian 2>$null | Out-Null } catch {}\n"
+                    "foreach ($n in @('Asteria-Watchdog','Asteria-Background','Asteria-Tray','Asteria-SilentUpdater','Asteria-Updater')) {\n"
+                    "  try { schtasks /end /tn $n 2>$null | Out-Null } catch {}\n"
+                    "  try { schtasks /change /tn $n /disable 2>$null | Out-Null } catch {}\n"
+                    "}\n"
+                    "try { taskkill.exe /F /T /IM asteria-client.exe 2>$null | Out-Null } catch {}\n"
+                    "try { taskkill.exe /F /T /IM asteria-gui.exe 2>$null | Out-Null } catch {}\n"
+                    "Start-Sleep -Milliseconds 600\n"
+                    f"W 'Starting installer direct: {inst_q}'\n"
+                    f"$p = Start-Process -FilePath '{inst_q}' -ArgumentList '/S','/NCRC' -PassThru -WindowStyle Hidden\n"
+                    "W ('direct_nsis_pid=' + $p.Id)\n"
+                    "exit 0\n"
+                )
+            tr = (
+                f'powershell.exe -NoProfile -ExecutionPolicy Bypass '
+                f'-WindowStyle Hidden -File "{direct_ps1}"'
+            )
+            try:
+                with open(log_path, "a", encoding="ascii", errors="replace") as fh:
+                    fh.write(
+                        f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
+                        f"method7_tr_len={len(tr)}\n"
+                    )
+            except Exception:
+                pass
+            if len(tr) < 260:
                 subprocess.run(
                     [
-                        "schtasks", "/Create", "/TN", task, "/TR", nsis_cmd,
+                        "schtasks", "/Create", "/TN", task, "/TR", tr,
                         "/SC", "ONCE", "/ST", "00:00", "/RU", "SYSTEM",
                         "/RL", "HIGHEST", "/F",
                     ],
@@ -2676,17 +2797,18 @@ def launch_safe_update_install(
                     timeout=15,
                     creationflags=subprocess.CREATE_NO_WINDOW,
                 )
-                helper_seen = bool(run.returncode == 0 and _wait_helper_log(30.0))
-                try:
-                    subprocess.run(
-                        ["schtasks", "/Delete", "/TN", task, "/F"],
-                        capture_output=True,
-                        timeout=10,
-                        creationflags=subprocess.CREATE_NO_WINDOW,
-                    )
-                except Exception:
-                    pass
-                if helper_seen:
+                if run.returncode == 0 and _wait_helper_log(45.0):
+                    try:
+                        subprocess.run(
+                            ["schtasks", "/Delete", "/TN", task, "/F"],
+                            capture_output=True,
+                            timeout=10,
+                            creationflags=subprocess.CREATE_NO_WINDOW,
+                        )
+                    except Exception:
+                        pass
+                    return True
+                if _wait_helper_log(20.0):
                     return True
         except Exception:
             pass

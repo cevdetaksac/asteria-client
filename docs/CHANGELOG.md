@@ -1,3 +1,12 @@
+# v4.9.66
+
+## Fix remote `launch_helper_failed` (schtasks TR + direct NSIS)
+- Method 6: keep schtasks `/TR` under 261 chars (args inside `.ps1`, not on `/TR`)
+- Method 7: direct NSIS `/S` short-TR fallback with log start marker
+- Slow-start: extra wait / re-run before deleting UpdateOnce tasks
+- Emergency bootstrap: stop `AsteriaGuardian`, kill `asteria-*` (not only honeypot-client)
+- Progress: 98% when helper is confirmed running
+
 # v4.9.65
 
 ## Quiet logs (API / HEALTH / FW spam + size caps)

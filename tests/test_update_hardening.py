@@ -37,6 +37,32 @@ class TestNormalizeAscii(unittest.TestCase):
         self.assertTrue(all(ord(c) < 128 for c in EMERGENCY_UPDATE_BOOTSTRAP_PS1))
         self.assertIn("=== update-and-install start ===", EMERGENCY_UPDATE_BOOTSTRAP_PS1)
 
+    def test_emergency_kills_asteria_and_guardian(self):
+        body = EMERGENCY_UPDATE_BOOTSTRAP_PS1
+        self.assertIn("asteria-client.exe", body)
+        self.assertIn("asteria-gui.exe", body)
+        self.assertIn("AsteriaGuardian", body)
+        # Must not only watch legacy honeypot-client for "gone"
+        self.assertIn('Get-Process -Name "asteria-client","asteria-gui","honeypot-client"', body)
+
+    def test_method6_style_tr_stays_under_261(self):
+        """Regression: embedding -InstallerPath on schtasks /TR exceeded 261 chars."""
+        staging = r"C:\ProgramData\Asteria\update"
+        nsis = os.path.join(staging, "run-nsis-12345.ps1")
+        tr = (
+            f'powershell.exe -NoProfile -ExecutionPolicy Bypass '
+            f'-WindowStyle Hidden -File "{nsis}"'
+        )
+        self.assertLess(len(tr), 260, f"TR too long: {len(tr)} {tr}")
+        # Old broken form for contrast
+        inst = os.path.join(staging, "asteria-client-installer-4.9.65.exe")
+        broken = (
+            f'powershell.exe -NoProfile -ExecutionPolicy Bypass '
+            f'-WindowStyle Hidden -File "{nsis}" '
+            f'-InstallerPath "{inst}" -ExpectExitPid 12345 '
+            f'-GraceWaitSec 20 -KillRounds 4 -Silent'
+        )
+        self.assertGreaterEqual(len(broken), 260)
 
 class TestWriteAndParse(unittest.TestCase):
     def setUp(self):
