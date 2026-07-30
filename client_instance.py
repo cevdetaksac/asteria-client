@@ -27,10 +27,13 @@ import psutil
 from client_constants import (
     SINGLETON_MUTEX_NAME,
     DAEMON_MUTEX_NAME,
-    GUI_MUTEX_NAME,
-    GUI_SHOW_EVENT_NAME,
+    LEGACY_GUI_SHOW_EVENT_NAME,
+    LEGACY_GUI_SHOW_EVENT_NAME_V1,
+    LEGACY_GUI_SHOW_EVENT_WEBVIEW,
     CONTROL_HOST,
     CONTROL_PORT,
+    gui_mutex_name,
+    gui_show_event_name,
 )
 from client_helpers import log
 
@@ -84,7 +87,8 @@ def try_acquire_gui_mutex() -> bool:
     """Acquire per-session GUI/tray mutex. False if another frontend already owns it."""
     global _GUI_MUTEX_HANDLE
     try:
-        mutex = win32event.CreateMutex(None, False, GUI_MUTEX_NAME)
+        name = gui_mutex_name()
+        mutex = win32event.CreateMutex(None, False, name)
         last_error = win32api.GetLastError()
         if last_error == winerror.ERROR_ALREADY_EXISTS:
             try:
@@ -100,18 +104,28 @@ def try_acquire_gui_mutex() -> bool:
 
 
 def signal_existing_gui_show() -> bool:
-    """Pulse Local show-event so the running tray/GUI raises its window."""
-    try:
-        handle = win32event.CreateEvent(None, False, False, GUI_SHOW_EVENT_NAME)
-        win32event.SetEvent(handle)
+    """Pulse show-event so the running tray/GUI raises its window."""
+    names = (
+        gui_show_event_name(),
+        LEGACY_GUI_SHOW_EVENT_NAME,
+        LEGACY_GUI_SHOW_EVENT_NAME_V1,
+        LEGACY_GUI_SHOW_EVENT_WEBVIEW,
+    )
+    ok = False
+    for name in names:
         try:
-            win32api.CloseHandle(handle)
+            handle = win32event.CreateEvent(None, False, False, name)
+            win32event.SetEvent(handle)
+            try:
+                win32api.CloseHandle(handle)
+            except Exception:
+                pass
+            ok = True
         except Exception:
-            pass
-        return True
-    except Exception as e:
-        log(f"[SINGLETON] signal_existing_gui_show failed: {e}")
-        return False
+            continue
+    if not ok:
+        log("[SINGLETON] signal_existing_gui_show failed for all event names")
+    return ok
 
 
 def activate_existing_gui_windows() -> bool:
@@ -171,7 +185,7 @@ def handoff_to_existing_gui() -> bool:
 
 
 def start_gui_show_watcher(show_callback) -> None:
-    """Daemon thread: wait for Local show-event and call show_callback (Tk-safe via callback)."""
+    """Daemon thread: wait for show-event and call show_callback (Tk-safe via callback)."""
     global _GUI_SHOW_EVENT_HANDLE, _GUI_SHOW_WATCHER_STARTED
     if _GUI_SHOW_WATCHER_STARTED or not callable(show_callback):
         return
@@ -180,7 +194,7 @@ def start_gui_show_watcher(show_callback) -> None:
         import threading
 
         _GUI_SHOW_EVENT_HANDLE = win32event.CreateEvent(
-            None, False, False, GUI_SHOW_EVENT_NAME
+            None, False, False, gui_show_event_name()
         )
 
         def _loop():

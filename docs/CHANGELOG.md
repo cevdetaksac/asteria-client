@@ -1,3 +1,11 @@
+# v4.9.64
+
+## Clean start (legacy purge + single tray owner)
+- Legacy purge: `YesNext\CloudClient`, `ProgramData\YesNext`, leftover vendor leaves, user `AppData\YesNext`
+- Update/kill helpers stop+delete `AsteriaGuardian` before process wipe (no mid-kill resurrect)
+- Silent update: skip helper `Asteria-Tray` when motor ready — daemon/`--create-tasks` owns tray handoff
+- GUI single-instance: `Global\AsteriaClient_GUI_s{session}` (crosses integrity); CreateMutex fail-closed
+
 # v4.9.63
 
 ## Harden `launch_helper_failed`

@@ -60,7 +60,15 @@ $keep = Normalize-Dir $KeepIfSameAs
 $roots = @()
 foreach ($pf in $pfCandidates) {
     $roots += (Join-Path $pf "YesNext\Cloud Honeypot Client")
+    $roots += (Join-Path $pf "YesNext\CloudClient")
+    $roots += (Join-Path $pf "YesNext\Cloud Honeypot")
     $roots += (Join-Path $pf "Asteria")
+}
+# ProgramData / roaming leftovers from YesNext era (logs, staging, configs).
+# Asteria lives under ProgramData\Asteria — safe to purge the old vendor tree.
+$pd = [Environment]::GetEnvironmentVariable("ProgramData")
+if ($pd) {
+    $roots += (Join-Path $pd "YesNext")
 }
 $roots = @($roots | Where-Object { $_ } | Select-Object -Unique)
 
@@ -83,6 +91,8 @@ foreach ($root in $roots) {
         }
     } catch {}
     try { & taskkill.exe /F /T /IM honeypot-client.exe 2>$null | Out-Null } catch {}
+    try { & taskkill.exe /F /T /IM asteria-client.exe 2>$null | Out-Null } catch {}
+    try { & taskkill.exe /F /T /IM asteria-gui.exe 2>$null | Out-Null } catch {}
 }
 
 foreach ($root in $roots) {
@@ -120,12 +130,40 @@ $vendorDirs = @($vendorDirs | Where-Object { $_ } | Select-Object -Unique)
 foreach ($vendor in $vendorDirs) {
     if (-not $vendor -or -not (Test-Path -LiteralPath $vendor)) { continue }
     try {
+        # Remove known leftover leaf dirs that are not the primary product tree.
+        foreach ($leaf in @("CloudClient", "Cloud Honeypot", "Updater", "Update")) {
+            $extra = Join-Path $vendor $leaf
+            if (Test-Path -LiteralPath $extra) {
+                try {
+                    & takeown.exe /F $extra /R /D Y 2>$null | Out-Null
+                    & icacls.exe $extra /grant Administrators:F /T /C /Q 2>$null | Out-Null
+                } catch {}
+                try {
+                    Remove-Item -LiteralPath $extra -Recurse -Force -ErrorAction SilentlyContinue
+                    Write-LegacyLog ("Removed leftover: " + $extra)
+                } catch {}
+            }
+        }
         $left = @(Get-ChildItem -LiteralPath $vendor -Force -ErrorAction SilentlyContinue)
         if ($left.Count -eq 0) {
             Remove-Item -LiteralPath $vendor -Force -ErrorAction SilentlyContinue
             Write-LegacyLog ("Removed empty vendor dir: " + $vendor)
+        } else {
+            Write-LegacyLog ("Vendor dir still has entries: " + $vendor + " -> " + (($left | ForEach-Object { $_.Name }) -join ", "))
         }
     } catch {}
+}
+
+# Per-user YesNext AppData leftovers (non-fatal).
+foreach ($base in @($env:APPDATA, $env:LOCALAPPDATA)) {
+    if (-not $base) { continue }
+    $u = Join-Path $base "YesNext"
+    if (Test-Path -LiteralPath $u) {
+        try {
+            Remove-Item -LiteralPath $u -Recurse -Force -ErrorAction SilentlyContinue
+            Write-LegacyLog ("Removed user legacy: " + $u)
+        } catch {}
+    }
 }
 
 # Legacy Add/Remove Programs keys (old product names).

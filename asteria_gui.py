@@ -103,8 +103,6 @@ from client_daemon_ipc import (
     unblock_ip,
 )
 
-_MUTEX_NAME = "Local\\AsteriaGuiWebView"
-_SHOW_EVENT_NAME = "Local\\AsteriaGuiWebViewShow"
 _kernel_handles: list[int] = []
 _quitting = False
 _tray_state: Dict[str, Any] = {
@@ -232,18 +230,47 @@ def _acquire_single_instance() -> bool:
         return True
     import ctypes
 
+    try:
+        from client_constants import (
+            gui_mutex_name,
+            gui_show_event_name,
+            LEGACY_GUI_SHOW_EVENT_NAME,
+            LEGACY_GUI_SHOW_EVENT_WEBVIEW,
+        )
+        mutex_name = gui_mutex_name()
+        show_names = (
+            gui_show_event_name(),
+            LEGACY_GUI_SHOW_EVENT_NAME,
+            LEGACY_GUI_SHOW_EVENT_WEBVIEW,
+        )
+    except Exception:
+        # Fail closed if constants cannot load — avoid spawning a second UI.
+        return False
+
     kernel32 = ctypes.windll.kernel32
-    mutex = kernel32.CreateMutexW(None, False, _MUTEX_NAME)
+    mutex = kernel32.CreateMutexW(None, False, mutex_name)
     if not mutex:
-        return True
+        # Fail closed: unknown mutex state must not open another WebView.
+        return False
     _kernel_handles.append(mutex)
     if kernel32.GetLastError() != 183:  # ERROR_ALREADY_EXISTS
+        # Also create the show event so peers can pulse us.
+        try:
+            ev = kernel32.CreateEventW(None, False, False, show_names[0])
+            if ev:
+                _kernel_handles.append(ev)
+        except Exception:
+            pass
         return True
 
-    event = kernel32.OpenEventW(0x0002, False, _SHOW_EVENT_NAME)
-    if event:
-        kernel32.SetEvent(event)
-        kernel32.CloseHandle(event)
+    for ev_name in show_names:
+        event = kernel32.OpenEventW(0x0002, False, ev_name)  # EVENT_MODIFY_STATE
+        if not event:
+            event = kernel32.CreateEventW(None, False, False, ev_name)
+        if event:
+            kernel32.SetEvent(event)
+            kernel32.CloseHandle(event)
+            break
     return False
 
 
@@ -332,8 +359,15 @@ def _start_show_watcher(window: Any) -> None:
         return
     import ctypes
 
+    try:
+        from client_constants import gui_show_event_name
+
+        show_name = gui_show_event_name()
+    except Exception:
+        return
+
     kernel32 = ctypes.windll.kernel32
-    event = kernel32.CreateEventW(None, False, False, _SHOW_EVENT_NAME)
+    event = kernel32.CreateEventW(None, False, False, show_name)
     if not event:
         return
     _kernel_handles.append(event)

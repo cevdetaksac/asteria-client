@@ -421,6 +421,13 @@ public class HpTokUp {
     } catch {}
 }
 
+function Stop-AsteriaGuardian {
+    Write-UpLog "Stopping/deleting AsteriaGuardian (prevents mid-kill resurrect)..."
+    try { & sc.exe stop AsteriaGuardian 2>$null | Out-Null } catch {}
+    Start-Sleep -Milliseconds 500
+    try { & sc.exe delete AsteriaGuardian 2>$null | Out-Null } catch {}
+}
+
 function Get-HoneypotPids {
     $list = @()
     Get-Process -Name "asteria-client","asteria-gui","honeypot-client" -ErrorAction SilentlyContinue |
@@ -506,6 +513,7 @@ Wait-CallerExit -PidToWait $ExpectExitPid -TimeoutSec $GraceWaitSec
 
 Write-UpLog "Enabling SeDebugPrivilege + force terminate..."
 Enable-SeDebugPrivilege
+Stop-AsteriaGuardian
 $round = 0
 do {
     $round++
@@ -640,7 +648,7 @@ try {
 }
 
 # CRITICAL: Stop-HoneypotTasks disabled Background+Watchdog - always restore + start motor
-[void](Ensure-DaemonMotor -ExePath $exe)
+$motorReady = [bool](Ensure-DaemonMotor -ExePath $exe)
 
 # Keep the update lock alive until the new daemon has completed its boot-time
 # previous-session check. Clearing it before Ensure-DaemonMotor made a planned
@@ -662,7 +670,9 @@ if (-not $Silent) {
         Write-UpLog "WARN: GUI launch failed: $($_.Exception.Message)"
     }
 } else {
-    # Silent update: if someone is logged on, start tray (not full GUI window).
+    # Silent update: prefer a single tray owner. create-tasks + daemon already
+    # call launch_interactive_tray_gui; a second helper Asteria-Tray race often
+    # spawned an extra asteria-gui before the first was visible.
     $wantTray = [bool]$ShowGuiAfter
     if (-not $wantTray) {
         try {
@@ -674,22 +684,27 @@ if (-not $Silent) {
         } catch {}
     }
     if ($wantTray) {
-        Write-UpLog "Interactive session - starting Tray after silent update..."
-        try {
-            schtasks /change /tn "Asteria-Tray" /enable 2>$null | Out-Null
-            schtasks /run /tn "Asteria-Tray" 2>$null | Out-Null
-            if ($LASTEXITCODE -ne 0) {
-                $gui = Join-Path $InstallDir "asteria-gui.exe"
-                if (Test-Path -LiteralPath $gui) {
-                    Write-UpLog "WARN: Asteria-Tray /run failed (exit=$LASTEXITCODE) - trying asteria-gui --tray"
-                    Start-Process -FilePath $gui -ArgumentList "--tray" -WorkingDirectory $InstallDir
-                } else {
-                    Write-UpLog "WARN: Asteria-Tray /run failed (exit=$LASTEXITCODE) - trying --mode=tray"
-                    Start-Process -FilePath $exe -ArgumentList "--mode=tray" -WorkingDirectory $InstallDir
+        $guiAlready = @(Get-Process -Name "asteria-gui" -ErrorAction SilentlyContinue)
+        if ($motorReady -or $guiAlready.Count -gt 0) {
+            Write-UpLog "Silent: skip helper tray (motorReady=$motorReady guiCount=$($guiAlready.Count)) - daemon/create-tasks owns handoff"
+        } else {
+            Write-UpLog "Interactive session - motor not ready, starting Tray after silent update..."
+            try {
+                schtasks /change /tn "Asteria-Tray" /enable 2>$null | Out-Null
+                schtasks /run /tn "Asteria-Tray" 2>$null | Out-Null
+                if ($LASTEXITCODE -ne 0) {
+                    $gui = Join-Path $InstallDir "asteria-gui.exe"
+                    if (Test-Path -LiteralPath $gui) {
+                        Write-UpLog "WARN: Asteria-Tray /run failed (exit=$LASTEXITCODE) - trying asteria-gui --tray"
+                        Start-Process -FilePath $gui -ArgumentList "--tray" -WorkingDirectory $InstallDir
+                    } else {
+                        Write-UpLog "WARN: Asteria-Tray /run failed (exit=$LASTEXITCODE) - trying --mode=tray"
+                        Start-Process -FilePath $exe -ArgumentList "--mode=tray" -WorkingDirectory $InstallDir
+                    }
                 }
+            } catch {
+                Write-UpLog "WARN: Tray handoff after silent update: $($_.Exception.Message)"
             }
-        } catch {
-            Write-UpLog "WARN: Tray handoff after silent update: $($_.Exception.Message)"
         }
     }
 }

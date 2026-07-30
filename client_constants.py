@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.63"  # Harden launch_helper_failed (emergency retry + longer helper wait)
+VERSION = "4.9.64"  # Clean-start: legacy purge + guardian stop + Global GUI mutex
 
 
 
@@ -320,14 +320,52 @@ FILE_HEARTBEAT_INTERVAL = 60  # File heartbeat interval (was 10s, optimized to 6
 # Singleton mutex — DAEMON only (GUI frontends do not take this)
 SINGLETON_MUTEX_NAME = "Global\\AsteriaClient_Singleton"
 DAEMON_MUTEX_NAME = "Global\\AsteriaClient_Daemon"
-# Per-session GUI/tray singleton (Local\\ = one frontend per Windows session)
-GUI_MUTEX_NAME = "Local\\AsteriaClient_GUI"
-GUI_SHOW_EVENT_NAME = "Local\\AsteriaClient_ShowGUI"
-# Pre-4.9.41 names (kill/upgrade still ends old processes holding these)
+# Per-session GUI/tray singleton. Global\\ + session id crosses integrity levels
+# (Highest tray task vs Medium WTS spawn) so two frontends cannot both "own" a
+# Local\\ mutex in the same interactive session.
+GUI_MUTEX_NAME_PREFIX = "Global\\AsteriaClient_GUI_s"
+GUI_SHOW_EVENT_NAME_PREFIX = "Global\\AsteriaClient_ShowGUI_s"
+# Compatibility aliases (tests / callers that expect a constant string shape).
+# Prefer gui_mutex_name() / gui_show_event_name() at runtime.
+GUI_MUTEX_NAME = GUI_MUTEX_NAME_PREFIX + "0"
+GUI_SHOW_EVENT_NAME = GUI_SHOW_EVENT_NAME_PREFIX + "0"
+# Pre-4.9.64 Local names + pre-4.9.41 CloudHoneypot names (handoff / kill)
 LEGACY_SINGLETON_MUTEX_NAME = "Global\\CloudHoneypotClient_Singleton"
 LEGACY_DAEMON_MUTEX_NAME = "Global\\CloudHoneypotClient_Daemon"
-LEGACY_GUI_MUTEX_NAME = "Local\\CloudHoneypotClient_GUI"
-LEGACY_GUI_SHOW_EVENT_NAME = "Local\\CloudHoneypotClient_ShowGUI"
+LEGACY_GUI_MUTEX_NAME = "Local\\AsteriaClient_GUI"
+LEGACY_GUI_SHOW_EVENT_NAME = "Local\\AsteriaClient_ShowGUI"
+LEGACY_GUI_MUTEX_NAME_V1 = "Local\\CloudHoneypotClient_GUI"
+LEGACY_GUI_SHOW_EVENT_NAME_V1 = "Local\\CloudHoneypotClient_ShowGUI"
+LEGACY_GUI_MUTEX_WEBVIEW = "Local\\AsteriaGuiWebView"
+LEGACY_GUI_SHOW_EVENT_WEBVIEW = "Local\\AsteriaGuiWebViewShow"
+
+
+def current_windows_session_id() -> int:
+    """Windows session id for this process (0 = Session-0 / services)."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        sid = wintypes.DWORD()
+        if ctypes.windll.kernel32.ProcessIdToSessionId(  # type: ignore[attr-defined]
+            os.getpid(), ctypes.byref(sid)
+        ):
+            return int(sid.value)
+    except Exception:
+        pass
+    return 0
+
+
+def gui_mutex_name(session_id: int | None = None) -> str:
+    """Named mutex for one interactive frontend per Windows session."""
+    sid = current_windows_session_id() if session_id is None else int(session_id)
+    return f"{GUI_MUTEX_NAME_PREFIX}{sid}"
+
+
+def gui_show_event_name(session_id: int | None = None) -> str:
+    """Named event: second launch pulses this so the live tray raises the window."""
+    sid = current_windows_session_id() if session_id is None else int(session_id)
+    return f"{GUI_SHOW_EVENT_NAME_PREFIX}{sid}"
 
 # ===================== TIMING CONFIGURATION ===================== #
 

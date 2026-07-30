@@ -203,6 +203,11 @@ Write-Host "[KILL] stop flags + tasks..."
 Write-StopFlags
 Stop-HoneypotTasksFast
 
+Write-Host "[KILL] stop AsteriaGuardian (prevent mid-kill resurrect)..."
+try { & sc.exe stop AsteriaGuardian 2>$null | Out-Null } catch {}
+Start-Sleep -Milliseconds 400
+try { & sc.exe delete AsteriaGuardian 2>$null | Out-Null } catch {}
+
 Write-Host "[KILL] QUIT + SeDebug..."
 Send-QuitCommandFast
 Enable-SeDebugPrivilege
@@ -224,7 +229,10 @@ do {
         $roots = @(
             (Join-Path ${env:ProgramFiles} "Asteria\Asteria Client"),
             (Join-Path ${env:ProgramFiles} "YesNext\Cloud Honeypot Client"),
-            (Join-Path ${env:ProgramFiles} "Asteria")
+            (Join-Path ${env:ProgramFiles} "YesNext\CloudClient"),
+            (Join-Path ${env:ProgramFiles} "Asteria"),
+            (Join-Path ${env:ProgramFiles(x86)} "YesNext\CloudClient"),
+            (Join-Path ${env:ProgramFiles(x86)} "YesNext\Cloud Honeypot Client")
         )
         foreach ($root in $roots) {
             if (-not $root -or -not (Test-Path $root)) { continue }
