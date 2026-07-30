@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.62"  # Harden orphan lock / operator_recover after failed self_update
+VERSION = "4.9.63"  # Harden launch_helper_failed (emergency retry + longer helper wait)
 
 
 

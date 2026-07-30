@@ -1893,6 +1893,28 @@ def run_self_update_command(
             elevate=True,
         )
         if not ok:
+            # One emergency-bootstrap retry — covers launcher-only / parse-dead helpers
+            # (classic launch_helper_failed on 4.9.54→newer jumps).
+            log("[SELF-UPDATE] launch_helper_failed — retry with prefer_emergency=1")
+            try:
+                bus.tick(
+                    "installing",
+                    progress_pct=96,
+                    detail="launch_helper_retry",
+                    force=True,
+                )
+            except Exception:
+                pass
+            ok = launch_safe_update_install(
+                staged,
+                silent=True,
+                show_gui_after=show_gui,
+                expect_exit_pid=os.getpid(),
+                elevate=True,
+                prefer_emergency=True,
+                grace_wait_sec=30,
+            )
+        if not ok:
             release_update_lock(resume_updaters=True)
             try:
                 from client_update_ui import set_update_ui_status

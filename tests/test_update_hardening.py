@@ -6,6 +6,7 @@ import os
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from client_update_hardening import (
     EMERGENCY_UPDATE_BOOTSTRAP_PS1,
@@ -129,6 +130,66 @@ class TestWriteAndParse(unittest.TestCase):
             self.assertTrue(ok, detail)
         finally:
             cu._update_helper_staging_dir = orig
+
+    def test_prefer_emergency_param_exists(self):
+        import inspect
+        import client_utils as cu
+        self.assertIn(
+            "prefer_emergency",
+            inspect.signature(cu.launch_safe_update_install).parameters,
+        )
+
+
+class TestSelfUpdateHelperRetry(unittest.TestCase):
+    def test_launch_helper_failed_retries_emergency(self):
+        from client_updater import run_self_update_command
+
+        calls = []
+
+        def _launch(*args, **kwargs):
+            calls.append(dict(kwargs))
+            # First attempt fails; emergency retry succeeds enough to pass launch
+            # but then helper_log check may still fail — return True on prefer_emergency
+            if kwargs.get("prefer_emergency"):
+                return True
+            return False
+
+        with mock.patch("client_updater._current_installed_version", return_value="4.9.54"), \
+             mock.patch("client_utils.heal_update_machinery"), \
+             mock.patch("client_utils.is_update_in_progress", return_value=False), \
+             mock.patch("client_utils.acquire_update_lock"), \
+             mock.patch("client_utils.pause_competing_updaters"), \
+             mock.patch("client_utils.release_update_lock"), \
+             mock.patch("client_utils.stage_installer_for_update", return_value=r"C:\tmp\inst.exe"), \
+             mock.patch("client_updater._is_allowed_update_url", return_value=True), \
+             mock.patch(
+                 "client_updater.download_installer_complete",
+                 return_value=(True, "complete"),
+             ), \
+             mock.patch("os.path.isfile", return_value=True), \
+             mock.patch("os.path.getsize", return_value=1000), \
+             mock.patch("client_utils.launch_safe_update_install", side_effect=_launch), \
+             mock.patch("client_updater._lifecycle_fail"), \
+             mock.patch("client_update_ui.set_update_ui_status"), \
+             mock.patch("client_helpers.has_interactive_user_session", return_value=False):
+            # helper log verify may fail — open mock
+            with mock.patch("builtins.open", mock.mock_open(read_data="update-and-install start\n")):
+                out = run_self_update_command(
+                    {
+                        "tag": "4.9.63",
+                        "download_url": (
+                            "https://github.com/cevdetaksac/asteria-client/"
+                            "releases/download/v4.9.63/cloud-client-installer.exe"
+                        ),
+                        "force": True,
+                        "size": 1000,
+                    },
+                    api_client=None,
+                )
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertFalse(calls[0].get("prefer_emergency"))
+        self.assertTrue(calls[1].get("prefer_emergency"))
+        self.assertTrue(out.get("restart_required") or out.get("ok") or out.get("error") == "install_failed")
 
 
 class TestPreflightAndStorm(unittest.TestCase):

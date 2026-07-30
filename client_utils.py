@@ -2222,6 +2222,7 @@ def launch_safe_update_install(
     expect_exit_pid: Optional[int] = None,
     elevate: bool = True,
     grace_wait_sec: int = 20,
+    prefer_emergency: bool = False,
 ) -> bool:
     """Start elevated update helper (detached). Caller should then exit quickly.
 
@@ -2230,15 +2231,58 @@ def launch_safe_update_install(
 
     The helper waits for expect_exit_pid, force-kills leftovers, runs the installer,
     then starts the new app.
+
+    ``prefer_emergency``: stage ASCII emergency bootstrap first (after
+    ``launch_helper_failed`` / launcher-only storms). Silent path always waits for
+    ``update-and-install start`` before returning True.
     """
     import subprocess
 
     if not installer_path or not os.path.isfile(installer_path):
         return False
 
-    # Always re-stage helper from package so older ProgramData copies are refreshed
-    helper = stage_update_install_helper(allow_emergency=True)
+    log_path_early = os.path.join(
+        os.environ.get("ProgramData", r"C:\ProgramData"),
+        "Asteria", "update-install.log",
+    )
+    force_emergency = bool(prefer_emergency)
+    if not force_emergency:
+        try:
+            from client_update_hardening import detect_launcher_only_storm
+            if detect_launcher_only_storm(log_path_early):
+                force_emergency = True
+        except Exception:
+            pass
+
+    helper = None
+    if force_emergency:
+        try:
+            from client_update_hardening import write_emergency_bootstrap
+            dst = os.path.join(_update_helper_staging_dir(), "update-and-install.ps1")
+            helper = write_emergency_bootstrap(dst)
+            if helper:
+                try:
+                    with open(log_path_early, "a", encoding="ascii", errors="replace") as fh:
+                        fh.write(
+                            f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
+                            "helper_stage_prefer_emergency=1\n"
+                        )
+                except Exception:
+                    pass
+        except Exception:
+            helper = None
     if not helper:
+        # Always re-stage helper from package so older ProgramData copies are refreshed
+        helper = stage_update_install_helper(allow_emergency=True)
+    if not helper:
+        try:
+            with open(log_path_early, "a", encoding="ascii", errors="replace") as fh:
+                fh.write(
+                    f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
+                    "launch_helper_failed detail=stage_helper\n"
+                )
+        except Exception:
+            pass
         return False
 
     pid = int(expect_exit_pid if expect_exit_pid is not None else os.getpid())
@@ -2347,7 +2391,8 @@ def launch_safe_update_install(
         return False
 
     try:
-        if elevate:
+        # Interactive (visible UAC) only — silent must wait for helper log.
+        if elevate and not silent:
             # Interactive: ShellExecute runas from this process (has desktop/GUI affinity)
             # so UAC is visible. Hidden powershell parents often fail to show UAC.
             params = f'-NoProfile -ExecutionPolicy Bypass -File "{launcher}"'
@@ -2414,7 +2459,7 @@ def launch_safe_update_install(
                 return False
             return False
 
-        def _wait_helper_log(timeout_sec: float = 12.0) -> bool:
+        def _wait_helper_log(timeout_sec: float = 20.0) -> bool:
             deadline = time.time() + timeout_sec
             while time.time() < deadline:
                 if _fresh_helper_log():
@@ -2464,7 +2509,7 @@ def launch_safe_update_install(
                 # Dynamic Dispatch: (ReturnValue, ProcessId)
                 out = process.Create(ps_cmd, staging, startup)
                 rc_wmi = out[0] if isinstance(out, (tuple, list)) else int(out)
-                if rc_wmi == 0 and _wait_helper_log(10.0):
+                if rc_wmi == 0 and _wait_helper_log(20.0):
                     return True
             finally:
                 try:
@@ -2488,7 +2533,7 @@ def launch_safe_update_install(
                 | getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
                 | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200),
             )
-            if _wait_helper_log(10.0):
+            if _wait_helper_log(20.0):
                 return True
         except Exception:
             pass
@@ -2512,7 +2557,7 @@ def launch_safe_update_install(
                 timeout=15,
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
-            helper_seen = bool(run.returncode == 0 and _wait_helper_log(12.0))
+            helper_seen = bool(run.returncode == 0 and _wait_helper_log(25.0))
             try:
                 subprocess.run(
                     ["schtasks", "/Delete", "/TN", task, "/F"],
@@ -2545,7 +2590,7 @@ def launch_safe_update_install(
                 close_fds=True,
                 cwd=staging,
             )
-            if _wait_helper_log(10.0):
+            if _wait_helper_log(20.0):
                 return True
         except Exception:
             pass
@@ -2588,7 +2633,7 @@ def launch_safe_update_install(
                     timeout=15,
                     creationflags=subprocess.CREATE_NO_WINDOW,
                 )
-                helper_seen = bool(run.returncode == 0 and _wait_helper_log(15.0))
+                helper_seen = bool(run.returncode == 0 and _wait_helper_log(30.0))
                 try:
                     subprocess.run(
                         ["schtasks", "/Delete", "/TN", task, "/F"],
@@ -2631,7 +2676,7 @@ def launch_safe_update_install(
                     timeout=15,
                     creationflags=subprocess.CREATE_NO_WINDOW,
                 )
-                helper_seen = bool(run.returncode == 0 and _wait_helper_log(18.0))
+                helper_seen = bool(run.returncode == 0 and _wait_helper_log(30.0))
                 try:
                     subprocess.run(
                         ["schtasks", "/Delete", "/TN", task, "/F"],
@@ -2646,6 +2691,14 @@ def launch_safe_update_install(
         except Exception:
             pass
 
+        try:
+            with open(log_path, "a", encoding="ascii", errors="replace") as fh:
+                fh.write(
+                    f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
+                    "launch_helper_failed detail=methods_exhausted\n"
+                )
+        except Exception:
+            pass
         try:
             release_update_lock(resume_updaters=True)
         except Exception:

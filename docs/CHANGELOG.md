@@ -1,3 +1,11 @@
+# v4.9.63
+
+## Harden `launch_helper_failed`
+- Silent update waits longer for `update-and-install start` (no false fail on slow hosts)
+- Prefer emergency ASCII bootstrap after launcher-only storms
+- `self_update` retries once with `prefer_emergency=1` before failing the banner
+- Silent path never returns success without helper log (even if elevate was requested)
+
 # v4.9.62
 
 ## Update brick harden (orphan_lock / Motoru kurtar)
