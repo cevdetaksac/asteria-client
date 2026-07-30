@@ -146,7 +146,12 @@ export default function App() {
         return
       }
       if (result.update_available) {
-        if (result.started || result.busy) {
+        if (result.busy || result.in_flight) {
+          showToast(t('toast_update_available', { latest: String(result.latest || result.tag || '') }))
+          void refreshBanner()
+          return
+        }
+        if (result.started) {
           showToast(t('toast_update_available', { latest: String(result.latest || result.tag || '') }))
         } else {
           showToast(String(result.detail || t('toast_update_start_failed')), 'err')

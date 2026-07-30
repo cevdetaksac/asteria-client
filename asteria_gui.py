@@ -1891,6 +1891,52 @@ class MotorBridge:
                     return self._deny_locked()
                 from client_updater import check_update_availability
 
+                # If an update is already in flight, surface it — never start a second.
+                try:
+                    from client_operation_gate import snapshot, busy_result_from_snapshot
+                    from client_update_ui import get_update_ui_status
+                    from client_constants import VERSION as _cur
+
+                    snap = snapshot()
+                    ui = get_update_ui_status(current_version=str(_cur)) or {}
+                    active_ui = str(ui.get("phase") or "") in (
+                        "accepted", "downloading", "staging", "installing",
+                    )
+                    if snap or active_ui:
+                        busy = busy_result_from_snapshot(snap) if snap else {
+                            "busy": True,
+                            "phase": ui.get("phase"),
+                            "progress_pct": ui.get("progress") or 0,
+                            "from_version": ui.get("from_version") or "",
+                            "to_version": ui.get("to_version") or "",
+                            "detail": ui.get("detail") or "operation_in_progress",
+                        }
+                        return {
+                            "ok": True,
+                            "update_available": True,
+                            "started": False,
+                            "busy": True,
+                            "in_flight": True,
+                            "installed": str(busy.get("from_version") or _cur),
+                            "latest": str(busy.get("to_version") or ui.get("to_version") or ""),
+                            "tag": (
+                                f"v{busy['to_version']}"
+                                if busy.get("to_version")
+                                and not str(busy.get("to_version")).lower().startswith("v")
+                                else str(busy.get("to_version") or "")
+                            ),
+                            "phase": busy.get("phase") or ui.get("phase") or "queued",
+                            "progress_pct": busy.get("progress_pct")
+                            if busy.get("progress_pct") is not None
+                            else (ui.get("progress") or 0),
+                            "download_url": "",
+                            "message": "operation_in_progress",
+                            "error": None,
+                            "detail": busy.get("detail") or "operation_in_progress",
+                        }
+                except Exception:
+                    pass
+
                 info = check_update_availability() or {}
                 available = bool(info.get("update_available"))
                 latest = str(info.get("latest") or "")
@@ -1926,8 +1972,8 @@ class MotorBridge:
                 motor = self_update(timeout=8.0)
                 started = bool(motor.get("ok") and motor.get("started", True) and not motor.get("error"))
                 if motor.get("busy"):
-                    started = True
-                if not motor.get("ok") and motor.get("error"):
+                    started = False
+                if not motor.get("ok") and motor.get("error") and not motor.get("busy"):
                     try:
                         from client_update_ui import set_update_ui_status
 
@@ -1943,13 +1989,20 @@ class MotorBridge:
                 return {
                     "ok": bool(info.get("ok", True)) and (started or bool(motor.get("busy"))),
                     "update_available": True,
-                    "started": started or bool(motor.get("busy")),
+                    "started": started,
                     "busy": bool(motor.get("busy")),
+                    "in_flight": bool(motor.get("busy")),
                     "installed": installed,
                     "latest": latest,
                     "tag": str(info.get("tag") or ""),
                     "download_url": download_url,
-                    "message": "update_started" if started or motor.get("busy") else "update_start_failed",
+                    "phase": motor.get("phase"),
+                    "progress_pct": motor.get("progress_pct"),
+                    "message": (
+                        "operation_in_progress"
+                        if motor.get("busy")
+                        else ("update_started" if started else "update_start_failed")
+                    ),
                     "error": None if (started or motor.get("busy")) else (motor.get("error") or "motor_update_failed"),
                     "detail": motor.get("error") or motor.get("message") or info.get("detail"),
                 }

@@ -239,7 +239,11 @@ class MotorBridgeTests(unittest.TestCase):
             return_value={"ok": True, "started": True, "message": "update_accepted"},
         ) as ipc_upd, mock.patch(
             "client_update_ui.set_update_ui_status"
-        ) as set_ui, mock.patch("asteria_gui.webbrowser.open") as browser:
+        ) as set_ui, mock.patch(
+            "client_operation_gate.snapshot", return_value=None
+        ), mock.patch(
+            "client_update_ui.get_update_ui_status", return_value=None
+        ), mock.patch("asteria_gui.webbrowser.open") as browser:
             result = self.bridge.shell("check_updates")
         self.assertTrue(result["ok"])
         self.assertTrue(result["update_available"])
@@ -247,6 +251,32 @@ class MotorBridgeTests(unittest.TestCase):
         ipc_upd.assert_called_once()
         set_ui.assert_called()
         browser.assert_not_called()
+
+    def test_shell_check_updates_surfaces_in_flight(self):
+        with mock.patch(
+            "client_operation_gate.snapshot",
+            return_value={
+                "family": "update",
+                "op": "self_update",
+                "phase": "downloading",
+                "progress_pct": 55,
+                "from_version": "4.9.67",
+                "to_version": "4.9.68",
+                "detail": "mid",
+            },
+        ), mock.patch(
+            "client_updater.check_update_availability"
+        ) as check_av, mock.patch(
+            "asteria_gui.self_update"
+        ) as ipc_upd:
+            result = self.bridge.shell("check_updates")
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["busy"])
+        self.assertTrue(result["in_flight"])
+        self.assertFalse(result["started"])
+        self.assertEqual(result.get("phase"), "downloading")
+        check_av.assert_not_called()
+        ipc_upd.assert_not_called()
 
     def test_ir_requires_username(self):
         result = self.bridge.ir("logoff", "")

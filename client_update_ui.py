@@ -106,6 +106,19 @@ def set_update_ui_status(
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(payload, fh, ensure_ascii=False, indent=2)
         os.replace(tmp, path)
+        # Keep single-flight gate heartbeat in sync with banner phases.
+        try:
+            from client_operation_gate import touch
+
+            touch(
+                phase=phase,
+                progress_pct=payload.get("progress"),
+                detail=str(payload.get("detail") or ""),
+                from_version=str(payload.get("from_version") or ""),
+                to_version=str(payload.get("to_version") or ""),
+            )
+        except Exception:
+            pass
     except Exception:
         pass
 

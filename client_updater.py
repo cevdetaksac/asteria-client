@@ -297,7 +297,6 @@ def check_updates_and_prompt(app_instance) -> bool:
     from client_utils import (
         create_update_manager,
         UpdateProgressDialog,
-        acquire_update_lock,
         release_update_lock,
         pause_competing_updaters,
     )
@@ -317,7 +316,22 @@ def check_updates_and_prompt(app_instance) -> bool:
         progress_dialog.close_dialog()
 
     def _start_download(latest_ver: str, update_info: dict):
-        acquire_update_lock("interactive-download")
+        from client_operation_gate import try_acquire
+
+        acquired, gate_info = try_acquire(
+            "interactive_update",
+            detail="interactive-download",
+            to_version=str(latest_ver or ""),
+        )
+        if not acquired:
+            try:
+                msg = _updater_t("update_busy")
+            except Exception:
+                msg = "update_busy"
+            if not msg or msg == "update_busy":
+                msg = "A update is already in progress."
+            messagebox.showinfo(_updater_t("update_title"), msg)
+            return
         pause_competing_updaters()
         progress_dialog.update_progress(10, _updater_t("update_downloading", version=latest_ver))
 
@@ -343,7 +357,11 @@ def check_updates_and_prompt(app_instance) -> bool:
                         log(f"[UPDATER] Download complete: {installer_path}")
                         show_completion_dialog(installer_path, latest_ver, parent=root)
                     else:
-                        release_update_lock()
+                        try:
+                            from client_operation_gate import release as release_gate
+                            release_gate(str(gate_info.get("token") or ""), resume_updaters=True)
+                        except Exception:
+                            release_update_lock()
                         messagebox.showerror(
                             _updater_t("update_title"),
                             _updater_t("update_download_fail"),
@@ -352,7 +370,11 @@ def check_updates_and_prompt(app_instance) -> bool:
                 gui_safe(_on_download_done)
             except Exception as exc:
                 log(f"[UPDATER] Download error: {exc}")
-                release_update_lock()
+                try:
+                    from client_operation_gate import release as release_gate
+                    release_gate(str(gate_info.get("token") or ""), resume_updaters=True)
+                except Exception:
+                    release_update_lock()
                 gui_safe(lambda: (
                     _close_progress(),
                     messagebox.showerror(_updater_t("update_title"), str(exc)),
@@ -425,7 +447,6 @@ def check_updates_and_apply_silent() -> bool:
         from client_utils import (
             create_update_manager,
             is_update_in_progress,
-            acquire_update_lock,
             release_update_lock,
             touch_update_lock,
             pause_competing_updaters,
@@ -443,10 +464,12 @@ def check_updates_and_apply_silent() -> bool:
         except Exception:
             pass
 
-        if is_update_in_progress():
+        from client_operation_gate import try_acquire, release as release_gate, snapshot as gate_snapshot
+
+        if gate_snapshot() or is_update_in_progress():
             log("[SILENT UPDATE] Skipped — another update download/install in progress")
             return False
-        
+
         # Update manager oluştur
         update_mgr = create_update_manager(GITHUB_OWNER, GITHUB_REPO, log)
         
@@ -462,8 +485,16 @@ def check_updates_and_apply_silent() -> bool:
             
         log(f"[SILENT UPDATE] New version found: {update_info['latest_version']}")
 
-        # Claim machine-wide lock BEFORE download so GUI download cannot be killed
-        acquire_update_lock("silent-download")
+        # Claim machine-wide single-flight gate BEFORE download
+        acquired, gate_info = try_acquire(
+            "silent_update",
+            detail="silent-download",
+            to_version=str(update_info.get("latest_version") or ""),
+        )
+        if not acquired:
+            log("[SILENT UPDATE] Skipped — gate busy (another update in progress)")
+            return False
+        gate_token = str(gate_info.get("token") or "")
         pause_competing_updaters()
         
         # Create temp directory for update files
@@ -656,7 +687,9 @@ def check_updates_and_apply_silent() -> bool:
         finally:
             try:
                 # Success path uses os._exit (skips finally). Failure → unlock + resume.
-                if is_update_in_progress():
+                if gate_token:
+                    release_gate(gate_token, resume_updaters=True)
+                elif is_update_in_progress():
                     release_update_lock(resume_updaters=True)
             except Exception:
                 pass
@@ -669,6 +702,11 @@ def check_updates_and_apply_silent() -> bool:
             
     except Exception as e:
         log(f"[SILENT UPDATE] Silent update error: {e}")
+        try:
+            if is_update_in_progress():
+                release_update_lock(resume_updaters=True)
+        except Exception:
+            pass
         return False
     
     return True
@@ -1395,6 +1433,9 @@ def run_self_update_command(
 
     ``progress_emit`` (1.4.46): callable receiving result dicts for mid-flight
     ``status=running`` ticks (phase / progress_pct / bytes_*).
+
+    Single-flight: if another UPDATE-family op is live, returns busy + in-flight
+    snapshot instead of starting a duplicate download/install.
     """
     params = dict(params or {})
     force = bool(params.get("force", False))
@@ -1407,6 +1448,25 @@ def run_self_update_command(
         expected_size = None
     installer_name = (params.get("installer_name") or INSTALLER_ASSET_NAME).strip()
     from_version = _current_installed_version()
+    gate_token = ""
+    cmd_id = str(params.get("command_id") or "")
+
+    from client_operation_gate import (
+        try_acquire,
+        release as release_gate,
+        touch as touch_gate,
+        busy_result_from_snapshot,
+        snapshot as gate_snapshot,
+    )
+
+    # Refuse duplicate start before any "accepted" UI / download work.
+    existing = gate_snapshot()
+    if existing and not force:
+        log(
+            f"[SELF-UPDATE] busy — in-flight op={existing.get('op')} "
+            f"phase={existing.get('phase')} pct={existing.get('progress_pct')}"
+        )
+        return busy_result_from_snapshot(existing)
 
     bus = SelfUpdateProgressBus(
         progress_emit,
@@ -1450,6 +1510,17 @@ def run_self_update_command(
             pass
 
     threading.Thread(target=_lifecycle_begin, daemon=True, name="SelfUpdateLifeBegin").start()
+
+    def _drop_gate(*, resume_updaters: bool = True) -> None:
+        nonlocal gate_token
+        tok = gate_token
+        gate_token = ""
+        if not tok:
+            return
+        try:
+            release_gate(tok, resume_updaters=resume_updaters)
+        except Exception:
+            pass
 
     # Fast path: known tag → canonical GitHub asset BEFORE any GitHub API call.
     # Hosts that hang on api.github.com used to sit at 0% after early ACK.
@@ -1510,6 +1581,12 @@ def run_self_update_command(
             bus.stop()
         except Exception:
             pass
+        # Terminal failure / already_current / busy → release. Installing handoff keeps gate.
+        if not payload.get("restart_required") and gate_token:
+            if payload.get("phase") in ("failed", "done") or not payload.get("ok"):
+                _drop_gate(resume_updaters=True)
+            elif payload.get("message") == "already_current":
+                _drop_gate(resume_updaters=True)
         return payload
 
     if not download_url:
@@ -1575,7 +1652,6 @@ def run_self_update_command(
 
     from client_utils import (
         is_update_in_progress,
-        acquire_update_lock,
         release_update_lock,
         touch_update_lock,
         pause_competing_updaters,
@@ -1591,95 +1667,96 @@ def run_self_update_command(
     except Exception:
         pass
 
-    # Preempt stuck/orphan locks — even without force. Old clients (≤4.9.54) often
-    # left update_in_progress.lock after os._exit; returning busy forever bricked upgrades.
-    if is_update_in_progress():
+    # Claim single-flight gate (force reclaims stuck/orphan holders).
+    if force and (gate_snapshot() or is_update_in_progress()):
+        try:
+            from client_update_recovery import diagnose_update_state, abort_stuck_update
+            diag = diagnose_update_state()
+            why = "self_update_force_preempt"
+            if diag.get("stuck") or diag.get("actionable"):
+                why = str((diag.get("reasons") or ["stuck"])[0])
+            log(f"[SELF-UPDATE] force preempt reason={why}")
+            abort_stuck_update(
+                reason=why,
+                resume_motor=False,
+                force=True,
+                log_func=log,
+            )
+        except Exception as exc:
+            log(f"[SELF-UPDATE] force preempt failed: {exc}")
+            try:
+                release_update_lock(resume_updaters=True)
+            except Exception:
+                pass
+
+    acquired, gate_info = try_acquire(
+        "self_update",
+        detail=str(params.get("triggered_by") or "dashboard_self_update"),
+        from_version=from_version,
+        to_version=tag,
+        command_id=cmd_id,
+        force=force,
+    )
+    if not acquired:
+        # Soft recover only when diagnose says stuck — never steal a live download.
         preempted = False
         try:
             from client_update_recovery import diagnose_update_state, abort_stuck_update
             diag = diagnose_update_state()
             reasons = list(diag.get("reasons") or [])
             should_preempt = bool(
-                force
-                or diag.get("stuck")
+                diag.get("stuck")
                 or diag.get("actionable")
                 or any(
-                    ("orphan" in str(r)) or str(r).startswith("motor_down") or str(r).startswith("no_heartbeat")
+                    ("orphan" in str(r))
+                    or str(r).startswith("motor_down")
+                    or str(r).startswith("no_heartbeat")
                     for r in reasons
                 )
             )
             if should_preempt:
-                why = (
-                    "self_update_force_preempt"
-                    if force
-                    else (str(reasons[0]) if reasons else "self_update_preempt_stuck")
-                )
-                log(f"[SELF-UPDATE] preempting update lock reason={why}")
+                why = str(reasons[0]) if reasons else "self_update_preempt_stuck"
+                log(f"[SELF-UPDATE] preempting stuck gate reason={why}")
                 abort_stuck_update(
                     reason=why,
-                    resume_motor=False,  # about to download; helper/motor restart later
+                    resume_motor=False,
                     force=True,
                     log_func=log,
                 )
                 preempted = True
+                acquired, gate_info = try_acquire(
+                    "self_update",
+                    detail=str(params.get("triggered_by") or "dashboard_self_update"),
+                    from_version=from_version,
+                    to_version=tag,
+                    command_id=cmd_id,
+                    force=True,
+                )
         except Exception as exc:
             log(f"[SELF-UPDATE] preempt probe failed: {exc}")
-            if force:
-                try:
-                    release_update_lock(resume_updaters=True)
-                    preempted = True
-                except Exception:
-                    pass
 
-        if is_update_in_progress() and not preempted:
-            try:
-                from client_update_ui import set_update_ui_status
-                set_update_ui_status(
-                    "failed", from_version=from_version, to_version=tag,
-                    detail="another_update_in_progress", error="busy",
-                )
-            except Exception:
-                pass
+        if not acquired:
+            busy = busy_result_from_snapshot(gate_info if isinstance(gate_info, dict) else {})
+            log(
+                f"[SELF-UPDATE] busy after claim "
+                f"phase={busy.get('phase')} preempted={preempted}"
+            )
             _lifecycle_fail(api_client, "busy", from_version, tag)
-            return _ret({
-                "success": False,
-                "ok": False,
-                "error": "busy",
-                "detail": "another_update_in_progress",
-                "from_version": from_version,
-                "to_version": tag,
-                "tag": f"v{tag}" if tag else "",
-                "phase": "failed",
-            })
-        if is_update_in_progress():
-            # Still locked after abort — last resort clear (never resume=False alone)
-            try:
-                release_update_lock(resume_updaters=True)
-            except Exception:
-                pass
-            if is_update_in_progress():
-                try:
-                    from client_update_ui import set_update_ui_status
-                    set_update_ui_status(
-                        "failed", from_version=from_version, to_version=tag,
-                        detail="another_update_in_progress", error="busy",
-                    )
-                except Exception:
-                    pass
-                _lifecycle_fail(api_client, "busy", from_version, tag)
-                return _ret({
-                    "success": False,
-                    "ok": False,
-                    "error": "busy",
-                    "detail": "another_update_in_progress",
-                    "from_version": from_version,
-                    "to_version": tag,
-                    "tag": f"v{tag}" if tag else "",
-                    "phase": "failed",
-                })
+            return _ret(busy)
 
-    acquire_update_lock("dashboard-self-update")
+    gate_token = str(gate_info.get("token") or "")
     pause_competing_updaters()
+    try:
+        touch_gate(
+            phase="downloading",
+            progress_pct=0,
+            detail="download_starting",
+            from_version=from_version,
+            to_version=tag,
+            token=gate_token,
+        )
+    except Exception:
+        pass
 
     bus.tick(
         "downloading",

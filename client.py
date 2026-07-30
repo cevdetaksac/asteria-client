@@ -2195,12 +2195,28 @@ class CloudHoneypotClient:
                 if cmd_u == "SELF_UPDATE":
                     # GUI "Check for updates" → silent install (same path as dashboard).
                     try:
-                        if getattr(self, "_gui_self_update_running", False):
+                        from client_operation_gate import snapshot, busy_result_from_snapshot
+
+                        snap = snapshot()
+                        if snap or getattr(self, "_gui_self_update_running", False):
+                            busy = busy_result_from_snapshot(snap) if snap else {
+                                "busy": True,
+                                "error": "update_busy",
+                                "phase": "queued",
+                                "progress_pct": 0,
+                            }
                             _send(json.dumps({
                                 "ok": True,
                                 "started": False,
                                 "busy": True,
+                                "in_flight": True,
                                 "error": "update_busy",
+                                "phase": busy.get("phase"),
+                                "progress_pct": busy.get("progress_pct"),
+                                "from_version": busy.get("from_version"),
+                                "to_version": busy.get("to_version"),
+                                "detail": busy.get("detail") or "operation_in_progress",
+                                "message": "operation_in_progress",
                             }, ensure_ascii=False))
                             continue
                         self._gui_self_update_running = True

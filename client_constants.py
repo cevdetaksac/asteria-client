@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.67"  # Unstick self_update at 0%: async progress + session lock + fast URL
+VERSION = "4.9.68"  # Single-flight update gate: no stacked ops; busy → in-flight status
 
 
 

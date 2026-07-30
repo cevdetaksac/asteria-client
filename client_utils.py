@@ -1554,6 +1554,13 @@ def _finalize_cleared_update_lock(reason: str = "orphan_update_lock") -> None:
 def is_update_in_progress(max_age_sec: float = 7200.0) -> bool:
     """True if update lock exists and holder still looks alive."""
     try:
+        from client_operation_gate import snapshot
+
+        if snapshot():
+            return True
+    except Exception:
+        pass
+    try:
         path = _update_lock_path()
         if not os.path.isfile(path):
             # Migrate: also honour legacy per-user lock if present

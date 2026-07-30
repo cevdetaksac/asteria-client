@@ -706,6 +706,7 @@ class RemoteCommandExecutor:
         if cmd_type == "self_update":
             params_early = cmd.get("parameters") or cmd.get("params") or {}
             tag_early = ""
+            force_early = bool(params_early.get("force", False))
             try:
                 tag_early = str(
                     params_early.get("tag") or params_early.get("version") or ""
@@ -719,6 +720,42 @@ class RemoteCommandExecutor:
                 from_ver = str(_cur_ver)
             except Exception:
                 from_ver = ""
+
+            # Single-flight: if an update is already running, surface it — do not
+            # ACK a second "accepted" start (unless force reclaim).
+            if not force_early:
+                try:
+                    from client_operation_gate import snapshot, busy_result_from_snapshot
+
+                    snap = snapshot()
+                    if snap:
+                        busy = busy_result_from_snapshot(snap)
+                        self._report_result_sync(cmd, {
+                            "success": True,
+                            "ok": True,
+                            "status": "running",
+                            "busy": True,
+                            "in_flight": True,
+                            "message": "operation_in_progress",
+                            "phase": busy.get("phase") or "queued",
+                            "progress_pct": busy.get("progress_pct") or 0,
+                            "detail": busy.get("detail") or "operation_in_progress",
+                            "from_version": busy.get("from_version") or from_ver,
+                            "to_version": busy.get("to_version") or tag_early,
+                            "tag": busy.get("tag") or (f"v{tag_early}" if tag_early else ""),
+                            "op": busy.get("op") or "",
+                        })
+                        self._ir_until = time.time() + IR_STICKY_SECONDS
+                        out["ok"] = True
+                        out["skipped"] = True
+                        log(
+                            f"[REMOTE-CMD] self_update busy — reusing in-flight "
+                            f"phase={busy.get('phase')} pct={busy.get('progress_pct')}"
+                        )
+                        return out
+                except Exception as exc:
+                    log(f"[REMOTE-CMD] self_update gate peek failed: {exc}")
+
             self._report_result_sync(cmd, {
                 "success": True,
                 "ok": True,

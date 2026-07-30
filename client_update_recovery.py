@@ -318,18 +318,25 @@ def abort_stuck_update(
         except Exception as exc:
             _log(f"[UPDATE-RECOVERY] set_update_ui_status failed: {exc}")
 
-        # 2) Release lock + resume scheduled tasks (Background / SilentUpdater / …)
+        # 2) Release single-flight gate + lock + resume scheduled tasks
         try:
-            from client_utils import release_update_lock
-            release_update_lock(resume_updaters=True)
+            from client_operation_gate import force_clear
+
+            force_clear(reason=reason, resume_updaters=True)
         except Exception as exc:
-            _log(f"[UPDATE-RECOVERY] release_update_lock failed: {exc}")
+            _log(f"[UPDATE-RECOVERY] force_clear gate failed: {exc}")
             try:
-                path = _lock_path()
-                if os.path.isfile(path):
-                    os.remove(path)
-            except OSError:
-                pass
+                from client_utils import release_update_lock
+
+                release_update_lock(resume_updaters=True)
+            except Exception as exc2:
+                _log(f"[UPDATE-RECOVERY] release_update_lock failed: {exc2}")
+                try:
+                    path = _lock_path()
+                    if os.path.isfile(path):
+                        os.remove(path)
+                except OSError:
+                    pass
 
         # 3) Clear resilience stand-down so ensure_daemon_running may run
         try:

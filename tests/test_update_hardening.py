@@ -197,7 +197,16 @@ class TestSelfUpdateHelperRetry(unittest.TestCase):
              mock.patch("client_utils.launch_safe_update_install", side_effect=_launch), \
              mock.patch("client_updater._lifecycle_fail"), \
              mock.patch("client_update_ui.set_update_ui_status"), \
-             mock.patch("client_helpers.has_interactive_user_session", return_value=False):
+             mock.patch("client_helpers.has_interactive_user_session", return_value=False), \
+             mock.patch(
+                 "client_operation_gate.snapshot", return_value=None
+             ), \
+             mock.patch(
+                 "client_operation_gate.try_acquire",
+                 return_value=(True, {"token": "test-token", "op": "self_update"}),
+             ), \
+             mock.patch("client_operation_gate.release"), \
+             mock.patch("client_operation_gate.touch"):
             # helper log verify may fail — open mock
             with mock.patch("builtins.open", mock.mock_open(read_data="update-and-install start\n")):
                 out = run_self_update_command(
