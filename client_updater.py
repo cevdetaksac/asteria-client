@@ -735,13 +735,36 @@ def _installer_looks_complete(
     return True, "complete"
 
 
+def _call_download_progress(
+    cb: Optional[Callable],
+    pct: int,
+    bytes_done: int = 0,
+    bytes_total: int = 0,
+) -> None:
+    """Invoke progress_callback as (pct, done, total) or legacy (pct,)."""
+    if not cb:
+        return
+    try:
+        cb(int(pct), int(bytes_done), int(bytes_total))
+        return
+    except TypeError:
+        pass
+    except Exception:
+        return
+    try:
+        cb(int(pct))
+    except Exception:
+        pass
+
+
 def download_installer_complete(
     url: str,
     local_path: str,
     *,
     expected_size: Optional[int] = None,
     expected_sha256: str = "",
-    progress_callback: Optional[Callable[[int], None]] = None,
+    progress_callback: Optional[Callable] = None,
+    phase_callback: Optional[Callable[[str], None]] = None,
     max_attempts: int = _DOWNLOAD_MAX_ATTEMPTS,
     log_func=None,
 ) -> Tuple[bool, str]:
@@ -757,6 +780,9 @@ def download_installer_complete(
     ``timeout`` is only connect + per-chunk stall detection — never a total
     download deadline. Incomplete / stalled attempts are deleted and retried
     up to ``max_attempts`` (default 5).
+
+    ``progress_callback`` may be ``(pct)`` or ``(pct, bytes_done, bytes_total)``.
+    ``phase_callback("verifying")`` fires before size/Authenticode checks (1.4.46).
     """
     import hashlib
     import requests
@@ -817,9 +843,16 @@ def download_installer_complete(
             except (TypeError, ValueError):
                 content_length = None
 
+            size_hint = 0
+            try:
+                size_hint = int(content_length or expected_size or 0)
+            except (TypeError, ValueError):
+                size_hint = 0
+
             sha = hashlib.sha256()
             written = 0
             last_touch = time.time()
+            last_prog = 0.0
             with open(partial, "wb") as fh:
                 for chunk in response.iter_content(chunk_size=256 * 1024):
                     if not chunk:
@@ -835,12 +868,22 @@ def download_installer_complete(
                             touch_update_lock()
                         except Exception:
                             pass
-                    if progress_callback and content_length and content_length > 0:
-                        pct = int(min(99, (written / float(content_length)) * 100))
-                        try:
-                            progress_callback(pct)
-                        except Exception:
-                            pass
+                    # Cadence hint for callers; SelfUpdateProgressBus also throttles.
+                    if progress_callback and (now - last_prog) >= 0.4:
+                        last_prog = now
+                        if size_hint > 0:
+                            pct = int(min(89, (written / float(size_hint)) * 89))
+                        else:
+                            pct = 0
+                        _call_download_progress(
+                            progress_callback, pct, written, size_hint
+                        )
+
+            if phase_callback:
+                try:
+                    phase_callback("verifying")
+                except Exception:
+                    pass
 
             ok_complete, detail = _installer_looks_complete(
                 partial,
@@ -877,7 +920,8 @@ def download_installer_complete(
                         f"publisher={(auth.get('publisher') or '')[:80]}"
                     )
                 elif auth.get("skipped"):
-                    _log("[UPDATE-DL] Authenticode soft-skip (not required)")
+                    _log("[UPDATE-DL] Authenticode soft-skip (not required)"
+                    )
             except AuthenticodeError as exc:
                 last_detail = f"authenticode:{exc}"
                 _unlink_quiet(local_path)
@@ -886,10 +930,9 @@ def download_installer_complete(
                 _log(f"[UPDATE-DL] Authenticode check error: {exc}")
 
             if progress_callback:
-                try:
-                    progress_callback(100)
-                except Exception:
-                    pass
+                _call_download_progress(
+                    progress_callback, 100, written, size_hint or written
+                )
             _log(
                 f"[UPDATE-DL] complete bytes={written} "
                 f"sha256={digest[:16]}… attempts={attempt}"
@@ -1183,12 +1226,157 @@ def _default_installer_url(tag: str) -> str:
     return urls[0] if urls else ""
 
 
-def run_self_update_command(params: Optional[dict] = None, api_client=None) -> dict:
+class SelfUpdateProgressBus:
+    """Contract 1.4.46 — C-UPD-PROG-1..4 progress ticks for self_update.
+
+    Emits via ``emit_fn(result_dict)`` → caller POSTs commands/result with
+    status=running. Heartbeat re-sends the last snapshot so silence never
+    exceeds ~3 s while active.
+    """
+
+    MIN_INTERVAL_SEC = 2.0
+    HEARTBEAT_SEC = 2.5
+
+    def __init__(
+        self,
+        emit_fn: Optional[Callable[[dict], None]],
+        *,
+        from_version: str = "",
+        to_version: str = "",
+        tag: str = "",
+        min_interval: float = MIN_INTERVAL_SEC,
+    ):
+        self._emit_fn = emit_fn
+        self.from_version = str(from_version or "")
+        self.to_version = str(to_version or "")
+        self.tag = str(tag or "")
+        if self.tag and not self.tag.lower().startswith("v"):
+            self.tag = f"v{self.tag}"
+        self.min_interval = float(min_interval)
+        self._lock = threading.Lock()
+        self._last_emit = 0.0
+        self._last_phase = ""
+        self._last_payload: Optional[dict] = None
+        self._active = False
+        self._hb_stop = threading.Event()
+        self._hb_thread: Optional[threading.Thread] = None
+
+    def set_versions(self, from_version: str = "", to_version: str = "", tag: str = "") -> None:
+        if from_version:
+            self.from_version = str(from_version)
+        if to_version:
+            self.to_version = str(to_version)
+        if tag:
+            t = str(tag)
+            self.tag = t if t.lower().startswith("v") else f"v{t}"
+
+    def start(self) -> None:
+        if not self._emit_fn:
+            return
+        self._active = True
+        if self._hb_thread and self._hb_thread.is_alive():
+            return
+        self._hb_stop.clear()
+
+        def _loop():
+            while not self._hb_stop.wait(self.HEARTBEAT_SEC):
+                if not self._active:
+                    continue
+                with self._lock:
+                    snap = dict(self._last_payload) if self._last_payload else None
+                    aged = (time.time() - self._last_emit) >= self.min_interval
+                if snap and aged:
+                    self._fire(snap, force=True)
+
+        self._hb_thread = threading.Thread(
+            target=_loop, name="SelfUpdateProgressHB", daemon=True
+        )
+        self._hb_thread.start()
+
+    def stop(self) -> None:
+        self._active = False
+        self._hb_stop.set()
+
+    def tick(
+        self,
+        phase: str,
+        *,
+        progress_pct: Optional[int] = None,
+        bytes_done: Optional[int] = None,
+        bytes_total: Optional[int] = None,
+        detail: str = "",
+        force: bool = False,
+    ) -> None:
+        if not self._emit_fn:
+            return
+        phase_l = str(phase or "").strip().lower() or "queued"
+        now = time.time()
+        with self._lock:
+            phase_changed = phase_l != self._last_phase
+            if (
+                not force
+                and not phase_changed
+                and (now - self._last_emit) < self.min_interval
+            ):
+                # Still refresh in-memory snapshot for heartbeat (bytes may move)
+                if self._last_payload is not None:
+                    if progress_pct is not None:
+                        self._last_payload["progress_pct"] = int(
+                            max(0, min(100, int(progress_pct)))
+                        )
+                    if bytes_done is not None:
+                        self._last_payload["bytes_done"] = int(bytes_done)
+                    if bytes_total is not None:
+                        self._last_payload["bytes_total"] = int(bytes_total)
+                return
+            payload = {
+                "ok": True,
+                "success": True,
+                "status": "running",
+                "message": "update_accepted",
+                "phase": phase_l,
+                "detail": str(detail or phase_l)[:120],
+                "from_version": self.from_version,
+                "to_version": self.to_version or _normalize_version_tag(self.tag),
+                "tag": self.tag,
+            }
+            if progress_pct is not None:
+                payload["progress_pct"] = int(max(0, min(100, int(progress_pct))))
+            if bytes_done is not None:
+                payload["bytes_done"] = int(bytes_done)
+            if bytes_total is not None:
+                payload["bytes_total"] = int(bytes_total)
+            self._last_phase = phase_l
+            self._last_payload = dict(payload)
+            self._last_emit = now
+        self._fire(payload, force=True)
+
+    def _fire(self, payload: dict, force: bool = False) -> None:
+        if not self._emit_fn:
+            return
+        try:
+            self._emit_fn(dict(payload))
+            if force:
+                with self._lock:
+                    self._last_emit = time.time()
+                    self._last_payload = dict(payload)
+        except Exception as exc:
+            log(f"[SELF-UPDATE] progress emit error: {exc}")
+
+
+def run_self_update_command(
+    params: Optional[dict] = None,
+    api_client=None,
+    progress_emit: Optional[Callable[[dict], None]] = None,
+) -> dict:
     """
     Dashboard `self_update` — immediate silent install (independent of schedule).
 
     Returns result dict for POST /api/commands/result.
     May set restart_required=True after helper is launched (caller should exit).
+
+    ``progress_emit`` (1.4.46): callable receiving result dicts for mid-flight
+    ``status=running`` ticks (phase / progress_pct / bytes_*).
     """
     params = dict(params or {})
     force = bool(params.get("force", False))
@@ -1201,6 +1389,15 @@ def run_self_update_command(params: Optional[dict] = None, api_client=None) -> d
         expected_size = None
     installer_name = (params.get("installer_name") or INSTALLER_ASSET_NAME).strip()
     from_version = _current_installed_version()
+
+    bus = SelfUpdateProgressBus(
+        progress_emit,
+        from_version=from_version,
+        to_version=tag,
+        tag=tag,
+    )
+    bus.start()
+    bus.tick("queued", progress_pct=0, detail="self_update_begin", force=True)
 
     log(
         f"[SELF-UPDATE] begin force={force} tag={tag or '?'} "
@@ -1277,6 +1474,15 @@ def run_self_update_command(params: Optional[dict] = None, api_client=None) -> d
         except Exception:
             pass
 
+    bus.set_versions(from_version=from_version, to_version=tag, tag=tag)
+
+    def _ret(payload: dict) -> dict:
+        try:
+            bus.stop()
+        except Exception:
+            pass
+        return payload
+
     if not download_url:
         try:
             from client_update_ui import set_update_ui_status
@@ -1287,7 +1493,7 @@ def run_self_update_command(params: Optional[dict] = None, api_client=None) -> d
         except Exception:
             pass
         _lifecycle_fail(api_client, "download_url_missing", from_version, tag)
-        return {
+        return _ret({
             "success": False,
             "ok": False,
             "error": "download_failed",
@@ -1295,7 +1501,8 @@ def run_self_update_command(params: Optional[dict] = None, api_client=None) -> d
             "from_version": from_version,
             "to_version": tag,
             "tag": f"v{tag}" if tag else "",
-        }
+            "phase": "failed",
+        })
 
     if not _is_allowed_update_url(download_url):
         try:
@@ -1307,7 +1514,7 @@ def run_self_update_command(params: Optional[dict] = None, api_client=None) -> d
         except Exception:
             pass
         _lifecycle_fail(api_client, "url_not_allowed", from_version, tag)
-        return {
+        return _ret({
             "success": False,
             "ok": False,
             "error": "download_failed",
@@ -1315,7 +1522,8 @@ def run_self_update_command(params: Optional[dict] = None, api_client=None) -> d
             "from_version": from_version,
             "to_version": tag,
             "tag": f"v{tag}" if tag else "",
-        }
+            "phase": "failed",
+        })
 
     # Skip if already on target (unless force)
     if tag and from_version and tag == from_version and not force:
@@ -1325,14 +1533,16 @@ def run_self_update_command(params: Optional[dict] = None, api_client=None) -> d
             clear_update_ui_status()
         except Exception:
             pass
-        return {
+        return _ret({
             "success": True,
             "ok": True,
             "message": "already_current",
             "from_version": from_version,
             "to_version": from_version,
             "tag": f"v{from_version}",
-        }
+            "phase": "done",
+            "progress_pct": 100,
+        })
 
     from client_utils import (
         is_update_in_progress,
@@ -1369,7 +1579,7 @@ def run_self_update_command(params: Optional[dict] = None, api_client=None) -> d
             except Exception:
                 pass
             _lifecycle_fail(api_client, "busy", from_version, tag)
-            return {
+            return _ret({
                 "success": False,
                 "ok": False,
                 "error": "busy",
@@ -1377,10 +1587,20 @@ def run_self_update_command(params: Optional[dict] = None, api_client=None) -> d
                 "from_version": from_version,
                 "to_version": tag,
                 "tag": f"v{tag}" if tag else "",
-            }
+                "phase": "failed",
+            })
 
     acquire_update_lock("dashboard-self-update")
     pause_competing_updaters()
+
+    bus.tick(
+        "downloading",
+        progress_pct=0,
+        bytes_done=0,
+        bytes_total=int(expected_size or 0) or None,
+        detail="download_starting",
+        force=True,
+    )
 
     try:
         from client_update_ui import set_update_ui_status
@@ -1418,7 +1638,7 @@ def run_self_update_command(params: Optional[dict] = None, api_client=None) -> d
         if not urls_to_try:
             release_update_lock(resume_updaters=True)
             _lifecycle_fail(api_client, "url_not_allowed", from_version, tag)
-            return {
+            return _ret({
                 "success": False,
                 "ok": False,
                 "error": "download_failed",
@@ -1426,7 +1646,8 @@ def run_self_update_command(params: Optional[dict] = None, api_client=None) -> d
                 "from_version": from_version,
                 "to_version": tag,
                 "tag": f"v{tag}" if tag else "",
-            }
+                "phase": "failed",
+            })
 
         downloaded = None
         last_dl_err = ""
@@ -1442,7 +1663,7 @@ def run_self_update_command(params: Optional[dict] = None, api_client=None) -> d
             except Exception:
                 _set_ui = None
 
-            def _prog(pct, _attempt=attempt):
+            def _prog(pct, bytes_done=0, bytes_total=0, _attempt=attempt):
                 if pct % 10 == 0:
                     touch_update_lock()
                     log(f"[SELF-UPDATE] download {_attempt} {pct}%")
@@ -1457,12 +1678,39 @@ def run_self_update_command(params: Optional[dict] = None, api_client=None) -> d
                         )
                     except Exception:
                         pass
+                bus.tick(
+                    "downloading",
+                    progress_pct=int(pct) if int(pct) < 100 else 89,
+                    bytes_done=int(bytes_done) if bytes_done is not None else None,
+                    bytes_total=int(bytes_total) if bytes_total else None,
+                    detail="download",
+                )
+
+            def _on_phase(phase: str):
+                bus.tick(
+                    phase or "verifying",
+                    progress_pct=92,
+                    detail=phase or "verifying",
+                    force=True,
+                )
+                if _set_ui:
+                    try:
+                        _set_ui(
+                            "verifying",
+                            from_version=from_version,
+                            to_version=tag,
+                            detail="verifying",
+                            progress=92,
+                        )
+                    except Exception:
+                        pass
 
             ok, detail = download_installer_complete(
                 attempt_url,
                 installer_path,
                 expected_size=expected_size,
                 progress_callback=_prog,
+                phase_callback=_on_phase,
                 max_attempts=1,  # outer loop owns retries
                 log_func=log,
             )
@@ -1490,7 +1738,7 @@ def run_self_update_command(params: Optional[dict] = None, api_client=None) -> d
             except Exception:
                 pass
             _lifecycle_fail(api_client, "download_failed", from_version, tag)
-            return {
+            return _ret({
                 "success": False,
                 "ok": False,
                 "error": "download_failed",
@@ -1499,7 +1747,8 @@ def run_self_update_command(params: Optional[dict] = None, api_client=None) -> d
                 "to_version": tag,
                 "tag": f"v{tag}" if tag else "",
                 "download_url": download_url,
-            }
+                "phase": "failed",
+            })
         installer_path = downloaded
         touch_update_lock()
         actual_size = os.path.getsize(installer_path) if os.path.isfile(installer_path) else 0
@@ -1510,6 +1759,14 @@ def run_self_update_command(params: Optional[dict] = None, api_client=None) -> d
                     f"[SELF-UPDATE] size warn expected={expected_size} got={actual_size} — continuing"
                 )
 
+        bus.tick(
+            "verifying",
+            progress_pct=93,
+            bytes_done=actual_size or None,
+            bytes_total=int(expected_size or actual_size or 0) or None,
+            detail="staging_installer",
+            force=True,
+        )
         try:
             from client_update_ui import set_update_ui_status
             set_update_ui_status(
@@ -1534,7 +1791,7 @@ def run_self_update_command(params: Optional[dict] = None, api_client=None) -> d
             except Exception:
                 pass
             _lifecycle_fail(api_client, "stage_failed", from_version, tag)
-            return {
+            return _ret({
                 "success": False,
                 "ok": False,
                 "error": "install_failed",
@@ -1542,7 +1799,8 @@ def run_self_update_command(params: Optional[dict] = None, api_client=None) -> d
                 "from_version": from_version,
                 "to_version": tag,
                 "tag": f"v{tag}" if tag else "",
-            }
+                "phase": "failed",
+            })
 
         # Helper uses ProgramData copy — drop TEMP scratch immediately.
         try:
@@ -1559,6 +1817,13 @@ def run_self_update_command(params: Optional[dict] = None, api_client=None) -> d
             show_gui = bool(has_interactive_user_session())
         except Exception:
             show_gui = False
+
+        bus.tick(
+            "installing",
+            progress_pct=95,
+            detail="launching_helper",
+            force=True,
+        )
 
         ok = launch_safe_update_install(
             staged,
@@ -1580,7 +1845,7 @@ def run_self_update_command(params: Optional[dict] = None, api_client=None) -> d
                 pass
             _lifecycle_fail(api_client, "launch_helper_failed", from_version, tag)
             log("[SELF-UPDATE] helper did NOT start (no update-install.log) — aborting exit")
-            return {
+            return _ret({
                 "success": False,
                 "ok": False,
                 "error": "install_failed",
@@ -1588,7 +1853,8 @@ def run_self_update_command(params: Optional[dict] = None, api_client=None) -> d
                 "from_version": from_version,
                 "to_version": tag,
                 "tag": f"v{tag}" if tag else "",
-            }
+                "phase": "failed",
+            })
 
         # Double-check log — never claim success / exit without a live helper
         try:
@@ -1610,7 +1876,7 @@ def run_self_update_command(params: Optional[dict] = None, api_client=None) -> d
                 )
                 _lifecycle_fail(api_client, "helper_log_missing", from_version, tag)
                 log("[SELF-UPDATE] helper_log_missing after launch — aborting")
-                return {
+                return _ret({
                     "success": False,
                     "ok": False,
                     "error": "install_failed",
@@ -1618,7 +1884,8 @@ def run_self_update_command(params: Optional[dict] = None, api_client=None) -> d
                     "from_version": from_version,
                     "to_version": tag,
                     "tag": f"v{tag}" if tag else "",
-                }
+                    "phase": "failed",
+                })
         except Exception as e:
             log(f"[SELF-UPDATE] helper log verify error: {e}")
 
@@ -1648,16 +1915,25 @@ def run_self_update_command(params: Optional[dict] = None, api_client=None) -> d
             pass
 
         log(f"[SELF-UPDATE] helper launched → {tag} (restart_required)")
-        return {
+        # Terminal completed tick — cloud UI waits for new agent_version.
+        bus.tick(
+            "installing",
+            progress_pct=95,
+            detail="helper_launched",
+            force=True,
+        )
+        return _ret({
             "success": True,
             "ok": True,
             "message": "update_started",
+            "phase": "installing",
+            "progress_pct": 95,
             "from_version": from_version,
             "to_version": tag,
             "tag": f"v{tag}" if tag else "",
             "restart_required": True,
             "download_url": download_url,
-        }
+        })
 
     except Exception as e:
         try:
@@ -1673,7 +1949,7 @@ def run_self_update_command(params: Optional[dict] = None, api_client=None) -> d
         except Exception:
             pass
         _lifecycle_fail(api_client, str(e), from_version, tag)
-        return {
+        return _ret({
             "success": False,
             "ok": False,
             "error": "install_failed",
@@ -1681,7 +1957,8 @@ def run_self_update_command(params: Optional[dict] = None, api_client=None) -> d
             "from_version": from_version,
             "to_version": tag,
             "tag": f"v{tag}" if tag else "",
-        }
+            "phase": "failed",
+        })
     finally:
         try:
             if temp_dir and os.path.isdir(temp_dir):

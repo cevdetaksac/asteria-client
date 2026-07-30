@@ -704,29 +704,40 @@ class RemoteCommandExecutor:
             return out
 
         if cmd_type == "self_update":
+            params_early = cmd.get("parameters") or cmd.get("params") or {}
+            tag_early = ""
+            try:
+                tag_early = str(
+                    params_early.get("tag") or params_early.get("version") or ""
+                ).strip()
+                if tag_early.lower().startswith("v"):
+                    tag_early = tag_early[1:]
+            except Exception:
+                tag_early = ""
+            try:
+                from client_constants import VERSION as _cur_ver
+                from_ver = str(_cur_ver)
+            except Exception:
+                from_ver = ""
             self._report_result_sync(cmd, {
                 "success": True,
                 "ok": True,
                 "status": "running",
                 "message": "update_accepted",
+                "phase": "queued",
+                "progress_pct": 0,
                 "detail": "download_starting",
+                "from_version": from_ver,
+                "to_version": tag_early,
+                "tag": f"v{tag_early}" if tag_early else "",
             })
             self._ir_until = time.time() + IR_STICKY_SECONDS
             try:
-                params = cmd.get("parameters") or cmd.get("params") or {}
                 from client_update_ui import set_update_ui_status
-                from client_constants import VERSION as _cur_ver
-                tag = ""
-                try:
-                    tag = str(params.get("tag") or params.get("version") or "").strip()
-                    if tag.lower().startswith("v"):
-                        tag = tag[1:]
-                except Exception:
-                    tag = ""
                 set_update_ui_status(
                     "accepted",
-                    from_version=str(_cur_ver),
-                    to_version=tag,
+                    from_version=from_ver,
+                    to_version=tag_early,
                     detail="update_accepted",
                 )
             except Exception:
@@ -3788,7 +3799,26 @@ class RemoteCommandExecutor:
         """Dashboard 'Şimdi güncelle' — immediate silent self-update."""
         try:
             from client_updater import run_self_update_command
-            return run_self_update_command(params, api_client=self.api_client)
+            parent = getattr(self, "_current_cmd", None)
+
+            def _progress_emit(payload: dict) -> None:
+                if not parent:
+                    return
+                body = dict(payload or {})
+                body.setdefault("success", True)
+                body.setdefault("ok", True)
+                body.setdefault("status", "running")
+                body.setdefault("message", "update_accepted")
+                try:
+                    self._report_result_sync(parent, body)
+                except Exception as exc:
+                    log(f"[REMOTE-CMD] self_update progress tick error: {exc}")
+
+            return run_self_update_command(
+                params,
+                api_client=self.api_client,
+                progress_emit=_progress_emit,
+            )
         except Exception as e:
             log(f"[REMOTE-CMD] self_update error: {e}")
             return {

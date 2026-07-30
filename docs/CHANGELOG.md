@@ -1,3 +1,11 @@
+# v4.9.61
+
+## Contract 1.4.46 — self_update progress ticks
+- Mid-flight `POST /api/commands/result` with same `command_id`: `status:running` + `phase` / `progress_pct` / bytes (C-UPD-PROG-1..4)
+- Cadence ≤3s while downloading; phase change emits immediately; heartbeat avoids >5s silence
+- Installer launch → `completed` + `message:update_started` + `phase:installing` + `restart_required`
+- Early ACK includes `phase:queued` + version fields
+
 # v4.9.60
 
 ## Contract 1.4.45 relocate close-out

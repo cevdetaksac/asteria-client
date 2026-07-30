@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.60"  # Contract 1.4.45 relocate close-out (C-REL gaps)
+VERSION = "4.9.61"  # Contract 1.4.46 self_update progress ticks
 
 
 
