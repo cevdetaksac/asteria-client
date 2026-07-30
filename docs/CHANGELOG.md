@@ -1,3 +1,12 @@
+# v4.9.65
+
+## Quiet logs (API / HEALTH / FW spam + size caps)
+- `premium/tunnel-status` and other hot polls no longer dump full JSON at INFO
+- `api_request` default `verbose_logging=False`; truncate rare success bodies
+- Throttle HEALTH process/report and idle FW-SYNC zero-change lines
+- Daily logs honor `LOG_MAX_BYTES` (within-day `.N` parts); GUI rotating + `_MEI` cleanup
+- Honeypot capture logs only after rate-limit; passwords redacted
+
 # v4.9.64
 
 ## Clean start (legacy purge + single tray owner)

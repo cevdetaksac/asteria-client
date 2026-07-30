@@ -208,6 +208,12 @@ class BaseHoneypot(ABC, threading.Thread):
         if not _rate_limiter.allow(key):
             return  # Rate limit aşıldı — sessizce atla
 
+        # Log only after rate-limit allow; never write cleartext passwords.
+        log(
+            f"[{self.service_name}] Credential yakalandı: "
+            f"{username}:*** <- {attacker_ip}"
+        )
+
         try:
             self.on_credential(
                 attacker_ip=attacker_ip,
@@ -349,7 +355,6 @@ class FTPHoneypot(BaseHoneypot):
             elif cmd.startswith("PASS "):
                 password = line[5:].strip()
                 if username:
-                    log(f"[FTP] Credential yakalandı: {username}:{password} <- {attacker_ip}")
                     self.report_credential(attacker_ip, username, password)
                     attempts += 1
                 self._send(sock, "530 Login incorrect.\r\n")
@@ -477,7 +482,6 @@ def _create_ssh_server(attacker_ip: str, honeypot: SSHHoneypot):
 
         def check_auth_password(self, username: str, password: str) -> int:
             """Her password denemesinde çağrılır — credential yakala, DENY döndür."""
-            log(f"[SSH] Credential yakalandı: {username}:{password} <- {attacker_ip}")
             honeypot.report_credential(attacker_ip, username, password)
             return paramiko.AUTH_FAILED
 
@@ -556,7 +560,6 @@ class MySQLHoneypot(BaseHoneypot):
         # 3) Username'i parse et
         username = self._parse_username(payload)
         if username:
-            log(f"[MYSQL] Credential yakalandı: {username}:<hash> <- {attacker_ip}")
             self.report_credential(attacker_ip, username, "<mysql_native_hash>")
 
         # 4) ERR_Packet gönder — Access denied
@@ -750,7 +753,6 @@ class MSSQLHoneypot(BaseHoneypot):
         # 4) Credential parse et
         username, password = self._parse_login7(payload)
         if username:
-            log(f"[MSSQL] Credential yakalandı: {username}:{password} <- {attacker_ip}")
             self.report_credential(attacker_ip, username, password)
 
         # 5) Login failed response gönder
@@ -991,7 +993,6 @@ class RDPHoneypot(BaseHoneypot):
         requested_protocols = self._parse_requested_protocols(tpkt_data)
 
         if username:
-            log(f"[RDP] Bağlantı girişimi: {username} <- {attacker_ip}")
             self.report_credential(attacker_ip, username, "<rdp_connection_attempt>")
 
         # Prefer NLA capture when client asks for HYBRID

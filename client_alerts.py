@@ -33,7 +33,12 @@ import time
 from collections import defaultdict, deque
 from typing import Any, Callable, Dict, List, Optional, Set
 
-from client_constants import APP_DIR, LOG_RETENTION_DAYS
+from client_constants import (
+    APP_DIR,
+    LOG_RETENTION_DAYS,
+    ALERT_THREAT_LOG_MAX_BYTES,
+    ALERT_THREAT_LOG_BACKUP_COUNT,
+)
 from client_helpers import log
 from client_log_retention import DailyRetentionFileHandler
 
@@ -829,6 +834,8 @@ class AlertPipeline:
                     os.path.join(APP_DIR, THREAT_LOG_FILE),
                     retention_days=LOG_RETENTION_DAYS,
                     encoding="utf-8",
+                    max_bytes=ALERT_THREAT_LOG_MAX_BYTES,
+                    backup_count=ALERT_THREAT_LOG_BACKUP_COUNT,
                 )
                 formatter = logging.Formatter(
                     "%(asctime)s | %(message)s",

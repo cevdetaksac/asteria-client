@@ -566,6 +566,44 @@ def _resource_path(*parts: str) -> Path:
     return root.joinpath(*parts)
 
 
+def _cleanup_stale_gui_runtime(max_age_hours: float = 2.0) -> int:
+    """Remove abandoned PyInstaller onefile extract dirs under LocalAppData."""
+    try:
+        root = Path(
+            os.environ.get("LOCALAPPDATA", os.environ.get("TEMP", "."))
+        ) / "Asteria" / "runtime" / "gui"
+        if not root.is_dir():
+            return 0
+        current = ""
+        try:
+            current = str(Path(getattr(sys, "_MEIPASS", "") or "").resolve())
+        except Exception:
+            current = ""
+        cutoff = time.time() - (max_age_hours * 3600.0)
+        removed = 0
+        for child in root.iterdir():
+            if not child.is_dir():
+                continue
+            name = child.name
+            if not (name.startswith("_MEI") or name.startswith("mei")):
+                continue
+            try:
+                if current and str(child.resolve()) == current:
+                    continue
+                if child.stat().st_mtime > cutoff:
+                    continue
+                import shutil
+
+                shutil.rmtree(child, ignore_errors=True)
+                if not child.exists():
+                    removed += 1
+            except Exception:
+                continue
+        return removed
+    except Exception:
+        return 0
+
+
 def _setup_logging() -> logging.Logger:
     log_dir = Path(
         os.environ.get("LOCALAPPDATA", os.environ.get("TEMP", "."))
@@ -574,14 +612,25 @@ def _setup_logging() -> logging.Logger:
     logger = logging.getLogger("asteria-gui")
     logger.setLevel(logging.INFO)
     if not logger.handlers:
-        handler = logging.FileHandler(
-            log_dir / "asteria-gui.log", encoding="utf-8"
+        from logging.handlers import RotatingFileHandler
+
+        handler = RotatingFileHandler(
+            log_dir / "asteria-gui.log",
+            maxBytes=2 * 1024 * 1024,
+            backupCount=3,
+            encoding="utf-8",
         )
         handler.setFormatter(
             logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
         )
         logger.addHandler(handler)
     _install_gui_excepthooks(logger)
+    try:
+        n = _cleanup_stale_gui_runtime()
+        if n:
+            logger.info("Cleaned %s stale GUI runtime extract dir(s)", n)
+    except Exception:
+        pass
     return logger
 
 

@@ -130,20 +130,35 @@ class AsteriaAPIClient:
 
     def api_request(self, method: str, endpoint: str, data: Optional[Dict] = None,
                    params: Optional[Dict] = None, timeout: int = API_REQUEST_TIMEOUT,
-                   verbose_logging: bool = True, token: Optional[str] = None) -> Optional[Dict]:
+                   verbose_logging: bool = False, token: Optional[str] = None) -> Optional[Dict]:
         """API isteği gönder (primary → legacy failover on transport/5xx failure)."""
         try:
             from client_constants import VERBOSE_LOGGING
-            is_frequent_endpoint = endpoint in [
-                'attack-count', 'heartbeat', 'agent/tunnel-status',
-                'commands/pending', 'attack', 'agent/account-status', 'client_status',
-            ]
-            show_logs = (verbose_logging or VERBOSE_LOGGING) and not is_frequent_endpoint
+            ep = (endpoint or "").lstrip("/")
+            # High-frequency polls — never dump full bodies at INFO (disk spam).
+            is_frequent_endpoint = ep in {
+                "attack-count",
+                "heartbeat",
+                "premium/tunnel-status",
+                "agent/tunnel-status",
+                "commands/pending",
+                "attack",
+                "agent/account-status",
+                "client_status",
+                "agent/open-ports",
+                "events/batch",
+                "agent/health",
+                "agent/sync-rules",
+                "agent/pending-blocks",
+                "agent/pending-unblocks",
+            } or ep.startswith("commands/")
+            # Opt-in only: caller verbose_logging=True OR global VERBOSE_LOGGING.
+            show_logs = bool(verbose_logging or VERBOSE_LOGGING) and not is_frequent_endpoint
 
             attempts = 0
             while attempts < 2:
                 attempts += 1
-                url = f"{self.base_url}/{endpoint.lstrip('/')}"
+                url = f"{self.base_url}/{ep}"
                 req_params, req_data, extra_headers = self._prepare_request(params, data, token)
                 tok = token or self._auth_token
                 if tok and req_data is not None and "token" not in req_data:
@@ -181,7 +196,12 @@ class AsteriaAPIClient:
                     except Exception:
                         result = {"status": "ok"}
                     if show_logs:
-                        self.log(f"[API] Başarılı yanıt: {result}")
+                        # Cap body size — tunnel-status alone is multi-KB per poll.
+                        preview = redact_sensitive(result)
+                        text = repr(preview)
+                        if len(text) > 400:
+                            text = text[:400] + "…"
+                        self.log(f"[API] Başarılı yanıt: {text}")
                     return result
 
                 # 499 = client closed before upstream answered (sleep/proxy kill).

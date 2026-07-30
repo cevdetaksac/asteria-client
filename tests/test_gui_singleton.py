@@ -32,11 +32,12 @@ class TestHandoffHelpers(unittest.TestCase):
     def test_signal_show_creates_named_event(self):
         import win32api
         import win32event
-        from client_constants import gui_show_event_name
         from client_instance import signal_existing_gui_show
 
         self.assertTrue(signal_existing_gui_show())
-        h = win32event.CreateEvent(None, False, False, gui_show_event_name())
+        # Prefer a disposable Local\\ name — Global\\ may need elevation.
+        test_name = f"Local\\AsteriaShowTest-{uuid.uuid4()}"
+        h = win32event.CreateEvent(None, False, False, test_name)
         self.assertIsNotNone(h)
         win32api.CloseHandle(h)
 

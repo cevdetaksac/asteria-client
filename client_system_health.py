@@ -323,7 +323,11 @@ class SystemHealthMonitor:
             self._stats["top_processes"] = rich
             # Alias: dashboard may read top_cpu_processes — send FULL list
             self._stats["top_cpu_processes"] = rich
-            log(f"[HEALTH] processes collected: {len(rich)}")
+            # Per-cycle INFO flooded the daily log (~every few seconds).
+            n = getattr(self, "_proc_collect_logs", 0) + 1
+            self._proc_collect_logs = n
+            if n == 1 or n % 30 == 0:
+                log(f"[HEALTH] processes collected: {len(rich)}")
         except Exception as e:
             log(f"[HEALTH] Process collect error: {e}")
 
@@ -1321,12 +1325,16 @@ class SystemHealthMonitor:
             )
             if isinstance(resp, dict) and resp.get("status") in ("ok", "success", "received"):
                 self._stats["reports_sent"] += 1
-                log(f"[HEALTH] report ok — sessions={n_sess} processes={n_proc}")
+                n = int(self._stats.get("reports_sent") or 0)
+                if n == 1 or n % 12 == 0:
+                    log(f"[HEALTH] report ok — sessions={n_sess} processes={n_proc}")
                 return True
             # Accept any 2xx-style non-null response
             if resp is not None:
                 self._stats["reports_sent"] += 1
-                log(f"[HEALTH] report accepted — sessions={n_sess} processes={n_proc}")
+                n = int(self._stats.get("reports_sent") or 0)
+                if n == 1 or n % 12 == 0:
+                    log(f"[HEALTH] report accepted — sessions={n_sess} processes={n_proc}")
                 return True
             log(f"[HEALTH] report unexpected response — sessions={n_sess} processes={n_proc} resp={resp!r}")
         except Exception as e:

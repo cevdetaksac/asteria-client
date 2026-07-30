@@ -1382,12 +1382,14 @@ class FirewallAgent:
             try:
                 unblocked = self._poll_pending_unblocks()
                 blocked = self._poll_pending_blocks()
-                self.logger.info(
-                    f"[FW-SYNC] pending_blocks={len(blocked)} "
-                    f"pending_unblocks={len(unblocked)} "
-                    f"removed={len(unblocked)} failed=0"
-                )
                 cycles += 1
+                # Idle zero-change cycles flooded INFO (~every refresh_interval).
+                if blocked or unblocked or cycles == 1 or cycles % 30 == 0:
+                    self.logger.info(
+                        f"[FW-SYNC] pending_blocks={len(blocked)} "
+                        f"pending_unblocks={len(unblocked)} "
+                        f"removed={len(unblocked)} failed=0"
+                    )
                 if blocked or unblocked or cycles >= inventory_every:
                     try:
                         self._migrate_and_sync_rules()

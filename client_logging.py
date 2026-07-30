@@ -18,7 +18,7 @@ import datetime as dt
 
 from client_constants import (
     LOG_FILE, LOG_RETENTION_DAYS, LOG_ENCODING,
-    LOG_TIME_FORMAT,
+    LOG_TIME_FORMAT, LOG_MAX_BYTES, LOG_BACKUP_COUNT,
 )
 from client_log_retention import DailyRetentionFileHandler
 
@@ -59,6 +59,8 @@ def setup_logging() -> bool:
                 LOG_FILE,
                 retention_days=LOG_RETENTION_DAYS,
                 encoding=LOG_ENCODING,
+                max_bytes=LOG_MAX_BYTES,
+                backup_count=LOG_BACKUP_COUNT,
             ),
             logging.StreamHandler()
         ]
