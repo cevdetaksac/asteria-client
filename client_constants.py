@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.68"  # Single-flight update gate: no stacked ops; busy → in-flight status
+VERSION = "4.9.69"  # Embed WebView2 standalone offline in installer; stop alert spam
 
 
 

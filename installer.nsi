@@ -12,7 +12,7 @@ OutFile "asteria-client-installer.exe"
 !define DESCRIPTION "Asteria Client - Deception Cloud Agent"
 !define VERSIONMAJOR 4
 !define VERSIONMINOR 9
-!define VERSIONBUILD 68
+!define VERSIONBUILD 69
 
 InstallDir "$PROGRAMFILES64\${COMPANYNAME}\${APPNAME}"
 
@@ -27,18 +27,28 @@ RequestExecutionLevel admin
 
 ; Interface Settings
 !define MUI_ABORTWARNING
+!define MUI_CUSTOMFUNCTION_GUIINIT AsteriaOnGuiInit
 
 ; Pages — no finish/checkbox wait; app launches when files are done
+!define MUI_PAGE_CUSTOMFUNCTION_SHOW AsteriaPageShow
 !insertmacro MUI_PAGE_WELCOME
+!define MUI_PAGE_CUSTOMFUNCTION_SHOW AsteriaPageShow
 !insertmacro MUI_PAGE_LICENSE "LICENSE"
+!define MUI_PAGE_CUSTOMFUNCTION_SHOW AsteriaPageShow
 !insertmacro MUI_PAGE_COMPONENTS
+!define MUI_PAGE_CUSTOMFUNCTION_SHOW AsteriaPageShow
 !insertmacro MUI_PAGE_DIRECTORY
+!define MUI_PAGE_CUSTOMFUNCTION_SHOW AsteriaPageShow
 !insertmacro MUI_PAGE_INSTFILES
 
 ; Uninstaller pages
+!define MUI_PAGE_CUSTOMFUNCTION_SHOW un.AsteriaPageShow
 !insertmacro MUI_UNPAGE_WELCOME
+!define MUI_PAGE_CUSTOMFUNCTION_SHOW un.AsteriaPageShow
 !insertmacro MUI_UNPAGE_CONFIRM
+!define MUI_PAGE_CUSTOMFUNCTION_SHOW un.AsteriaPageShow
 !insertmacro MUI_UNPAGE_INSTFILES
+!define MUI_PAGE_CUSTOMFUNCTION_SHOW un.AsteriaPageShow
 !insertmacro MUI_UNPAGE_FINISH
 
 ; Languages
@@ -565,8 +575,104 @@ Function un.PreInstallKillFast
 FunctionEnd
 
 ; ===================================================================
-; INITIALIZATION
+; INITIALIZATION + WINDOW PLACEMENT
+; Heavy kill/cleanup runs in SEC_MAIN — NOT here — so Welcome appears fast.
 ; ===================================================================
+Function CenterAndRaiseInstaller
+    ; Center on primary screen + raise above other windows after UAC.
+    Push $0
+    Push $1
+    Push $2
+    Push $3
+    Push $4
+    Push $5
+    Push $6
+    System::Alloc 16
+    Pop $0
+    System::Call "user32::GetWindowRect(p$HWNDPARENT, p r0)"
+    System::Call "*$0(i .r1, i .r2, i .r3, i .r4)"
+    System::Free $0
+    IntOp $5 $3 - $1   ; width
+    IntOp $6 $4 - $2   ; height
+    System::Call "user32::GetSystemMetrics(i 0) i.r1" ; SM_CXSCREEN
+    System::Call "user32::GetSystemMetrics(i 1) i.r2" ; SM_CYSCREEN
+    IntOp $1 $1 - $5
+    IntOp $1 $1 / 2
+    IntOp $2 $2 - $6
+    IntOp $2 $2 / 2
+    ; SWP_NOSIZE|SWP_NOZORDER = 0x0005
+    System::Call "user32::SetWindowPos(p$HWNDPARENT, p0, i r1, i r2, i 0, i 0, i 0x0005)"
+    System::Call "user32::ShowWindow(p$HWNDPARENT, i 9)" ; SW_RESTORE
+    System::Call "kernel32::GetCurrentProcessId() i.r0"
+    System::Call "user32::AllowSetForegroundWindow(i r0)"
+    System::Call "user32::SetForegroundWindow(p$HWNDPARENT)"
+    System::Call "user32::BringWindowToTop(p$HWNDPARENT)"
+    ; Brief TOPMOST then NOTOPMOST — reliably wins focus after elevation.
+    System::Call "user32::SetWindowPos(p$HWNDPARENT, p-1, i0, i0, i0, i0, i0x0003)"
+    Sleep 40
+    System::Call "user32::SetWindowPos(p$HWNDPARENT, p-2, i0, i0, i0, i0, i0x0003)"
+    System::Call "user32::SetForegroundWindow(p$HWNDPARENT)"
+    Pop $6
+    Pop $5
+    Pop $4
+    Pop $3
+    Pop $2
+    Pop $1
+    Pop $0
+FunctionEnd
+
+Function AsteriaOnGuiInit
+    Call CenterAndRaiseInstaller
+FunctionEnd
+
+Function AsteriaPageShow
+    Call CenterAndRaiseInstaller
+FunctionEnd
+
+Function un.CenterAndRaiseInstaller
+    Push $0
+    Push $1
+    Push $2
+    Push $3
+    Push $4
+    Push $5
+    Push $6
+    System::Alloc 16
+    Pop $0
+    System::Call "user32::GetWindowRect(p$HWNDPARENT, p r0)"
+    System::Call "*$0(i .r1, i .r2, i .r3, i .r4)"
+    System::Free $0
+    IntOp $5 $3 - $1
+    IntOp $6 $4 - $2
+    System::Call "user32::GetSystemMetrics(i 0) i.r1"
+    System::Call "user32::GetSystemMetrics(i 1) i.r2"
+    IntOp $1 $1 - $5
+    IntOp $1 $1 / 2
+    IntOp $2 $2 - $6
+    IntOp $2 $2 / 2
+    System::Call "user32::SetWindowPos(p$HWNDPARENT, p0, i r1, i r2, i 0, i 0, i 0x0005)"
+    System::Call "user32::ShowWindow(p$HWNDPARENT, i 9)"
+    System::Call "kernel32::GetCurrentProcessId() i.r0"
+    System::Call "user32::AllowSetForegroundWindow(i r0)"
+    System::Call "user32::SetForegroundWindow(p$HWNDPARENT)"
+    System::Call "user32::BringWindowToTop(p$HWNDPARENT)"
+    System::Call "user32::SetWindowPos(p$HWNDPARENT, p-1, i0, i0, i0, i0, i0x0003)"
+    Sleep 40
+    System::Call "user32::SetWindowPos(p$HWNDPARENT, p-2, i0, i0, i0, i0, i0x0003)"
+    System::Call "user32::SetForegroundWindow(p$HWNDPARENT)"
+    Pop $6
+    Pop $5
+    Pop $4
+    Pop $3
+    Pop $2
+    Pop $1
+    Pop $0
+FunctionEnd
+
+Function un.AsteriaPageShow
+    Call un.CenterAndRaiseInstaller
+FunctionEnd
+
 Function .onInit
     StrCpy $LogFile "$LOCALAPPDATA\asteria-installer.log"
     Delete $LogFile
@@ -578,62 +684,87 @@ Function .onInit
     Push "Log file location: $LogFile"
     Call WriteLog
 
-    ; Kill running client instances before installer UI appears
-    Call PreInstallKillFast
+    ; Instant light stop only — full PreInstallKillFast runs in Phase 1 so the
+    ; Welcome page is not blocked by PowerShell / legacy tree cleanup.
+    nsExec::Exec 'taskkill /F /T /IM asteria-gui.exe >nul 2>&1'
 FunctionEnd
 
 ; ===================================================================
 ; WEBVIEW2 RUNTIME (Control Center / asteria-gui.exe)
+; Prefer offline Evergreen Standalone x64 (bundled). Bootstrapper is fallback only.
 ; ===================================================================
-Function EnsureWebView2
-    ; Evergreen client GUID — same keys as asteria_gui._webview2_runtime_present
+Function WebView2RuntimePresent
+    ; Sets $R9 to pv / marker when found, else empty. Same keys as asteria_gui.
+    StrCpy $R9 ""
     ReadRegStr $R9 HKLM "SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
     ${If} $R9 != ""
     ${AndIf} $R9 != "0.0.0.0"
-        !insertmacro LOG "[WEBVIEW2] Runtime present (WOW6432Node pv=$R9)"
-        Goto Wv2Done
+        Return
     ${EndIf}
     SetRegView 64
     ReadRegStr $R9 HKLM "SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
     SetRegView 32
     ${If} $R9 != ""
     ${AndIf} $R9 != "0.0.0.0"
-        !insertmacro LOG "[WEBVIEW2] Runtime present (64-bit pv=$R9)"
-        Goto Wv2Done
+        Return
     ${EndIf}
     ReadRegStr $R9 HKCU "SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
     ${If} $R9 != ""
     ${AndIf} $R9 != "0.0.0.0"
-        !insertmacro LOG "[WEBVIEW2] Runtime present (HKCU pv=$R9)"
+        Return
+    ${EndIf}
+    ; Filesystem fallback (registry lag / Server SKUs)
+    ${If} ${FileExists} "$PROGRAMFILES64\Microsoft\EdgeWebView\Application\msedgewebview2.exe"
+        StrCpy $R9 "fs64"
+        Return
+    ${EndIf}
+    ${If} ${FileExists} "$PROGRAMFILES\Microsoft\EdgeWebView\Application\msedgewebview2.exe"
+        StrCpy $R9 "fs32"
+        Return
+    ${EndIf}
+    StrCpy $R9 ""
+FunctionEnd
+
+Function EnsureWebView2
+    Call WebView2RuntimePresent
+    ${If} $R9 != ""
+        !insertmacro LOG "[WEBVIEW2] Runtime present (pv=$R9)"
         Goto Wv2Done
     ${EndIf}
 
-    !insertmacro LOG "[WEBVIEW2] Runtime missing — running Evergreen bootstrapper (needs network)..."
+    ; 1) Offline standalone (bundled ~150 MB) — no internet required on target
+    IfFileExists "$INSTDIR\MicrosoftEdgeWebView2RuntimeInstallerX64.exe" 0 Wv2TryBootstrap
+        !insertmacro LOG "[WEBVIEW2] Runtime missing — installing offline Standalone x64..."
+        DetailPrint "Installing Microsoft Edge WebView2 Runtime (offline)..."
+        ; ExecWait blocks until done; standalone can take 1–3 minutes.
+        ExecWait '"$INSTDIR\MicrosoftEdgeWebView2RuntimeInstallerX64.exe" /silent /install' $R8
+        !insertmacro LOG "[WEBVIEW2] Standalone exit=$R8"
+        Sleep 1500
+        Call WebView2RuntimePresent
+        ${If} $R9 != ""
+            !insertmacro LOG "[WEBVIEW2] Runtime installed OK via standalone (pv=$R9)"
+            Goto Wv2Done
+        ${EndIf}
+        !insertmacro LOG "[WEBVIEW2] Standalone finished but runtime not detected yet — trying bootstrapper"
+
+    Wv2TryBootstrap:
     IfFileExists "$INSTDIR\MicrosoftEdgeWebview2Setup.exe" 0 Wv2MissingPayload
-        nsExec::ExecToLog '"$INSTDIR\MicrosoftEdgeWebview2Setup.exe" /silent /install'
-        Pop $R8
+        !insertmacro LOG "[WEBVIEW2] Trying Evergreen bootstrapper (needs network)..."
+        ExecWait '"$INSTDIR\MicrosoftEdgeWebview2Setup.exe" /silent /install' $R8
         !insertmacro LOG "[WEBVIEW2] Bootstrapper exit=$R8"
-        ; Re-check after install
-        ReadRegStr $R9 HKLM "SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
+        Sleep 1500
+        Call WebView2RuntimePresent
         ${If} $R9 != ""
-        ${AndIf} $R9 != "0.0.0.0"
-            !insertmacro LOG "[WEBVIEW2] Runtime installed OK (pv=$R9)"
+            !insertmacro LOG "[WEBVIEW2] Runtime installed OK via bootstrapper (pv=$R9)"
             Goto Wv2Done
         ${EndIf}
-        SetRegView 64
-        ReadRegStr $R9 HKLM "SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" "pv"
-        SetRegView 32
-        ${If} $R9 != ""
-        ${AndIf} $R9 != "0.0.0.0"
-            !insertmacro LOG "[WEBVIEW2] Runtime installed OK (pv=$R9)"
-            Goto Wv2Done
-        ${EndIf}
-        !insertmacro LOG "[WEBVIEW2] WARNING: bootstrapper finished but runtime still not registered"
+        !insertmacro LOG "[WEBVIEW2] WARNING: installers finished but runtime still not registered"
         IfSilent Wv2Done
-            MessageBox MB_ICONEXCLAMATION|MB_OK "Microsoft Edge WebView2 Runtime kurulamadı.$\r$\n$\r$\nAsteria motoru çalışır; Control Center için:$\r$\nhttps://developer.microsoft.com/microsoft-edge/webview2/$\r$\n→ Evergreen Runtime kurun (sunucunun interneti olmalı)."
+            MessageBox MB_ICONEXCLAMATION|MB_OK "Microsoft Edge WebView2 Runtime kurulamadı.$\r$\n$\r$\nAsteria motoru çalışır; Control Center için paketi yeniden deneyin veya:$\r$\nhttps://developer.microsoft.com/microsoft-edge/webview2/"
         Goto Wv2Done
+
     Wv2MissingPayload:
-        !insertmacro LOG "[WEBVIEW2] ERROR: MicrosoftEdgeWebview2Setup.exe missing from install dir"
+        !insertmacro LOG "[WEBVIEW2] ERROR: no WebView2 installer payload in install dir"
         IfSilent Wv2Done
             MessageBox MB_ICONEXCLAMATION|MB_OK "WebView2 kurulum paketi eksik.$\r$\nControl Center için Evergreen Runtime kurun:$\r$\nhttps://developer.microsoft.com/microsoft-edge/webview2/"
     Wv2Done:
@@ -649,6 +780,10 @@ Section "Asteria Client (Required)" SEC_MAIN
     ; PHASE 1: PRE-INSTALLATION CLEANUP
     ; =================================================================
     !insertmacro LOG "[PHASE 1] Starting pre-installation cleanup..."
+
+    ; Full stop + legacy purge (moved here from .onInit so Welcome UI is instant)
+    !insertmacro LOG "[PREP] Step 0 - PreInstallKillFast (tasks/processes/legacy)..."
+    Call PreInstallKillFast
 
     ; Step 1: Delete ALL scheduled tasks FIRST (prevents respawn)
     !insertmacro LOG "[PREP] Step 1 - Deleting all scheduled tasks..."
@@ -685,8 +820,10 @@ Section "Asteria Client (Required)" SEC_MAIN
     File /r "dist\asteria-client\*.*"
     ; Separate interactive GUI host (onefile; no motor secrets in WebView).
     File "dist\asteria-gui.exe"
-    ; WebView2 Evergreen bootstrapper (~1.5 MB) — run if runtime missing.
-    File "vendor\MicrosoftEdgeWebview2Setup.exe"
+    ; WebView2 Evergreen Standalone x64 (~150 MB) — offline silent install if missing.
+    File "vendor\MicrosoftEdgeWebView2RuntimeInstallerX64.exe"
+    ; Tiny bootstrapper fallback (needs network) if standalone somehow fails.
+    File /nonfatal "vendor\MicrosoftEdgeWebview2Setup.exe"
     ; Extra config copies at install root (also inside _internal via PyInstaller datas)
     File /oname=client_config.json "dist\client_config.json"
     File /oname=client_lang.json "dist\client_lang.json"

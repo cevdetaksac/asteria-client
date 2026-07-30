@@ -2266,36 +2266,141 @@ def _webview2_runtime_present() -> bool:
                 continue
     except Exception:
         pass
+    # Filesystem fallback — registry can lag right after silent install.
+    for base in (
+        os.environ.get("ProgramFiles", r"C:\Program Files"),
+        os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+    ):
+        try:
+            exe = Path(base) / "Microsoft" / "EdgeWebView" / "Application" / "msedgewebview2.exe"
+            if exe.is_file():
+                return True
+        except OSError:
+            continue
     return False
 
 
-def _webview2_bootstrapper_path() -> Path | None:
-    candidates = []
+def _install_root() -> Path:
     try:
-        candidates.append(Path(sys.executable).resolve().parent / "MicrosoftEdgeWebview2Setup.exe")
+        return Path(sys.executable).resolve().parent
+    except Exception:
+        return Path(".")
+
+
+def _webview2_payload_path() -> Path | None:
+    """Prefer offline standalone installer; bootstrapper is network fallback only."""
+    names = (
+        "MicrosoftEdgeWebView2RuntimeInstallerX64.exe",
+        "MicrosoftEdgeWebview2Setup.exe",
+    )
+    roots: list[Path] = []
+    try:
+        roots.append(_install_root())
     except Exception:
         pass
     try:
-        candidates.append(Path(getattr(sys, "_MEIPASS", "")) / "MicrosoftEdgeWebview2Setup.exe")
+        mei = getattr(sys, "_MEIPASS", None)
+        if mei:
+            roots.append(Path(mei))
     except Exception:
         pass
-    for path in candidates:
-        try:
-            if path.is_file() and path.stat().st_size > 100_000:
-                return path
-        except OSError:
-            continue
+    for root in roots:
+        for name in names:
+            try:
+                path = root / name
+                if not path.is_file():
+                    continue
+                # Standalone ~150MB; bootstrapper ~1.5MB
+                min_size = 40_000_000 if "RuntimeInstaller" in name else 100_000
+                if path.stat().st_size >= min_size:
+                    return path
+            except OSError:
+                continue
     return None
 
 
-def _warn_missing_webview2(logger: logging.Logger) -> None:
-    boot = _webview2_bootstrapper_path()
+def _try_silent_webview2_install(logger: logging.Logger) -> bool:
+    """Run bundled offline/standalone installer once; return True if runtime appears."""
+    payload = _webview2_payload_path()
+    if payload is None:
+        return False
+    stamp = (
+        Path(os.environ.get("LOCALAPPDATA", "") or ".")
+        / "Asteria"
+        / "webview2_auto_install.stamp"
+    )
+    try:
+        if stamp.is_file():
+            age = time.time() - stamp.stat().st_mtime
+            # Don't thrash UAC / installer on every tray launch.
+            if age < 3600:
+                logger.info("WebView2 auto-install skipped (recent attempt %.0fs ago)", age)
+                return _webview2_runtime_present()
+    except OSError:
+        pass
+    logger.info("Attempting silent WebView2 install from %s", payload)
+    try:
+        import ctypes
+        import subprocess
+
+        # Prefer elevated silent install (per-machine).
+        rc = int(
+            ctypes.windll.shell32.ShellExecuteW(
+                None,
+                "runas",
+                str(payload),
+                "/silent /install",
+                str(payload.parent),
+                1,  # SW_SHOWNORMAL — installer may flash briefly
+            )
+        )
+        if rc <= 32:
+            logger.warning("ShellExecute WebView2 install failed rc=%s — trying CreateProcess", rc)
+            subprocess.run(
+                [str(payload), "/silent", "/install"],
+                timeout=600,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        else:
+            # ShellExecuteW does not wait — poll for runtime up to ~3 min.
+            for _ in range(36):
+                time.sleep(5)
+                if _webview2_runtime_present():
+                    break
+        try:
+            stamp.parent.mkdir(parents=True, exist_ok=True)
+            stamp.write_text(str(time.time()), encoding="utf-8")
+        except OSError:
+            pass
+    except Exception as exc:
+        logger.warning("WebView2 silent install error: %s", exc)
+        return False
+    ok = _webview2_runtime_present()
+    logger.info("WebView2 after silent install present=%s", ok)
+    return ok
+
+
+def _warn_missing_webview2(logger: logging.Logger, *, allow_prompt: bool = True) -> None:
+    payload = _webview2_payload_path()
     url = "https://developer.microsoft.com/microsoft-edge/webview2/"
-    if boot is not None:
+    # Rate-limit modal spam (tray relaunch / failed webview.start loops).
+    nag = (
+        Path(os.environ.get("LOCALAPPDATA", "") or ".")
+        / "Asteria"
+        / "webview2_nag.stamp"
+    )
+    if allow_prompt:
+        try:
+            if nag.is_file() and (time.time() - nag.stat().st_mtime) < 1800:
+                logger.error("WebView2 Runtime missing — suppressing repeat alert")
+                return
+        except OSError:
+            pass
+    if payload is not None:
         msg = (
             "Microsoft Edge WebView2 Runtime bulunamadı.\n\n"
             "Asteria Control Center boş/beyaz pencere gösterir.\n"
-            "Evet = paketlenen kurucuyu şimdi çalıştır (internet gerekir).\n"
+            "Evet = paketlenen offline kurucuyu şimdi çalıştır.\n"
             "Hayır = iptal.\n\n"
             f"Manuel: {url}\n"
             "Log: %LOCALAPPDATA%\\Asteria\\logs\\asteria-gui.log"
@@ -2306,20 +2411,27 @@ def _warn_missing_webview2(logger: logging.Logger) -> None:
             "Asteria Control Center boş/beyaz pencere gösterir.\n"
             f"Evet = indirme sayfasını aç ({url}).\n"
             "Hayır = iptal.\n\n"
-            "Evergreen Runtime kurun, sonra asteria-gui.exe'yi yeniden açın.\n"
+            "Asteria kurucusunu yeniden çalıştırın (WebView2 gömülü).\n"
             "Log: %LOCALAPPDATA%\\Asteria\\logs\\asteria-gui.log"
         )
     logger.error("WebView2 Runtime missing — GUI will be blank")
+    if not allow_prompt:
+        return
     try:
         import ctypes
 
+        try:
+            nag.parent.mkdir(parents=True, exist_ok=True)
+            nag.write_text(str(time.time()), encoding="utf-8")
+        except OSError:
+            pass
         # MB_YESNO | MB_ICONERROR
         choice = int(ctypes.windll.user32.MessageBoxW(0, msg, "Asteria — WebView2 gerekli", 0x14))
         if choice == 6:  # IDYES
-            if boot is not None:
-                logger.info("Launching WebView2 bootstrapper: %s", boot)
+            if payload is not None:
+                logger.info("Launching WebView2 payload: %s", payload)
                 ctypes.windll.shell32.ShellExecuteW(
-                    None, "runas", str(boot), "/install", str(boot.parent), 1
+                    None, "runas", str(payload), "/silent /install", str(payload.parent), 1
                 )
             else:
                 ctypes.windll.shell32.ShellExecuteW(None, "open", url, None, None, 1)
@@ -2334,8 +2446,13 @@ def main() -> int:
         logger.error("pywebview is not installed")
         return 2
     if not _webview2_runtime_present():
-        _warn_missing_webview2(logger)
-        return 3
+        # Installer should have done this; repair once from bundled offline payload.
+        if not _try_silent_webview2_install(logger):
+            _warn_missing_webview2(logger)
+            return 3
+        if not _webview2_runtime_present():
+            _warn_missing_webview2(logger)
+            return 3
     if not _acquire_single_instance():
         logger.info("Existing GUI signaled; exiting second launch")
         return 0
@@ -2384,7 +2501,9 @@ def main() -> int:
         webview.start(gui="edgechromium", debug=False, private_mode=True)
     except Exception as exc:
         logger.exception("WebView start failed: %s", exc)
-        _warn_missing_webview2(logger)
+        # Only nag about WebView2 when the runtime is actually missing.
+        if not _webview2_runtime_present():
+            _warn_missing_webview2(logger)
         return 4
     logger.info("WebView loop ended pid=%s", os.getpid())
     _quitting = True

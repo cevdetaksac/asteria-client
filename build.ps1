@@ -214,8 +214,10 @@ if ($Sign) {
     Write-Host "   SKIP: Authenticode payloads (-Sign not set; unsigned build OK for dev)" -ForegroundColor DarkGray
 }
 
-# Step 4: Check for NSIS + WebView2 Evergreen bootstrapper payload
-Write-Host "[4/6] Checking for NSIS + WebView2 bootstrapper..." -ForegroundColor Yellow
+# Step 4: Check for NSIS + WebView2 Evergreen payloads
+# Prefer offline Standalone x64 (~150 MB) so target hosts need no internet at install.
+# Keep tiny bootstrapper as last-resort fallback only.
+Write-Host "[4/6] Checking for NSIS + WebView2 runtime payloads..." -ForegroundColor Yellow
 $nsisPath = Get-Command makensis -ErrorAction SilentlyContinue
 if (-not $nsisPath) {
     Write-Host "   WARNING: NSIS not found, installing via Scoop..." -ForegroundColor Yellow
@@ -232,24 +234,52 @@ if (-not $nsisPath) {
 }
 
 $wv2Dir = Join-Path $PSScriptRoot "vendor"
-$wv2Boot = Join-Path $wv2Dir "MicrosoftEdgeWebview2Setup.exe"
-if (-not (Test-Path -LiteralPath $wv2Boot)) {
-    New-Item -ItemType Directory -Force -Path $wv2Dir | Out-Null
-    Write-Host "   Downloading WebView2 Evergreen bootstrapper..." -ForegroundColor Yellow
+New-Item -ItemType Directory -Force -Path $wv2Dir | Out-Null
+
+# Evergreen Standalone Installer x64 - offline; no download on the target host.
+$wv2Standalone = Join-Path $wv2Dir "MicrosoftEdgeWebView2RuntimeInstallerX64.exe"
+$wv2StandaloneUrl = "https://go.microsoft.com/fwlink/?linkid=2124701"
+$needStandalone = $true
+if (Test-Path -LiteralPath $wv2Standalone) {
+    $sz = (Get-Item -LiteralPath $wv2Standalone).Length
+    if ($sz -ge 40MB) {
+        $needStandalone = $false
+    } else {
+        Write-Host ("   Standalone payload too small ({0} bytes) - re-downloading..." -f $sz) -ForegroundColor Yellow
+        Remove-Item -LiteralPath $wv2Standalone -Force -ErrorAction SilentlyContinue
+    }
+}
+if ($needStandalone) {
+    Write-Host "   Downloading WebView2 Evergreen Standalone x64 (offline payload)..." -ForegroundColor Yellow
     try {
-        Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile $wv2Boot -UseBasicParsing
+        Invoke-WebRequest -Uri $wv2StandaloneUrl -OutFile $wv2Standalone -UseBasicParsing
     } catch {
-        Write-Host "   ERROR: Failed to download WebView2 bootstrapper: $_" -ForegroundColor Red
-        Write-Host "      Manual: save MicrosoftEdgeWebview2Setup.exe under vendor\" -ForegroundColor White
+        Write-Host "   ERROR: Failed to download WebView2 standalone installer: $_" -ForegroundColor Red
+        Write-Host "      Manual: save MicrosoftEdgeWebView2RuntimeInstallerX64.exe under vendor\" -ForegroundColor White
         exit 1
     }
 }
-$wv2Size = (Get-Item -LiteralPath $wv2Boot).Length
-if ($wv2Size -lt 500000) {
-    Write-Host "   ERROR: WebView2 bootstrapper looks too small ($wv2Size bytes)" -ForegroundColor Red
+$wv2StandSize = (Get-Item -LiteralPath $wv2Standalone).Length
+if ($wv2StandSize -lt 40MB) {
+    Write-Host ("   ERROR: WebView2 standalone looks too small ({0} bytes)" -f $wv2StandSize) -ForegroundColor Red
     exit 1
 }
-Write-Host ("   SUCCESS: WebView2 bootstrapper ready ({0:N1} KB)" -f ($wv2Size / 1KB)) -ForegroundColor Green
+Write-Host ("   SUCCESS: WebView2 standalone ready ({0:N1} MB)" -f ($wv2StandSize / 1MB)) -ForegroundColor Green
+
+# Tiny bootstrapper - optional network fallback if standalone somehow missing at runtime.
+$wv2Boot = Join-Path $wv2Dir "MicrosoftEdgeWebview2Setup.exe"
+if (-not (Test-Path -LiteralPath $wv2Boot) -or ((Get-Item -LiteralPath $wv2Boot).Length -lt 500000)) {
+    Write-Host "   Downloading WebView2 Evergreen bootstrapper (fallback)..." -ForegroundColor Yellow
+    try {
+        Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile $wv2Boot -UseBasicParsing
+    } catch {
+        Write-Host "   WARNING: bootstrapper download failed (standalone is enough): $_" -ForegroundColor Yellow
+    }
+}
+if (Test-Path -LiteralPath $wv2Boot) {
+    $wv2BootSize = (Get-Item -LiteralPath $wv2Boot).Length
+    Write-Host ("   SUCCESS: WebView2 bootstrapper ready ({0:N1} KB)" -f ($wv2BootSize / 1KB)) -ForegroundColor Green
+}
 
 # Step 5: Build installer (embeds already-signed motor/GUI when -Sign was set)
 Write-Host "[5/6] Building installer..." -ForegroundColor Yellow
