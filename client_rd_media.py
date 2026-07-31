@@ -842,9 +842,11 @@ class AiortcMediaTransport(OptionalMediaTransport):
         with self._state_lock:
             self._error = str(error)
             self.active = False
-            if self._connection_state == "connected":
+            # Defensive: constructed via __new__ in unit tests may lack attrs.
+            if getattr(self, "_connection_state", "") == "connected":
                 self._connection_state = "failed"
-            if self._ice_state in self._CONNECTED_ICE_STATES:
+            ice = getattr(self, "_ice_state", "")
+            if ice in getattr(self, "_CONNECTED_ICE_STATES", ()):
                 self._ice_state = "failed"
         try:
             self._fallback_handler(str(error))
