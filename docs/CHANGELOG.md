@@ -1,3 +1,9 @@
+# v4.9.72
+
+## GUI: all alert cards at the top
+- Update banner + motor/error strip share one `top-alerts` stack above the identity row
+- Avoid duplicate **Motoru kurtar** when the update banner already shows it
+
 # v4.9.71
 
 ## Fix `launch_helper_failed` / `stage_helper` (ACL brick)

@@ -541,33 +541,61 @@ export default function App() {
       </aside>
 
       <main className="content">
-        {banner && (
-          <div className={`update-banner ${banner.phase === 'failed' ? 'fail' : banner.phase === 'done' ? 'ok' : ''}`}>
-            <div className="update-banner-copy">
-              <span>{bannerText}</span>
-              {bannerProgress != null && (
-                <div className="update-banner-track" aria-hidden="true">
-                  <div className="update-banner-fill" style={{ width: `${bannerProgress}%` }} />
+        {/* All operator alerts share one top stack (never split around the identity row). */}
+        {(banner || error) && (
+          <div className="top-alerts" role="region" aria-label="alerts">
+            {banner && (
+              <div className={`update-banner ${banner.phase === 'failed' ? 'fail' : banner.phase === 'done' ? 'ok' : ''}`}>
+                <div className="update-banner-copy">
+                  <span>{bannerText}</span>
+                  {bannerProgress != null && (
+                    <div className="update-banner-track" aria-hidden="true">
+                      <div className="update-banner-fill" style={{ width: `${bannerProgress}%` }} />
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-            <div className="update-banner-actions">
-              {(banner.phase === 'failed' ||
-                banner.can_abort ||
-                ['accepted', 'downloading', 'staging', 'installing'].includes(String(banner.phase || ''))) && (
-                <button
-                  type="button"
-                  className="btn ghost sm"
-                  disabled={recoverBusy}
-                  onClick={() => void recoverUpdate()}
-                >
-                  {t('update_recover')}
-                </button>
-              )}
-              <button type="button" className="btn ghost sm" onClick={() => void dismissBanner()}>
-                {t('btn_close')}
-              </button>
-            </div>
+                <div className="update-banner-actions">
+                  {(banner.phase === 'failed' ||
+                    banner.can_abort ||
+                    ['accepted', 'downloading', 'staging', 'installing'].includes(String(banner.phase || ''))) && (
+                    <button
+                      type="button"
+                      className="btn ghost sm"
+                      disabled={recoverBusy}
+                      onClick={() => void recoverUpdate()}
+                    >
+                      {t('update_recover')}
+                    </button>
+                  )}
+                  <button type="button" className="btn ghost sm" onClick={() => void dismissBanner()}>
+                    {t('btn_close')}
+                  </button>
+                </div>
+              </div>
+            )}
+            {error && (
+              <aside className={`error${error === t('status_refreshing') ? ' soft' : ''}`}>
+                <span>{error}</span>
+                {(updateStuck || (!online && statusHydrated === false)) &&
+                  !(
+                    banner &&
+                    (banner.phase === 'failed' ||
+                      banner.can_abort ||
+                      ['accepted', 'downloading', 'staging', 'installing'].includes(
+                        String(banner.phase || ''),
+                      ))
+                  ) && (
+                  <button
+                    type="button"
+                    className="btn ghost sm"
+                    disabled={recoverBusy}
+                    onClick={() => void recoverUpdate()}
+                  >
+                    {t('update_recover')}
+                  </button>
+                )}
+              </aside>
+            )}
           </div>
         )}
 
@@ -610,21 +638,6 @@ export default function App() {
           </div>
         </header>
 
-        {error && (
-          <aside className={`error${error === t('status_refreshing') ? ' soft' : ''}`}>
-            <span>{error}</span>
-            {(updateStuck || (!online && statusHydrated === false)) && (
-              <button
-                type="button"
-                className="btn ghost sm"
-                disabled={recoverBusy}
-                onClick={() => void recoverUpdate()}
-              >
-                {t('update_recover')}
-              </button>
-            )}
-          </aside>
-        )}
         {page === 'status' && (
           <StatusPage
             status={status}

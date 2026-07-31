@@ -451,6 +451,16 @@ h1, h2, h3, p { margin: 0; }
   height: 100%;
   max-height: 100vh;
 }
+.top-alerts {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+.top-alerts .update-banner,
+.top-alerts .error {
+  margin-bottom: 0;
+}
 .topbar {
   display: flex;
   align-items: flex-start;

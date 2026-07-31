@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.71"  # Fix stage_helper: unlock update staging ACL + writable fallback
+VERSION = "4.9.72"  # GUI: stack all alert cards at top of main (no split around identity)
 
 
 
