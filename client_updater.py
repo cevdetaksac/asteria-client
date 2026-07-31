@@ -2043,6 +2043,34 @@ def run_self_update_command(
                 grace_wait_sec=45,
             )
         if not ok:
+            # Interactive: last chance — visible NSIS / UAC (staging ACL brick, etc.)
+            if show_gui:
+                try:
+                    from client_utils import launch_installer_elevated_fallback
+                    log("[SELF-UPDATE] launch_helper_failed — trying elevated installer fallback")
+                    if launch_installer_elevated_fallback(staged):
+                        try:
+                            bus.tick(
+                                "installing",
+                                progress_pct=98,
+                                detail="elevated_installer_fallback",
+                                force=True,
+                            )
+                        except Exception:
+                            pass
+                        return _ret({
+                            "success": True,
+                            "ok": True,
+                            "started": True,
+                            "detail": "elevated_installer_fallback",
+                            "from_version": from_version,
+                            "to_version": tag,
+                            "tag": f"v{tag}" if tag else "",
+                            "phase": "installing",
+                            "restart_required": True,
+                        })
+                except Exception as e:
+                    log(f"[SELF-UPDATE] elevated fallback error: {e}")
             release_update_lock(resume_updaters=True)
             try:
                 from client_update_ui import set_update_ui_status

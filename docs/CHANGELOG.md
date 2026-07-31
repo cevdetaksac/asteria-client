@@ -1,3 +1,10 @@
+# v4.9.71
+
+## Fix `launch_helper_failed` / `stage_helper` (ACL brick)
+- Stop stripping `BUILTIN\Users` from `%ProgramData%\Asteria\update` (that locked out medium-integrity GUI / SilentUpdater)
+- Heal staging ACL to SYSTEM/Admins/Users **M**; fallback `update_work` → `%TEMP%\AsteriaUpdate`
+- Emergency helper can stage under TEMP; interactive elevated NSIS fallback if helper still cannot start
+
 # v4.9.67
 
 ## Unstick self_update at 0% (Command received, no bytes)

@@ -1633,6 +1633,13 @@ def heal_update_machinery(log_func=None) -> None:
     """Clear stale locks and re-enable update/watchdog tasks after failed updates."""
     _log = log_func or (lambda m: None)
     try:
+        # Unlock ACL-bricked update staging (stage_helper storms).
+        try:
+            if heal_update_staging_acl():
+                _log("[UPDATE] Healed update staging ACL (Users M)")
+        except Exception as e:
+            _log(f"[UPDATE] staging ACL heal skipped: {e}")
+
         # Central stuck/brick recovery (lock + banner + stand-down + motor).
         try:
             from client_update_recovery import maybe_auto_recover_stuck_update
@@ -2090,14 +2097,118 @@ def prepare_client_for_installer(*, kill_processes: bool = True) -> None:
             pass
 
 
+def _probe_dir_writable(path: str) -> bool:
+    """True if we can create and delete a tiny probe file in ``path``."""
+    try:
+        os.makedirs(path, exist_ok=True)
+        probe = os.path.join(path, f".write_probe_{os.getpid()}")
+        with open(probe, "wb") as fh:
+            fh.write(b"ok")
+        try:
+            os.remove(probe)
+        except OSError:
+            pass
+        return True
+    except OSError:
+        return False
+
+
+def heal_update_staging_acl(folder: Optional[str] = None) -> bool:
+    """Make ProgramData update staging writable again (SYSTEM/Admins/Users M).
+
+    Older builds ran icacls that stripped BUILTIN\\Users from
+    ``%ProgramData%\\Asteria\\update``. Medium-integrity GUI / SilentUpdater
+    then cannot stage ``update-and-install.ps1`` → permanent
+    ``launch_helper_failed detail=stage_helper`` while the parent Asteria
+    folder (log) remains writable.
+    """
+    if folder is None:
+        folder = os.path.join(
+            os.environ.get("ProgramData", r"C:\ProgramData"),
+            "Asteria",
+            "update",
+        )
+    try:
+        os.makedirs(folder, exist_ok=True)
+    except OSError:
+        return False
+    program_data = os.path.abspath(
+        os.environ.get("ProgramData", r"C:\ProgramData")
+    )
+    try:
+        if os.path.commonpath(
+            (program_data, os.path.abspath(folder))
+        ).lower() != program_data.lower():
+            return False
+    except (OSError, ValueError):
+        return False
+    try:
+        r = subprocess.run(
+            [
+                "icacls", folder,
+                "/inheritance:r",
+                "/grant:r", "NT AUTHORITY\\SYSTEM:(OI)(CI)F",
+                "/grant:r", "BUILTIN\\Administrators:(OI)(CI)F",
+                "/grant:r", "BUILTIN\\Users:(OI)(CI)M",
+                "/remove:g", "Everyone",
+                "/C", "/Q",
+            ],
+            capture_output=True,
+            timeout=20,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return int(getattr(r, "returncode", 1) or 1) == 0 or _probe_dir_writable(folder)
+    except Exception:
+        return _probe_dir_writable(folder)
+
+
 def _update_helper_staging_dir() -> str:
-    base = os.path.join(
+    """Writable ProgramData staging for helpers + installers.
+
+    Prefers ``Asteria\\update``; if ACL-locked, heals then falls back to
+    ``Asteria\\update_work`` so self-update is not permanently bricked.
+    """
+    primary = os.path.join(
         os.environ.get("ProgramData", r"C:\ProgramData"),
         "Asteria",
         "update",
     )
-    os.makedirs(base, exist_ok=True)
-    return base
+    if _probe_dir_writable(primary):
+        return primary
+    try:
+        heal_update_staging_acl(primary)
+    except Exception:
+        pass
+    if _probe_dir_writable(primary):
+        return primary
+    fallback = os.path.join(
+        os.environ.get("ProgramData", r"C:\ProgramData"),
+        "Asteria",
+        "update_work",
+    )
+    try:
+        os.makedirs(fallback, exist_ok=True)
+    except OSError:
+        pass
+    if _probe_dir_writable(fallback):
+        try:
+            log_path = os.path.join(
+                os.environ.get("ProgramData", r"C:\ProgramData"),
+                "Asteria", "update-install.log",
+            )
+            with open(log_path, "a", encoding="ascii", errors="replace") as fh:
+                fh.write(
+                    f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
+                    "helper_staging_fallback=update_work\n"
+                )
+        except Exception:
+            pass
+        return fallback
+    # Last resort: TEMP (survives long enough for helper launch)
+    import tempfile
+    tmp = os.path.join(tempfile.gettempdir(), "AsteriaUpdate")
+    os.makedirs(tmp, exist_ok=True)
+    return tmp
 
 
 def stage_update_install_helper(*, allow_emergency: bool = True) -> Optional[str]:
@@ -2116,41 +2227,9 @@ def stage_update_install_helper(*, allow_emergency: bool = True) -> Optional[str
         write_emergency_bootstrap,
     )
 
-    dst = os.path.join(_update_helper_staging_dir(), "update-and-install.ps1")
+    staging = _update_helper_staging_dir()
+    dst = os.path.join(staging, "update-and-install.ps1")
     src = next((p for p in resolve_helper_source_candidates() if os.path.isfile(p)), None)
-
-    def _harden_update_staging(path: str) -> None:
-        folder = os.path.dirname(path)
-        # Never rewrite ACLs on an injected/test directory. Production helpers
-        # are staged only below ProgramData.
-        program_data = os.path.abspath(
-            os.environ.get("ProgramData", r"C:\ProgramData")
-        )
-        try:
-            if os.path.commonpath(
-                (program_data, os.path.abspath(folder))
-            ).lower() != program_data.lower():
-                return
-        except (OSError, ValueError):
-            return
-        try:
-            subprocess.run(
-                [
-                    "icacls", folder,
-                    "/inheritance:r",
-                    "/grant:r", "NT AUTHORITY\\SYSTEM:(OI)(CI)F",
-                    "/grant:r", "BUILTIN\\Administrators:(OI)(CI)F",
-                    "/remove:g", "BUILTIN\\Users",
-                    "/remove:g", "Everyone",
-                    "/remove:g", "NT AUTHORITY\\Authenticated Users",
-                    "/T", "/C", "/Q",
-                ],
-                capture_output=True,
-                timeout=20,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-        except Exception:
-            pass
 
     def _try_stage_text(raw: str, tag: str) -> Optional[str]:
         ascii_body = normalize_ps1_to_ascii(raw)
@@ -2158,7 +2237,8 @@ def stage_update_install_helper(*, allow_emergency: bool = True) -> Optional[str
             return None
         ok, detail = validate_powershell_parse(dst)
         if ok:
-            _harden_update_staging(dst)
+            # Keep staging writable — do NOT strip BUILTIN\\Users (that brick
+            # medium-integrity SilentUpdater / GUI self_update).
             return dst
         try:
             log_path = os.path.join(
@@ -2181,8 +2261,19 @@ def stage_update_install_helper(*, allow_emergency: bool = True) -> Optional[str
             staged = _try_stage_text(raw, tag=os.path.basename(src))
             if staged:
                 return staged
-        except OSError:
-            pass
+        except OSError as e:
+            try:
+                log_path = os.path.join(
+                    os.environ.get("ProgramData", r"C:\ProgramData"),
+                    "Asteria", "update-install.log",
+                )
+                with open(log_path, "a", encoding="ascii", errors="replace") as fh:
+                    fh.write(
+                        f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
+                        f"helper_stage_read_fail err={type(e).__name__}:{e}\n"
+                    )
+            except Exception:
+                pass
 
     if allow_emergency:
         emergency = write_emergency_bootstrap(dst)
@@ -2200,6 +2291,30 @@ def stage_update_install_helper(*, allow_emergency: bool = True) -> Optional[str
             except Exception:
                 pass
             return emergency
+        # Absolute last resort: TEMP emergency (ACL-locked ProgramData)
+        try:
+            import tempfile
+            tmp_dst = os.path.join(
+                tempfile.gettempdir(), "AsteriaUpdate", "update-and-install.ps1"
+            )
+            os.makedirs(os.path.dirname(tmp_dst), exist_ok=True)
+            emergency = write_emergency_bootstrap(tmp_dst)
+            if emergency:
+                try:
+                    log_path = os.path.join(
+                        os.environ.get("ProgramData", r"C:\ProgramData"),
+                        "Asteria", "update-install.log",
+                    )
+                    with open(log_path, "a", encoding="ascii", errors="replace") as fh:
+                        fh.write(
+                            f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
+                            "helper_stage_emergency_temp=1\n"
+                        )
+                except Exception:
+                    pass
+                return emergency
+        except Exception:
+            pass
     return None
 
 

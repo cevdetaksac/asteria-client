@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.70"  # Fleet console lab: Winlogon C-RD-CON + dashboard C-RD-VIEW 1.4.47
+VERSION = "4.9.71"  # Fix stage_helper: unlock update staging ACL + writable fallback
 
 
 
