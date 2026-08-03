@@ -2121,6 +2121,9 @@ def heal_update_staging_acl(folder: Optional[str] = None) -> bool:
     then cannot stage ``update-and-install.ps1`` → permanent
     ``launch_helper_failed detail=stage_helper`` while the parent Asteria
     folder (log) remains writable.
+
+    Also resets ACLs on *existing* children: a SYSTEM-only helper file can
+    remain unreadable/unwritable after the folder itself was healed.
     """
     if folder is None:
         folder = os.path.join(
@@ -2142,8 +2145,9 @@ def heal_update_staging_acl(folder: Optional[str] = None) -> bool:
             return False
     except (OSError, ValueError):
         return False
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
-        r = subprocess.run(
+        r1 = subprocess.run(
             [
                 "icacls", folder,
                 "/inheritance:r",
@@ -2155,31 +2159,100 @@ def heal_update_staging_acl(folder: Optional[str] = None) -> bool:
             ],
             capture_output=True,
             timeout=20,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            creationflags=flags,
         )
-        return int(getattr(r, "returncode", 1) or 1) == 0 or _probe_dir_writable(folder)
+        # Propagate to existing files (folder-only heal left SYSTEM-only helpers).
+        subprocess.run(
+            [
+                "icacls", os.path.join(folder, "*"),
+                "/inheritance:e",
+                "/grant:r", "NT AUTHORITY\\SYSTEM:F",
+                "/grant:r", "BUILTIN\\Administrators:F",
+                "/grant:r", "BUILTIN\\Users:M",
+                "/C", "/Q",
+            ],
+            capture_output=True,
+            timeout=30,
+            creationflags=flags,
+        )
+        # Drop a known-bad helper so the next stage can recreate it.
+        for name in ("update-and-install.ps1",):
+            victim = os.path.join(folder, name)
+            if not os.path.isfile(victim):
+                continue
+            try:
+                os.chmod(victim, 0o666)
+            except OSError:
+                pass
+            try:
+                os.remove(victim)
+            except OSError:
+                pass
+        return int(getattr(r1, "returncode", 1) or 1) == 0 or _probe_dir_writable(folder)
     except Exception:
         return _probe_dir_writable(folder)
+
+
+def _can_replace_file(path: str) -> bool:
+    """True if missing or openable for write (catches SYSTEM-only helper files)."""
+    if not os.path.isfile(path):
+        return True
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND)
+        os.close(fd)
+        return True
+    except OSError:
+        return False
+
+
+def _probe_helper_stageable(folder: str) -> bool:
+    """True if we can stage ``update-and-install.ps1`` in ``folder``.
+
+    Folder writability alone is not enough: a leftover helper with a SYSTEM-only
+    DACL blocks overwrite while ``.write_probe_*`` still succeeds.
+    """
+    if not _probe_dir_writable(folder):
+        return False
+    real = os.path.join(folder, "update-and-install.ps1")
+    if not _can_replace_file(real):
+        return False
+    probe = os.path.join(folder, f"update-and-install.probe-{os.getpid()}.ps1")
+    try:
+        from client_update_hardening import write_ascii_ps1
+        if not write_ascii_ps1(probe, "Write-Host probe\n"):
+            return False
+        try:
+            os.remove(probe)
+        except OSError:
+            pass
+        return True
+    except Exception:
+        try:
+            os.remove(probe)
+        except OSError:
+            pass
+        return False
 
 
 def _update_helper_staging_dir() -> str:
     """Writable ProgramData staging for helpers + installers.
 
-    Prefers ``Asteria\\update``; if ACL-locked, heals then falls back to
-    ``Asteria\\update_work`` so self-update is not permanently bricked.
+    Prefers ``Asteria\\update``; if ACL-locked (folder or leftover helper file),
+    heals then falls back to ``Asteria\\update_work`` so self-update is not
+    permanently bricked.
     """
     primary = os.path.join(
         os.environ.get("ProgramData", r"C:\ProgramData"),
         "Asteria",
         "update",
     )
-    if _probe_dir_writable(primary):
+    if _probe_helper_stageable(primary):
         return primary
     try:
         heal_update_staging_acl(primary)
     except Exception:
         pass
-    if _probe_dir_writable(primary):
+    if _probe_helper_stageable(primary):
         return primary
     fallback = os.path.join(
         os.environ.get("ProgramData", r"C:\ProgramData"),
@@ -2190,7 +2263,7 @@ def _update_helper_staging_dir() -> str:
         os.makedirs(fallback, exist_ok=True)
     except OSError:
         pass
-    if _probe_dir_writable(fallback):
+    if _probe_helper_stageable(fallback) or _probe_dir_writable(fallback):
         try:
             log_path = os.path.join(
                 os.environ.get("ProgramData", r"C:\ProgramData"),

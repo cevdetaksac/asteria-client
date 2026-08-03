@@ -1,3 +1,10 @@
+# v4.9.73
+
+## Update path harden + installer alias gone
+- Heal update-staging **file** ACLs (not only the folder); rewrite helper after Permission denied
+- Probe helper-named `.ps1` writability before trusting `Asteria\update`
+- Publish/download only `asteria-client-installer.exe` (no `cloud-client-installer` alias)
+
 # v4.9.72
 
 ## GUI: all alert cards at the top

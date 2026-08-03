@@ -169,15 +169,7 @@ class TestWriteAndParse(unittest.TestCase):
         """ACL-locked Asteria\\update must not brick helper staging."""
         import client_utils as cu
 
-        locked = os.path.join(self._tdir, "update")
-        os.makedirs(locked, exist_ok=True)
-        # Simulate non-writable primary by making it a file (makedirs ok, write fails)
-        # Better: patch probe to fail on primary then succeed on fallback.
-        calls = {"n": 0}
-
-        def _probe(path: str) -> bool:
-            calls["n"] += 1
-            # First two probes = primary (before/after heal); then fallback
+        def _probe_helper(path: str) -> bool:
             if "update_work" in path.replace("\\", "/"):
                 os.makedirs(path, exist_ok=True)
                 return True
@@ -185,7 +177,7 @@ class TestWriteAndParse(unittest.TestCase):
                 return False
             return True
 
-        with mock.patch.object(cu, "_probe_dir_writable", side_effect=_probe), \
+        with mock.patch.object(cu, "_probe_helper_stageable", side_effect=_probe_helper), \
              mock.patch.object(cu, "heal_update_staging_acl", return_value=False), \
              mock.patch.dict(os.environ, {"ProgramData": self._tdir}, clear=False):
             staging = cu._update_helper_staging_dir()
@@ -195,7 +187,8 @@ class TestWriteAndParse(unittest.TestCase):
     def test_stage_helper_uses_temp_when_all_programdata_locked(self):
         import client_utils as cu
 
-        with mock.patch.object(cu, "_probe_dir_writable", return_value=False), \
+        with mock.patch.object(cu, "_probe_helper_stageable", return_value=False), \
+             mock.patch.object(cu, "_probe_dir_writable", return_value=False), \
              mock.patch.object(cu, "heal_update_staging_acl", return_value=False), \
              mock.patch.dict(os.environ, {"ProgramData": self._tdir}, clear=False):
             # Force stage via emergency into whatever staging dir returns (TEMP)
@@ -203,6 +196,27 @@ class TestWriteAndParse(unittest.TestCase):
         self.assertIsNotNone(path)
         self.assertTrue(os.path.isfile(path))
         self.assertTrue(assert_file_is_ascii(path))
+
+    def test_write_ascii_retries_after_locked_target(self):
+        path = os.path.join(self._tdir, "locked.ps1")
+        with open(path, "wb") as fh:
+            fh.write(b"old")
+        # First open succeeds normally; simulate PermissionError then success via remove
+        real_open = open
+        calls = {"n": 0}
+
+        def _open(name, mode="r", *a, **kw):
+            if os.path.abspath(name) == os.path.abspath(path) and "b" in mode and "w" in mode:
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise PermissionError(13, "denied", name)
+            return real_open(name, mode, *a, **kw)
+
+        with mock.patch("builtins.open", side_effect=_open):
+            self.assertTrue(write_ascii_ps1(path, "Write-Host ok"))
+        self.assertTrue(assert_file_is_ascii(path))
+        with open(path, "rb") as fh:
+            self.assertIn(b"Write-Host ok", fh.read())
 
 
 class TestSelfUpdateHelperRetry(unittest.TestCase):

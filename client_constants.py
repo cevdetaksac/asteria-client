@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.72"  # GUI: stack all alert cards at top of main (no split around identity)
+VERSION = "4.9.73"  # Update hygiene: ACL file heal + no cloud-client alias; fleet update verify
 
 
 

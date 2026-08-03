@@ -167,15 +167,56 @@ def assert_file_is_ascii(path: str) -> bool:
 
 
 def write_ascii_ps1(path: str, content: str) -> bool:
-    """Write CRLF ASCII script (PS 5.1 / Server 2012 friendliest)."""
+    """Write CRLF ASCII script (PS 5.1 / Server 2012 friendliest).
+
+    Handles ACL-bricked leftovers: a prior SYSTEM-only ``update-and-install.ps1``
+    can block overwrite even when the parent folder is writable. Try remove /
+    alternate inode before giving up.
+    """
     try:
         text = normalize_ps1_to_ascii(content)
         # Prefer CRLF for Windows PowerShell on older Server builds
         text = text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\r\n")
+        payload = text.encode("ascii", errors="replace")
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        with open(path, "wb") as fh:
-            fh.write(text.encode("ascii", errors="replace"))
-        return os.path.isfile(path) and assert_file_is_ascii(path)
+
+        def _write(target: str) -> bool:
+            with open(target, "wb") as fh:
+                fh.write(payload)
+            return os.path.isfile(target) and assert_file_is_ascii(target)
+
+        try:
+            return _write(path)
+        except OSError:
+            # Drop ACL-locked / read-denied prior helper, then rewrite.
+            try:
+                os.chmod(path, 0o666)
+            except OSError:
+                pass
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            try:
+                return _write(path)
+            except OSError:
+                alt = f"{path}.n{os.getpid()}"
+                try:
+                    if not _write(alt):
+                        return False
+                    try:
+                        os.replace(alt, path)
+                        return os.path.isfile(path) and assert_file_is_ascii(path)
+                    except OSError:
+                        # Keep alternate path only if caller can discover it —
+                        # stage_update_install_helper prefers TEMP fallback instead.
+                        try:
+                            os.remove(alt)
+                        except OSError:
+                            pass
+                        return False
+                except OSError:
+                    return False
     except OSError:
         return False
 
