@@ -3693,31 +3693,46 @@ class RemoteCommandExecutor:
 
     def _cmd_tools_repair_catalog(self, params: dict) -> dict:
         try:
-            from client_windows_tools import tools_catalog
+            from client_windows_tools import remote_tools_surface
 
-            cat = tools_catalog()
-            return {"success": bool(cat.get("ok", True)), "data": cat}
+            data = remote_tools_surface(include_open_tools=True)
+            return {"success": True, "data": data}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
     def _cmd_tools_repair_diagnose(self, params: dict) -> dict:
         try:
-            from client_windows_tools import diagnose
+            from client_windows_tools import remote_tools_surface
 
-            diag = diagnose()
-            return {"success": bool(diag.get("ok", True)), "data": diag}
+            # Same flat shape dashboard expects (findings + repairs + issues)
+            data = remote_tools_surface(include_open_tools=False)
+            return {"success": True, "data": data}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
     def _cmd_tools_repair(self, params: dict) -> dict:
         try:
-            from client_windows_tools import run_repair, _DESTRUCTIVE
+            from client_windows_tools import (
+                _DESTRUCTIVE,
+                _REPAIR_ACTIONS,
+                dry_run_plan,
+                run_repair,
+            )
 
             action = str((params or {}).get("action") or "").strip().lower()
             if not action:
                 return {"success": False, "error": "missing_action"}
+            # Allow diagnose via tools_repair; reject status / unknown
+            if action == "status" or action not in _REPAIR_ACTIONS:
+                return {
+                    "success": False,
+                    "error": "unknown_repair",
+                    "data": {"action": action},
+                }
+
             dry_run = bool((params or {}).get("dry_run", False))
             confirm = bool((params or {}).get("confirm", False))
+
             if dry_run:
                 return {
                     "success": True,
@@ -3725,34 +3740,53 @@ class RemoteCommandExecutor:
                         "dry_run": True,
                         "action": action,
                         "destructive": action in _DESTRUCTIVE,
-                        "plan": [
-                            {
-                                "step": "run_repair",
-                                "action": action,
-                                "note": "no_side_effects_preview",
-                            }
-                        ],
+                        "plan": dry_run_plan(action),
                     },
                 }
+
             if action in _DESTRUCTIVE and not confirm:
                 return {
                     "success": False,
                     "error": "confirm_required",
+                    "data": {"action": action, "destructive": True},
+                }
+
+            out = run_repair(action, confirm=confirm)
+            err = str(out.get("error") or "")
+            if err == "unknown_repair":
+                return {
+                    "success": False,
+                    "error": "unknown_repair",
                     "data": {"action": action},
                 }
-            out = run_repair(action, confirm=confirm)
+
             ok = bool(out.get("ok"))
+            data = dict(out)
+            data["action"] = action
+            data["dry_run"] = False
+            # Normalize common fields dashboard may read
+            if "exit_code" not in data and isinstance(out.get("winsock"), dict):
+                data["exit_code"] = (out.get("winsock") or {}).get("exit_code")
+            if "output" not in data:
+                bits = []
+                for key in ("stdout", "stderr", "detail"):
+                    val = data.get(key)
+                    if val:
+                        bits.append(str(val))
+                if bits:
+                    data["output"] = "\n".join(bits)[:4000]
+
             self._recovery_audit(
                 "tools_repair",
-                f"action={action} ok={ok} detail={out.get('detail') or out.get('error') or ''}",
+                f"action={action} ok={ok} detail={data.get('detail') or err or ''}",
             )
             return {
                 "success": ok,
                 "message": str(
-                    out.get("detail") or ("ok" if ok else out.get("error") or "failed")
+                    data.get("detail") or ("ok" if ok else err or "failed")
                 ),
-                "data": out,
-                "error": None if ok else (out.get("error") or "tools_repair_failed"),
+                "data": data,
+                "error": None if ok else (err or "tools_repair_failed"),
             }
         except Exception as e:
             return {"success": False, "error": str(e)}

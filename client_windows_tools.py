@@ -979,35 +979,49 @@ def run_repair(action: str, *, confirm: bool = False) -> Dict[str, Any]:
 
 
 def tools_catalog() -> Dict[str, Any]:
+    """Full catalog for GUI + remote (includes nested diagnose)."""
+    return remote_tools_surface(include_open_tools=True)
+
+
+def remote_tools_surface(*, include_open_tools: bool = True) -> Dict[str, Any]:
+    """Flat payload dashboard / Control WS catalog+diagnose expect (contract 1.4.49)."""
     diag = diagnose()
-    return {
+    repairs = [
+        {"id": "share_network_fix", "destructive": False, "group": "daily"},
+        {"id": "printer_fix", "destructive": False, "group": "daily"},
+        {"id": "audio_fix", "destructive": False, "group": "daily"},
+        {"id": "dns_flush", "destructive": False, "group": "daily"},
+        {"id": "time_sync", "destructive": False, "group": "daily"},
+        {"id": "auto_fix_findings", "destructive": False, "group": "critical"},
+        {"id": "fix_taskmgr", "destructive": False, "group": "critical"},
+        {"id": "restart_taskmgr", "destructive": False, "group": "critical"},
+        {"id": "restart_explorer", "destructive": False, "group": "critical"},
+        {"id": "fix_shell", "destructive": False, "group": "critical"},
+        {"id": "fix_regedit", "destructive": False, "group": "critical"},
+        {"id": "fix_cmd", "destructive": False, "group": "critical"},
+        {"id": "policy_restore", "destructive": False, "group": "critical"},
+        {"id": "restart_critical_services", "destructive": False, "group": "services"},
+        {"id": "webview2", "destructive": False, "group": "runtime"},
+        {"id": "icon_cache", "destructive": False, "group": "shell"},
+        {"id": "clear_temp", "destructive": False, "group": "shell"},
+        {"id": "sfc_scan", "destructive": False, "group": "deep"},
+        {"id": "dism_health", "destructive": False, "group": "deep"},
+        {"id": "full_safe", "destructive": False, "group": "deep"},
+        {"id": "winsock_reset", "destructive": True, "group": "danger"},
+        {"id": "firewall_reset", "destructive": True, "group": "danger"},
+        {"id": "wu_reset", "destructive": True, "group": "danger"},
+    ]
+    out: Dict[str, Any] = {
         "ok": True,
-        "open_tools": list_open_tools(),
-        "repairs": [
-            {"id": "share_network_fix", "destructive": False, "group": "daily"},
-            {"id": "printer_fix", "destructive": False, "group": "daily"},
-            {"id": "audio_fix", "destructive": False, "group": "daily"},
-            {"id": "dns_flush", "destructive": False, "group": "daily"},
-            {"id": "time_sync", "destructive": False, "group": "daily"},
-            {"id": "auto_fix_findings", "destructive": False, "group": "critical"},
-            {"id": "fix_taskmgr", "destructive": False, "group": "critical"},
-            {"id": "restart_taskmgr", "destructive": False, "group": "critical"},
-            {"id": "restart_explorer", "destructive": False, "group": "critical"},
-            {"id": "fix_shell", "destructive": False, "group": "critical"},
-            {"id": "fix_regedit", "destructive": False, "group": "critical"},
-            {"id": "fix_cmd", "destructive": False, "group": "critical"},
-            {"id": "policy_restore", "destructive": False, "group": "critical"},
-            {"id": "restart_critical_services", "destructive": False, "group": "services"},
-            {"id": "webview2", "destructive": False, "group": "runtime"},
-            {"id": "icon_cache", "destructive": False, "group": "shell"},
-            {"id": "clear_temp", "destructive": False, "group": "shell"},
-            {"id": "sfc_scan", "destructive": False, "group": "deep"},
-            {"id": "dism_health", "destructive": False, "group": "deep"},
-            {"id": "full_safe", "destructive": False, "group": "deep"},
-            {"id": "winsock_reset", "destructive": True, "group": "danger"},
-            {"id": "firewall_reset", "destructive": True, "group": "danger"},
-            {"id": "wu_reset", "destructive": True, "group": "danger"},
-        ],
+        "admin": is_admin(),
+        "issues": int(diag.get("issues") or 0),
+        "critical": int(diag.get("critical") or 0),
+        "high": int(diag.get("high") or 0),
+        "findings": list(diag.get("findings") or []),
+        "repairs": repairs,
+        "webview2": webview2_status(),
+        "computer": os.environ.get("COMPUTERNAME", ""),
+        # Nested copies for GUI twin / older consumers
         "status": {
             "ok": True,
             "admin": is_admin(),
@@ -1016,3 +1030,50 @@ def tools_catalog() -> Dict[str, Any]:
         },
         "diagnose": diag,
     }
+    if include_open_tools:
+        out["open_tools"] = list_open_tools()
+    return out
+
+
+def dry_run_plan(action: str) -> List[Dict[str, Any]]:
+    """Bounded plan preview — no mutation (contract 1.4.49)."""
+    act = str(action or "").strip().lower()
+    plans: Dict[str, List[Dict[str, Any]]] = {
+        "dns_flush": [{"step": "ipconfig", "args": ["/flushdns"]}],
+        "time_sync": [{"step": "w32tm", "args": ["/resync", "/force"]}],
+        "winsock_reset": [
+            {"step": "netsh", "args": ["winsock", "reset"]},
+            {"step": "netsh", "args": ["int", "ip", "reset"]},
+        ],
+        "firewall_reset": [{"step": "netsh", "args": ["advfirewall", "reset"]}],
+        "wu_reset": [
+            {"step": "sc", "args": ["stop", "bits|wuauserv|cryptsvc|msiserver"]},
+            {"step": "rename", "args": ["SoftwareDistribution", "catroot2"]},
+            {"step": "sc", "args": ["start", "bits|wuauserv|cryptsvc|msiserver"]},
+        ],
+        "sfc_scan": [{"step": "sfc", "args": ["/scannow"]}],
+        "dism_health": [
+            {"step": "DISM", "args": ["/Online", "/Cleanup-Image", "/RestoreHealth"]}
+        ],
+        "share_network_fix": [
+            {"step": "reg", "args": ["AllowInsecureGuestAuth=1"]},
+            {"step": "reg", "args": ["RpcAuthnLevelPrivacyEnabled=0"]},
+            {"step": "service_start", "args": ["fdPHost", "FDResPub", "SSDPSRV", "upnphost"]},
+            {"step": "firewall_group", "args": ["File and Printer Sharing", "Network Discovery"]},
+        ],
+        "printer_fix": [
+            {"step": "reg", "args": ["RpcAuthnLevelPrivacyEnabled=0"]},
+            {"step": "spooler_restart", "args": ["clear_queue"]},
+        ],
+        "audio_fix": [{"step": "service_restart", "args": ["Audiosrv", "AudioEndpointBuilder"]}],
+        "full_safe": [
+            {"step": "auto_fix_findings"},
+            {"step": "webview2"},
+            {"step": "restart_critical_services"},
+            {"step": "dism_health"},
+            {"step": "sfc_scan"},
+        ],
+    }
+    if act in plans:
+        return plans[act]
+    return [{"step": "run_repair", "action": act, "note": "no_side_effects_preview"}]

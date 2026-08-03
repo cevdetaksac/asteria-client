@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.79"  # Tools repair+remote contract twin, settings tabs, threat table merge, admin tools
+VERSION = "4.9.80"  # tools_repair cloud brief parity (flat catalog/diagnose + dry_run plans)
 
 
 
