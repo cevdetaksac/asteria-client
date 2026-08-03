@@ -288,16 +288,28 @@ def delete_reg_value(hive: str, key: str, name: str) -> bool:
     return ok
 
 
+def _decode_proc_bytes(raw: bytes | bytearray | None) -> str:
+    if not raw:
+        return ""
+    data = bytes(raw)
+    for enc in ("utf-8", "cp1254", "cp857", "cp850", "latin-1"):
+        try:
+            return data.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
 def _query_service(name: str) -> dict:
     """Return {state, start_type} best-effort via sc.exe."""
     out = {"name": name, "state": "UNKNOWN", "start_type": "unknown"}
     try:
         r = subprocess.run(
             ["sc", "query", name],
-            capture_output=True, text=True, timeout=8,
+            capture_output=True, timeout=8,
             creationflags=_NO_WINDOW,
         )
-        text = (r.stdout or "") + (r.stderr or "")
+        text = _decode_proc_bytes(r.stdout) + _decode_proc_bytes(r.stderr)
         if "RUNNING" in text:
             out["state"] = "RUNNING"
         elif "STOPPED" in text:
@@ -309,10 +321,10 @@ def _query_service(name: str) -> dict:
     try:
         r = subprocess.run(
             ["sc", "qc", name],
-            capture_output=True, text=True, timeout=8,
+            capture_output=True, timeout=8,
             creationflags=_NO_WINDOW,
         )
-        text = (r.stdout or "").upper()
+        text = _decode_proc_bytes(r.stdout).upper()
         if "AUTO_START" in text:
             out["start_type"] = "auto"
         elif "DEMAND_START" in text:

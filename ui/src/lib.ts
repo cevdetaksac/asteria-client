@@ -1,4 +1,4 @@
-export type PageId = 'status' | 'threat' | 'iplist' | 'services' | 'layers' | 'settings'
+export type PageId = 'status' | 'threat' | 'iplist' | 'services' | 'layers' | 'tools' | 'settings'
 
 export function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : {}

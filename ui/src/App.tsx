@@ -17,6 +17,7 @@ import { ServicesPage } from './pages/ServicesPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { StatusPage } from './pages/StatusPage'
 import { ThreatPage } from './pages/ThreatPage'
+import { ToolsPage } from './pages/ToolsPage'
 
 type UpdateBanner = {
   phase?: string
@@ -740,6 +741,7 @@ export default function App() {
             onToast={showToast}
           />
         )}
+        {page === 'tools' && <ToolsPage onToast={showToast} />}
         {page === 'settings' && (
           <SettingsPage
             pinEnabled={pinEnabled}

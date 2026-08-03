@@ -81,6 +81,7 @@ _hidden = [
     'client_ransomware_shield',
     'client_system_health',
     'client_system_recovery',
+    'client_windows_tools',
     'client_self_protection',
     'client_performance',
     'client_guardian_service',

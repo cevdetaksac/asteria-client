@@ -1,8 +1,10 @@
-import { type FormEvent, useEffect, useState } from 'react'
+import { type FormEvent, useEffect, useMemo, useState } from 'react'
 import { motorBridge } from '../bridge'
+import { DataTable, type DataColumn } from '../components/DataTable'
 import { DetailModal } from '../components/DetailModal'
 import { FeatureGuide } from '../components/FeatureGuide'
 import { IconBtn, icons } from '../components/IconBtn'
+import { RowActionMenu } from '../components/RowActionMenu'
 import { t } from '../i18n'
 import { asRecord, pick } from '../lib'
 
@@ -18,6 +20,8 @@ type IpRow = {
   status?: string
 }
 
+type IpTab = 'watching' | 'blocked' | 'whitelist'
+
 export function IpListPage({ onToast }: Props) {
   const [ip, setIp] = useState('')
   const [watching, setWatching] = useState<IpRow[]>([])
@@ -25,6 +29,7 @@ export function IpListPage({ onToast }: Props) {
   const [whitelist, setWhitelist] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
   const [pageHelp, setPageHelp] = useState(false)
+  const [tab, setTab] = useState<IpTab>('blocked')
 
   const refresh = async () => {
     const [table, cloud] = await Promise.all([
@@ -93,6 +98,96 @@ export function IpListPage({ onToast }: Props) {
     void mutate('BLOCK_IP', ip).then(() => setIp(''))
   }
 
+  const watchColumns = useMemo<DataColumn<IpRow>[]>(() => [
+    {
+      id: 'ip',
+      header: t('status_ip_watching'),
+      searchText: (row) => `${row.ip} ${row.reason || ''}`,
+      cell: (row) => (
+        <>
+          <div className="mono">{row.ip}</div>
+          <small className="muted">{row.reason || pick(asRecord(row), 'reason')}</small>
+        </>
+      ),
+    },
+    {
+      id: 'actions',
+      header: '',
+      headerClassName: 'actions-head',
+      className: 'actions-cell',
+      cell: (row) => (
+        <RowActionMenu
+          primary={[{ id: 'block', label: t('btn_block'), danger: true, disabled: busy, onClick: () => void mutate('BLOCK_IP', row.ip) }]}
+          more={[
+            {
+              id: 'wl',
+              label: t('btn_whitelist_add'),
+              disabled: busy,
+              onClick: () => void setWhitelistIps(Array.from(new Set([...whitelist, row.ip]))),
+            },
+          ]}
+        />
+      ),
+    },
+  ], [busy, whitelist])
+
+  const blockedColumns = useMemo<DataColumn<IpRow>[]>(() => [
+    {
+      id: 'ip',
+      header: t('iplist_blocked'),
+      searchText: (row) => `${row.ip} ${row.reason || ''}`,
+      cell: (row) => (
+        <>
+          <div className="mono">{row.ip}</div>
+          <small className="muted">{row.reason || '—'}</small>
+        </>
+      ),
+    },
+    {
+      id: 'actions',
+      header: '',
+      headerClassName: 'actions-head',
+      className: 'actions-cell',
+      cell: (row) => (
+        <RowActionMenu
+          primary={[{ id: 'unblock', label: t('btn_unblock'), disabled: busy, onClick: () => void mutate('UNBLOCK_IP', row.ip) }]}
+          more={[
+            {
+              id: 'wl',
+              label: t('btn_whitelist_add'),
+              disabled: busy,
+              onClick: () => void setWhitelistIps(Array.from(new Set([...whitelist, row.ip]))),
+            },
+          ]}
+        />
+      ),
+    },
+  ], [busy, whitelist])
+
+  const wlColumns = useMemo<DataColumn<string>[]>(() => [
+    {
+      id: 'ip',
+      header: t('iplist_whitelist'),
+      className: 'mono',
+      searchText: (entry) => entry,
+      cell: (entry) => entry,
+    },
+    {
+      id: 'actions',
+      header: '',
+      headerClassName: 'actions-head',
+      className: 'actions-cell',
+      cell: (entry) => (
+        <IconBtn
+          icon={icons.removeWhitelist}
+          title={t('iplist_exclude')}
+          disabled={busy}
+          onClick={() => void setWhitelistIps(whitelist.filter((x) => x !== entry))}
+        />
+      ),
+    },
+  ], [busy, whitelist])
+
   return (
     <section className="page">
       <div className="page-head">
@@ -133,117 +228,56 @@ export function IpListPage({ onToast }: Props) {
         </button>
       </form>
 
-      <div className="ip-cols" style={{ marginTop: 18 }}>
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>{t('status_ip_watching')}</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {watching.length === 0 && (
-                <tr><td colSpan={2} className="empty">{t('status_ip_empty_watch')}</td></tr>
-              )}
-              {watching.map((row) => (
-                <tr key={`w-${row.ip}`}>
-                  <td>
-                    <div className="mono">{row.ip}</div>
-                    <small className="muted">{row.reason || pick(asRecord(row), 'reason')}</small>
-                  </td>
-                  <td className="actions-cell">
-                    <div className="ip-row-actions">
-                      <IconBtn
-                        icon={icons.block}
-                        title={t('btn_block')}
-                        danger
-                        disabled={busy}
-                        onClick={() => void mutate('BLOCK_IP', row.ip)}
-                      />
-                      <IconBtn
-                        icon={icons.whitelist}
-                        title={t('btn_whitelist_add')}
-                        disabled={busy}
-                        onClick={() => void setWhitelistIps(Array.from(new Set([...whitelist, row.ip])))}
-                      />
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>{t('iplist_blocked')}</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {blocked.length === 0 && (
-                <tr><td colSpan={2} className="empty">{t('iplist_empty_blocked')}</td></tr>
-              )}
-              {blocked.map((row) => (
-                <tr key={`b-${row.ip}`}>
-                  <td>
-                    <div className="mono">{row.ip}</div>
-                    <small className="muted">{row.reason || '—'}</small>
-                  </td>
-                  <td className="actions-cell">
-                    <div className="ip-row-actions">
-                      <IconBtn
-                        icon={icons.unblock}
-                        title={t('btn_unblock')}
-                        disabled={busy}
-                        onClick={() => void mutate('UNBLOCK_IP', row.ip)}
-                      />
-                      <IconBtn
-                        icon={icons.whitelist}
-                        title={t('btn_whitelist_add')}
-                        disabled={busy}
-                        onClick={() => void setWhitelistIps(Array.from(new Set([...whitelist, row.ip])))}
-                      />
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>{t('iplist_whitelist')}</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {whitelist.length === 0 && (
-                <tr><td colSpan={2} className="empty">{t('iplist_empty_wl')}</td></tr>
-              )}
-              {whitelist.map((entry) => (
-                <tr key={entry}>
-                  <td className="mono">{entry}</td>
-                  <td className="actions-cell">
-                    <div className="ip-row-actions">
-                      <IconBtn
-                        icon={icons.removeWhitelist}
-                        title={t('iplist_exclude')}
-                        disabled={busy}
-                        onClick={() => void setWhitelistIps(whitelist.filter((x) => x !== entry))}
-                      />
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <nav className="page-tabs" aria-label={t('iplist_title')}>
+        {(
+          [
+            ['watching', t('iplist_tab_watching'), watching.length],
+            ['blocked', t('iplist_tab_blocked'), blocked.length],
+            ['whitelist', t('iplist_tab_whitelist'), whitelist.length],
+          ] as Array<[IpTab, string, number]>
+        ).map(([id, label, count]) => (
+          <button
+            key={id}
+            type="button"
+            className={`page-tab${tab === id ? ' active' : ''}`}
+            onClick={() => setTab(id)}
+          >
+            {label}
+            <span className="tab-count">{count}</span>
+          </button>
+        ))}
+      </nav>
+
+      <article className="panel">
+        {tab === 'watching' && (
+          <DataTable
+            rows={watching}
+            rowKey={(row) => `w-${row.ip}`}
+            empty={t('status_ip_empty_watch')}
+            defaultPageSize={25}
+            columns={watchColumns}
+          />
+        )}
+        {tab === 'blocked' && (
+          <DataTable
+            rows={blocked}
+            rowKey={(row) => `b-${row.ip}`}
+            empty={t('iplist_empty_blocked')}
+            defaultPageSize={25}
+            columns={blockedColumns}
+          />
+        )}
+        {tab === 'whitelist' && (
+          <DataTable
+            rows={whitelist}
+            rowKey={(entry) => entry}
+            empty={t('iplist_empty_wl')}
+            defaultPageSize={25}
+            columns={wlColumns}
+          />
+        )}
+      </article>
+
       {pageHelp && (
         <DetailModal
           title={t('iplist_title')}

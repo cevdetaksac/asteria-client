@@ -169,6 +169,80 @@ _SHELL_ALLOWLIST = frozenset(
     }
 )
 
+_TOOLS_OPEN_ALLOWLIST = frozenset(
+    {
+        "eventvwr",
+        "services",
+        "taskmgr",
+        "regedit",
+        "firewall",
+        "wf",
+        "msconfig",
+        "compmgmt",
+        "devmgmt",
+        "diskmgmt",
+        "taskschd",
+        "lusrmgr",
+        "gpedit",
+        "secpol",
+        "comexp",
+        "printmgmt",
+        "hyperv",
+        "tsadmin",
+        "server_manager",
+        "wbadmin",
+        "iscsi",
+        "odbc64",
+        "odbc32",
+        "msinfo",
+        "dfrgui",
+        "mdsched",
+        "recovery_drive",
+        "ncpa",
+        "appwiz",
+        "sysdm",
+        "optionalfeatures",
+        "winver",
+        "control",
+        "powershell",
+        "cmd",
+        "resmon",
+        "perfmon",
+        "cleanmgr",
+        "dxdiag",
+    }
+)
+
+_TOOLS_REPAIR_ALLOWLIST = frozenset(
+    {
+        "status",
+        "diagnose",
+        "dns_flush",
+        "webview2",
+        "winsock_reset",
+        "firewall_reset",
+        "wu_reset",
+        "sfc_scan",
+        "dism_health",
+        "policy_restore",
+        "fix_taskmgr",
+        "fix_regedit",
+        "fix_cmd",
+        "fix_shell",
+        "restart_explorer",
+        "restart_taskmgr",
+        "restart_critical_services",
+        "icon_cache",
+        "clear_temp",
+        "time_sync",
+        "auto_fix_findings",
+        "full_safe",
+        "share_network_fix",
+        "printer_fix",
+        "audio_fix",
+    }
+)
+
 # Deep-link targets — contract ≥1.4.35 cloud/dashboard-deep-links.md
 # Values: (path, fragment|None, attach_agent_token)
 # Browser only: https://asteria.run{path}?token={TOKEN}#{hash}
@@ -1192,6 +1266,40 @@ class MotorBridge:
                 return {"ok": False, "error": "harden_unknown_target"}
             return _json_safe(self._harden_fix(tgt))
         return {"ok": False, "error": "harden_unknown_action"}
+
+    def tools(self, action: str = "catalog", target: str = "", confirm: bool = False) -> Dict[str, Any]:
+        """Windows admin shortcuts + health repair cards (damaged-host recovery)."""
+        if not self._authorized():
+            return self._deny_locked()
+        act = str(action or "catalog").strip().lower()
+        try:
+            from client_windows_tools import (
+                list_open_tools,
+                open_tool,
+                run_repair,
+                tools_catalog,
+            )
+
+            if act in ("catalog", "status"):
+                return _json_safe(tools_catalog() if act == "catalog" else run_repair("status"))
+            if act == "diagnose":
+                return _json_safe(run_repair("diagnose"))
+            if act == "open":
+                tid = str(target or "").strip().lower()
+                if tid not in _TOOLS_OPEN_ALLOWLIST:
+                    return {"ok": False, "error": "tools_open_denied"}
+                return _json_safe(open_tool(tid))
+            if act == "repair":
+                rid = str(target or "").strip().lower()
+                if rid not in _TOOLS_REPAIR_ALLOWLIST:
+                    return {"ok": False, "error": "tools_repair_denied"}
+                return _json_safe(run_repair(rid, confirm=bool(confirm)))
+            if act == "list_open":
+                return _json_safe({"ok": True, "tools": list_open_tools()})
+            return {"ok": False, "error": "tools_unknown_action"}
+        except Exception as exc:
+            self.log.exception("tools failed: %s", exc)
+            return {"ok": False, "error": str(exc)}
 
     def rdp(self, action: str = "status", mode: str = "") -> Dict[str, Any]:
         """RDP port protection: status / begin (60s confirm) / confirm / cancel / move."""

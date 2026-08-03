@@ -37,6 +37,7 @@ a = Analysis(
         "client_update_ui",
         "client_updater",
         "client_remote_session",
+        "client_windows_tools",
         "client_logging",
         "client_log_retention",
         "requests",

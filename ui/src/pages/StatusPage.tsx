@@ -35,7 +35,7 @@ type IpRow = {
   status?: string
 }
 
-const IP_PREVIEW = 8
+const IP_PREVIEW = 4
 
 export function StatusPage({ status, online, statusLoading = false, updatedAt, onRefresh, onToast, onNavigate }: Props) {
   const running = Array.isArray(status?.running_services) ? status.running_services : []

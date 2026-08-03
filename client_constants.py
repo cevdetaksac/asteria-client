@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.78"  # Installer: parallel guardian→kill→task prep (installer-prep-cleanup.ps1)
+VERSION = "4.9.79"  # Tools repair+remote contract twin, settings tabs, threat table merge, admin tools
 
 
 

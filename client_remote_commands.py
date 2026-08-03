@@ -104,6 +104,8 @@ ALLOWED_COMMANDS: Set[str] = {
     # System Recovery (contract ≥1.4.13 — agent/system-recovery.md)
     "system_recovery_snapshot", "list_system_recovery",
     "system_recovery_diff", "system_recovery_restore",
+    # Windows Tools Repair (contract ≥1.4.49 — agent/tools-repair.md)
+    "tools_repair_catalog", "tools_repair_diagnose", "tools_repair",
     # GUI PIN management from dashboard (contract ≥4.8.3)
     "set_gui_pin", "clear_gui_pin",
     # Honeypot bait start/stop (contract attacks-and-services — dashboard "tunnel")
@@ -192,6 +194,8 @@ REQUIRES_CONFIRMATION: Set[str] = {
     "network_adapter_apply",
     # System Recovery — mutating restore (dry_run exempt via helper)
     "system_recovery_restore",
+    # Windows Tools Repair — destructive actions only (see tools_repair_requires_confirm)
+    "tools_repair",
     # GUI PIN — overwrite/reset local anti-tamper PIN needs operator confirm
     "set_gui_pin", "clear_gui_pin",
     # Firewall Management — profile mutate (cloud confirm:true)
@@ -222,6 +226,20 @@ def system_recovery_restore_requires_confirm(params: Optional[dict] = None) -> b
     """True for mutating system recovery; False for dry-run (contract 1.4.13)."""
     params = params or {}
     return not bool(params.get("dry_run", False))
+
+
+def tools_repair_requires_confirm(params: Optional[dict] = None) -> bool:
+    """Destructive tools_repair actions need confirm; soft/dry_run do not (1.4.49)."""
+    params = params or {}
+    if bool(params.get("dry_run", False)):
+        return False
+    action = str(params.get("action") or "").strip().lower()
+    try:
+        from client_windows_tools import _DESTRUCTIVE
+
+        return action in _DESTRUCTIVE
+    except Exception:
+        return action in {"winsock_reset", "firewall_reset", "wu_reset"}
 
 
 def firewall_rule_requires_confirm(params: Optional[dict] = None) -> bool:
@@ -3667,6 +3685,74 @@ class RemoteCommandExecutor:
                 ),
                 "data": out,
                 "error": out.get("error"),
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    # ── Windows Tools Repair (contract ≥1.4.49 — agent/tools-repair.md) ─
+
+    def _cmd_tools_repair_catalog(self, params: dict) -> dict:
+        try:
+            from client_windows_tools import tools_catalog
+
+            cat = tools_catalog()
+            return {"success": bool(cat.get("ok", True)), "data": cat}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _cmd_tools_repair_diagnose(self, params: dict) -> dict:
+        try:
+            from client_windows_tools import diagnose
+
+            diag = diagnose()
+            return {"success": bool(diag.get("ok", True)), "data": diag}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _cmd_tools_repair(self, params: dict) -> dict:
+        try:
+            from client_windows_tools import run_repair, _DESTRUCTIVE
+
+            action = str((params or {}).get("action") or "").strip().lower()
+            if not action:
+                return {"success": False, "error": "missing_action"}
+            dry_run = bool((params or {}).get("dry_run", False))
+            confirm = bool((params or {}).get("confirm", False))
+            if dry_run:
+                return {
+                    "success": True,
+                    "data": {
+                        "dry_run": True,
+                        "action": action,
+                        "destructive": action in _DESTRUCTIVE,
+                        "plan": [
+                            {
+                                "step": "run_repair",
+                                "action": action,
+                                "note": "no_side_effects_preview",
+                            }
+                        ],
+                    },
+                }
+            if action in _DESTRUCTIVE and not confirm:
+                return {
+                    "success": False,
+                    "error": "confirm_required",
+                    "data": {"action": action},
+                }
+            out = run_repair(action, confirm=confirm)
+            ok = bool(out.get("ok"))
+            self._recovery_audit(
+                "tools_repair",
+                f"action={action} ok={ok} detail={out.get('detail') or out.get('error') or ''}",
+            )
+            return {
+                "success": ok,
+                "message": str(
+                    out.get("detail") or ("ok" if ok else out.get("error") or "failed")
+                ),
+                "data": out,
+                "error": None if ok else (out.get("error") or "tools_repair_failed"),
             }
         except Exception as e:
             return {"success": False, "error": str(e)}

@@ -1,5 +1,6 @@
 ; Asteria Client Installer Script
 ; Version is injected by build.ps1 from client_constants.py
+Unicode true
 !include "MUI2.nsh"
 !include "WinVer.nsh"
 !include "LogicLib.nsh"
@@ -12,7 +13,7 @@ OutFile "asteria-client-installer.exe"
 !define DESCRIPTION "Asteria Client - Deception Cloud Agent"
 !define VERSIONMAJOR 4
 !define VERSIONMINOR 9
-!define VERSIONBUILD 78
+!define VERSIONBUILD 79
 
 InstallDir "$PROGRAMFILES64\${COMPANYNAME}\${APPNAME}"
 
@@ -608,7 +609,7 @@ Function WebView2RuntimePresent
     ${AndIf} $R9 != "0.0.0.0"
         Return
     ${EndIf}
-    ; Filesystem fallback (registry lag / Server SKUs)
+    ; Filesystem fallback (registry lag / Server SKUs / damaged EdgeUpdate)
     ${If} ${FileExists} "$PROGRAMFILES64\Microsoft\EdgeWebView\Application\msedgewebview2.exe"
         StrCpy $R9 "fs64"
         Return
@@ -617,7 +618,31 @@ Function WebView2RuntimePresent
         StrCpy $R9 "fs32"
         Return
     ${EndIf}
+    ; Deep scan: any versioned folder under EdgeWebView\Application
+    nsExec::ExecToStack 'cmd /c dir /b /ad /o-n "$PROGRAMFILES64\Microsoft\EdgeWebView\Application" 2>nul'
+    Pop $0
+    Pop $1
+    ${If} $1 != ""
+        StrCpy $R9 "fsdir"
+        Return
+    ${EndIf}
     StrCpy $R9 ""
+FunctionEnd
+
+Function WebView2WaitDetect
+    ; Poll up to ~20s — damaged disks / AV delay registry writes.
+    StrCpy $R7 "0"
+    Wv2WaitLoop:
+        Call WebView2RuntimePresent
+        ${If} $R9 != ""
+            Return
+        ${EndIf}
+        IntOp $R7 $R7 + 1
+        IntCmp $R7 10 Wv2WaitDone Wv2WaitMore Wv2WaitDone
+        Wv2WaitMore:
+            Sleep 2000
+            Goto Wv2WaitLoop
+    Wv2WaitDone:
 FunctionEnd
 
 Function EnsureWebView2
@@ -627,17 +652,34 @@ Function EnsureWebView2
         Goto Wv2Done
     ${EndIf}
 
+    ; Try to revive EdgeUpdate services before install (common on damaged Server images)
+    nsExec::Exec 'sc.exe config edgeupdate start= demand >nul 2>&1'
+    nsExec::Exec 'sc.exe start edgeupdate >nul 2>&1'
+    nsExec::Exec 'sc.exe config edgeupdatem start= demand >nul 2>&1'
+    nsExec::Exec 'sc.exe start edgeupdatem >nul 2>&1'
+
     ; 1) Offline standalone (bundled ~150 MB) — no internet required on target
     IfFileExists "$INSTDIR\MicrosoftEdgeWebView2RuntimeInstallerX64.exe" 0 Wv2TryBootstrap
         !insertmacro LOG "[WEBVIEW2] Runtime missing — installing offline Standalone x64..."
         DetailPrint "Installing Microsoft Edge WebView2 Runtime (offline)..."
-        ; ExecWait blocks until done; standalone can take 1–3 minutes.
         ExecWait '"$INSTDIR\MicrosoftEdgeWebView2RuntimeInstallerX64.exe" /silent /install' $R8
         !insertmacro LOG "[WEBVIEW2] Standalone exit=$R8"
-        Sleep 1500
-        Call WebView2RuntimePresent
+        Call WebView2WaitDetect
         ${If} $R9 != ""
             !insertmacro LOG "[WEBVIEW2] Runtime installed OK via standalone (pv=$R9)"
+            Goto Wv2Done
+        ${EndIf}
+        ; Force-style second pass (some broken hosts need a non-/silent first touch)
+        !insertmacro LOG "[WEBVIEW2] Standalone not detected — repair script pass"
+        InitPluginsDir
+        SetOutPath "$PLUGINSDIR"
+        File "scripts\repair-webview2.ps1"
+        nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\repair-webview2.ps1" -PayloadPath "$INSTDIR\MicrosoftEdgeWebView2RuntimeInstallerX64.exe"'
+        Pop $0
+        !insertmacro LOG "[WEBVIEW2] repair-webview2.ps1 exit=$0"
+        Call WebView2WaitDetect
+        ${If} $R9 != ""
+            !insertmacro LOG "[WEBVIEW2] Runtime OK after repair script (pv=$R9)"
             Goto Wv2Done
         ${EndIf}
         !insertmacro LOG "[WEBVIEW2] Standalone finished but runtime not detected yet — trying bootstrapper"
@@ -647,21 +689,24 @@ Function EnsureWebView2
         !insertmacro LOG "[WEBVIEW2] Trying Evergreen bootstrapper (needs network)..."
         ExecWait '"$INSTDIR\MicrosoftEdgeWebview2Setup.exe" /silent /install' $R8
         !insertmacro LOG "[WEBVIEW2] Bootstrapper exit=$R8"
-        Sleep 1500
-        Call WebView2RuntimePresent
+        Call WebView2WaitDetect
         ${If} $R9 != ""
             !insertmacro LOG "[WEBVIEW2] Runtime installed OK via bootstrapper (pv=$R9)"
             Goto Wv2Done
         ${EndIf}
         !insertmacro LOG "[WEBVIEW2] WARNING: installers finished but runtime still not registered"
         IfSilent Wv2Done
-            MessageBox MB_ICONEXCLAMATION|MB_OK "Microsoft Edge WebView2 Runtime kurulamadı.$\r$\n$\r$\nAsteria motoru çalışır; Control Center için paketi yeniden deneyin veya:$\r$\nhttps://developer.microsoft.com/microsoft-edge/webview2/"
+            MessageBox MB_ICONEXCLAMATION|MB_YESNO "Microsoft Edge WebView2 Runtime could not be registered.$\r$\n$\r$\nAsteria motor still installs. Control Center needs WebView2.$\r$\n$\r$\nOpen the official WebView2 download page now?" IDYES Wv2OpenDownload IDNO Wv2Done
+        Wv2OpenDownload:
+            ExecShell "open" "https://developer.microsoft.com/microsoft-edge/webview2/"
         Goto Wv2Done
 
     Wv2MissingPayload:
         !insertmacro LOG "[WEBVIEW2] ERROR: no WebView2 installer payload in install dir"
         IfSilent Wv2Done
-            MessageBox MB_ICONEXCLAMATION|MB_OK "WebView2 kurulum paketi eksik.$\r$\nControl Center için Evergreen Runtime kurun:$\r$\nhttps://developer.microsoft.com/microsoft-edge/webview2/"
+            MessageBox MB_ICONEXCLAMATION|MB_YESNO "WebView2 installer payload is missing from this package.$\r$\n$\r$\nOpen the official WebView2 download page?" IDYES Wv2OpenDownload2 IDNO Wv2Done
+        Wv2OpenDownload2:
+            ExecShell "open" "https://developer.microsoft.com/microsoft-edge/webview2/"
     Wv2Done:
 FunctionEnd
 

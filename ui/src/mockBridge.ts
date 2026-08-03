@@ -18,7 +18,8 @@ type AsteriaApi = {
   pin(action: string, value?: string, current?: string): Promise<Record<string, unknown>>
   shell(action: string, path?: string): Promise<Record<string, unknown>>
   account(action?: string, email?: string, password?: string, pin?: string): Promise<Record<string, unknown>>
-  harden(action?: string, target?: string): Promise<Record<string, unknown>>
+  harden?(action?: string, target?: string): Promise<Record<string, unknown>>
+  tools?(action?: string, target?: string, confirm?: boolean): Promise<Record<string, unknown>>
   rdp(action?: string, mode?: string): Promise<Record<string, unknown>>
   relocate?(action?: string, service?: string, port?: number, autoStartBait?: boolean): Promise<Record<string, unknown>>
   ir(action: string, username?: string, newPassword?: string): Promise<Record<string, unknown>>
@@ -48,6 +49,7 @@ const blocked = new Set<string>([
   '162.243.103.246',
   '185.220.101.45',
   '203.0.113.10',
+  ...Array.from({ length: 120 }, (_, i) => `198.51.${Math.floor(i / 254)}.${(i % 254) + 1}`),
 ])
 let updateStatus: Record<string, unknown> | null = {
   phase: 'downloading',
@@ -165,7 +167,7 @@ export function installMockBridge(): void {
         return {
           ok: true,
           total: blocked.size,
-          recent_alerts: Array.from(blocked).map((ip, i) => ({
+          recent_alerts: Array.from(blocked).slice(0, 40).map((ip, i) => ({
             source_ip: ip,
             timestamp: Date.now() / 1000 - i * 90,
             threat_score: 95 - i,
@@ -436,6 +438,75 @@ export function installMockBridge(): void {
       }
       if (action === 'fix') return { ok: true, target, mock: true }
       return { ok: false, error: 'harden_unknown_action' }
+    },
+    async tools(action = 'catalog', target = '', confirm = false) {
+      if (locked) return { ok: false, error: 'gui_locked' }
+      const openTools = [
+        { id: 'eventvwr', label: 'Event Viewer', target: 'eventvwr.msc' },
+        { id: 'services', label: 'Services', target: 'services.msc' },
+        { id: 'taskmgr', label: 'Task Manager', target: 'taskmgr.exe' },
+        { id: 'regedit', label: 'Registry Editor', target: 'regedit.exe' },
+        { id: 'wf', label: 'Advanced Firewall', target: 'wf.msc' },
+        { id: 'compmgmt', label: 'Computer Management', target: 'compmgmt.msc' },
+        { id: 'taskschd', label: 'Task Scheduler', target: 'taskschd.msc' },
+        { id: 'msconfig', label: 'System Configuration', target: 'msconfig.exe' },
+        { id: 'comexp', label: 'Component Services', target: 'comexp.msc' },
+        { id: 'secpol', label: 'Local Security Policy', target: 'secpol.msc' },
+        { id: 'msinfo', label: 'System Information', target: 'msinfo32.exe' },
+        { id: 'dfrgui', label: 'Optimize Drives', target: 'dfrgui.exe' },
+        { id: 'mdsched', label: 'Memory Diagnostic', target: 'mdsched.exe' },
+        { id: 'printmgmt', label: 'Print Management', target: 'printmanagement.msc' },
+        { id: 'hyperv', label: 'Hyper-V Manager', target: 'virtmgmt.msc' },
+        { id: 'server_manager', label: 'Server Manager', target: 'ServerManager.exe' },
+        { id: 'powershell', label: 'PowerShell', target: 'powershell.exe' },
+      ]
+      const mockFindings = [
+        { id: 'taskmgr_policy', severity: 'high', ok: false, detail: 'DisableTaskMgr=1 (mock)', fix: 'fix_taskmgr' },
+        { id: 'regedit_policy', severity: 'ok', ok: true, detail: 'Registry Editor policy OK', fix: '' },
+        { id: 'cmd_policy', severity: 'ok', ok: true, detail: 'CMD policy OK', fix: '' },
+        { id: 'winlogon_shell', severity: 'ok', ok: true, detail: 'Shell=explorer.exe', fix: '' },
+        { id: 'winlogon_userinit', severity: 'ok', ok: true, detail: 'Userinit OK', fix: '' },
+        { id: 'explorer_running', severity: 'critical', ok: false, detail: 'explorer hung (mock)', fix: 'restart_explorer' },
+        { id: 'webview2', severity: 'ok', ok: true, detail: 'pv=mock', fix: '' },
+        { id: 'critical_services', severity: 'ok', ok: true, detail: 'Core services running', fix: '' },
+        { id: 'firewall_profiles', severity: 'ok', ok: true, detail: 'Firewall profiles appear on', fix: '' },
+        { id: 'policy_drift', severity: 'high', ok: false, detail: '2 attack-surface drift item(s)', fix: 'policy_restore' },
+      ]
+      const diagnose = {
+        ok: true,
+        findings: mockFindings,
+        issues: mockFindings.filter((f) => !f.ok).length,
+        critical: mockFindings.filter((f) => !f.ok && f.severity === 'critical').length,
+        high: mockFindings.filter((f) => !f.ok && f.severity === 'high').length,
+      }
+      if (action === 'catalog' || action === 'status') {
+        return {
+          ok: true,
+          open_tools: openTools,
+          status: {
+            ok: true,
+            admin: true,
+            webview2: { ok: true, present: true, detail: 'pv=mock' },
+            computer: 'DESKTOP-MOCK',
+          },
+          diagnose,
+        }
+      }
+      if (action === 'diagnose') {
+        return diagnose
+      }
+      if (action === 'open') {
+        console.info('[mock tools open]', target)
+        return { ok: true, tool: target, mock: true }
+      }
+      if (action === 'repair') {
+        if (['winsock_reset', 'firewall_reset', 'wu_reset'].includes(String(target)) && !confirm) {
+          return { ok: false, error: 'confirm_required' }
+        }
+        console.info('[mock tools repair]', target)
+        return { ok: true, detail: `mock_${target}`, action: target }
+      }
+      return { ok: false, error: 'tools_unknown_action' }
     },
     async rdp(action = 'status', mode = '') {
       if (locked) return { ok: false, error: 'gui_locked' }

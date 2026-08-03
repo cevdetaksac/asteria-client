@@ -1,11 +1,13 @@
-import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { motorBridge, type MotorStatus } from '../bridge'
+import { DataTable, type DataColumn } from '../components/DataTable'
 import { DetailModal } from '../components/DetailModal'
 import { FeatureGuide } from '../components/FeatureGuide'
-import { TextActionBtn, icons } from '../components/IconBtn'
+import { RowActionMenu } from '../components/RowActionMenu'
 import { t } from '../i18n'
 import { asRecord, pick } from '../lib'
+
+type ThreatTab = 'threats' | 'accounts' | 'system' | 'network'
 
 type Props = {
   onToast: (msg: string, kind?: 'ok' | 'err') => void
@@ -96,7 +98,7 @@ export function ThreatPage({ onToast }: Props) {
   const [busy, setBusy] = useState(false)
   const [pwdUser, setPwdUser] = useState<string | null>(null)
   const [pwdValue, setPwdValue] = useState('')
-  const [accountsOpen, setAccountsOpen] = useState(true)
+  const [threatTab, setThreatTab] = useState<ThreatTab>('threats')
   const [blockIp, setBlockIp] = useState('')
   const [checks, setChecks] = useState<HardenCheck[]>([])
   const [commands, setCommands] = useState<Array<Record<string, unknown>>>([])
@@ -209,6 +211,34 @@ export function ThreatPage({ onToast }: Props) {
     [logoffable],
   )
   const warnCount = useMemo(() => checks.filter((c) => c.ok === false).length, [checks])
+
+  /** Cloud alerts + motor attackers — one list, dedupe by IP (alerts win). */
+  const threatRows = useMemo(() => {
+    const seen = new Set<string>()
+    const out: Attacker[] = []
+    for (const row of recentAlerts) {
+      const ip = alertFields(asRecord(row)).ip
+      if (ip !== '—') seen.add(ip.toLowerCase())
+      out.push(row)
+    }
+    for (const row of attackers) {
+      const r = asRecord(row)
+      const ip = pick(r, 'ip', 'source_ip')
+      const key = ip !== '—' ? ip.toLowerCase() : ''
+      if (key && seen.has(key)) continue
+      if (key) seen.add(key)
+      out.push({
+        ...r,
+        title: r.title ?? r.threat_type ?? r.type,
+        description: r.description ?? r.detail ?? r.reason,
+        source_ip: r.source_ip ?? r.ip,
+        threat_score: r.threat_score ?? r.score,
+        timestamp: r.timestamp ?? r.last_seen ?? r.created_at,
+        severity: r.severity ?? (Number(r.threat_score ?? r.score) >= 80 ? 'high' : 'medium'),
+      })
+    }
+    return out
+  }, [recentAlerts, attackers])
 
   const block = async (ip: string) => {
     if (!ip || ip === '—') return
@@ -361,6 +391,219 @@ export function ThreatPage({ onToast }: Props) {
     }
   }
 
+
+  const alertColumns = useMemo<DataColumn<Attacker>[]>(() => [
+    {
+      id: 'time',
+      header: t('threat_col_time'),
+      className: 'threat-time muted',
+      searchText: (row) => formatThreatTime(alertFields(asRecord(row)).when === '—' ? null : alertFields(asRecord(row)).when),
+      cell: (row) => {
+        const f = alertFields(asRecord(row))
+        return formatThreatTime(f.when === '—' ? null : f.when)
+      },
+    },
+    {
+      id: 'threat',
+      header: t('threat_col_threat'),
+      className: 'threat-detail-cell',
+      searchText: (row) => {
+        const f = alertFields(asRecord(row))
+        return `${f.title} ${f.description} ${f.threatType} ${f.severity} ${f.service}`
+      },
+      cell: (row) => {
+        const f = alertFields(asRecord(row))
+        return (
+          <>
+            <strong className="threat-detail-title">{f.title !== '—' ? f.title : f.threatType}</strong>
+            {f.description !== '—' && <p className="threat-detail-desc">{f.description}</p>}
+            <div className="threat-detail-meta">
+              {f.threatType !== '—' && <span className="pill muted">{f.threatType}</span>}
+              {f.severity !== '—' && (
+                <span className={`pill ${f.severity === 'critical' || f.severity === 'high' ? 'danger' : 'muted'}`}>{f.severity}</span>
+              )}
+              {f.service !== '—' && <span className="pill muted">{f.service}</span>}
+              {f.action !== '—' && <span className="muted threat-action-hint">{f.action}</span>}
+            </div>
+          </>
+        )
+      },
+    },
+    {
+      id: 'source',
+      header: t('threat_col_source'),
+      className: 'mono',
+      searchText: (row) => {
+        const f = alertFields(asRecord(row))
+        return `${f.ip} ${f.user}`
+      },
+      cell: (row) => {
+        const f = alertFields(asRecord(row))
+        return (
+          <>
+            {f.ip}
+            {f.user !== '—' ? <div className="muted">{f.user}</div> : null}
+          </>
+        )
+      },
+    },
+    {
+      id: 'score',
+      header: t('threat_col_score'),
+      searchText: (row) => String(alertFields(asRecord(row)).score),
+      cell: (row) => {
+        const f = alertFields(asRecord(row))
+        return <span className={`score-pill ${Number(f.score) >= 80 ? 'high' : ''}`}>{f.score}</span>
+      },
+    },
+    {
+      id: 'actions',
+      header: t('threat_col_actions'),
+      headerClassName: 'actions-head',
+      className: 'actions-cell',
+      cell: (row) => {
+        const f = alertFields(asRecord(row))
+        const ip = f.ip
+        const primary = ip !== '—'
+          ? [{ id: 'block', label: t('btn_block'), danger: true, disabled: busy, onClick: () => void block(ip) }]
+          : []
+        const more = []
+        if (ip !== '—') {
+          more.push(
+            { id: 'unblock', label: t('btn_unblock'), disabled: busy, onClick: () => void unblock(ip) },
+            { id: 'wl', label: t('btn_whitelist_add'), disabled: busy || whitelist.includes(ip), onClick: () => void addWhitelist(ip) },
+          )
+        }
+        if (canLogoffUser(f.user)) {
+          more.push({ id: 'logoff', label: t('threat_logoff'), disabled: busy, onClick: () => void runIr('logoff', f.user) })
+        }
+        if (f.user !== '—' && f.user.toLowerCase() !== currentUser.toLowerCase()) {
+          more.push({ id: 'disable', label: t('threat_disable'), danger: true, disabled: busy, onClick: () => void runIr('disable', f.user) })
+        }
+        return <RowActionMenu primary={primary} more={more} />
+      },
+    },
+  ], [busy, whitelist, currentUser, canLogoffUser])
+
+  const userColumns = useMemo<DataColumn<LocalUser>[]>(() => [
+    {
+      id: 'user',
+      header: t('threat_col_user'),
+      searchText: (u) => `${u.username} ${u.full_name || ''}`,
+      cell: (u) => (
+        <>
+          <div className="account-name">
+            <strong className="mono">{u.username}</strong>
+            {u.is_self && <span className="pill self">{t('threat_badge_you')}</span>}
+            {u.is_admin && <span className="pill admin">{t('threat_badge_admin')}</span>}
+            {u.protected && <span className="pill muted">{t('threat_badge_protected')}</span>}
+          </div>
+          {u.full_name ? <small className="muted">{u.full_name}</small> : null}
+        </>
+      ),
+    },
+    {
+      id: 'status',
+      header: t('threat_col_status'),
+      searchText: (u) => (u.enabled ? 'active' : 'disabled'),
+      cell: (u) => (
+        <span className={`pill ${u.enabled ? 'ok' : 'off'}`}>
+          {u.enabled ? t('threat_status_active') : t('threat_status_disabled')}
+        </span>
+      ),
+    },
+    {
+      id: 'groups',
+      header: t('threat_col_groups'),
+      className: 'muted',
+      searchText: (u) => (u.groups || []).join(' '),
+      cell: (u) => (u.groups || []).join(', ') || '—',
+    },
+    {
+      id: 'session',
+      header: t('threat_col_session'),
+      className: 'muted',
+      cell: (u) => (u.has_session ? (u.session_status || t('threat_session_yes')) : t('threat_session_no')),
+    },
+    {
+      id: 'last',
+      header: t('threat_col_last_logon'),
+      className: 'muted mono',
+      cell: (u) => formatLogon(u.last_logon),
+    },
+    {
+      id: 'actions',
+      header: t('threat_col_actions'),
+      headerClassName: 'actions-head',
+      className: 'actions-cell',
+      cell: (u) => (
+        <>
+          <RowActionMenu
+            primary={[
+              ...(u.can_logoff
+                ? [{ id: 'logoff', label: t('threat_logoff'), disabled: busy, onClick: () => void runIr('logoff', u.username) }]
+                : u.can_disable
+                  ? [{ id: 'disable', label: t('threat_disable'), danger: true, disabled: busy, onClick: () => void runIr('disable', u.username) }]
+                  : u.can_enable
+                    ? [{ id: 'enable', label: t('threat_enable'), disabled: busy, onClick: () => void runIr('enable', u.username) }]
+                    : []),
+            ]}
+            more={[
+              ...(u.can_logoff && u.can_disable
+                ? [{ id: 'disable', label: t('threat_disable'), danger: true, disabled: busy, onClick: () => void runIr('disable', u.username) }]
+                : []),
+              ...(u.can_enable && u.can_logoff
+                ? [{ id: 'enable', label: t('threat_enable'), disabled: busy, onClick: () => void runIr('enable', u.username) }]
+                : []),
+              ...(u.can_reset_password
+                ? [{
+                    id: 'pwd',
+                    label: t('threat_password'),
+                    disabled: busy,
+                    onClick: () => {
+                      setPwdUser(u.username)
+                      setPwdValue('')
+                    },
+                  }]
+                : []),
+            ]}
+          />
+          {pwdUser === u.username && (
+            <div className="inline-form pwd-row">
+              <input
+                type="password"
+                autoComplete="new-password"
+                placeholder={t('threat_pwd_ph')}
+                value={pwdValue}
+                onChange={(e) => setPwdValue(e.target.value)}
+              />
+              <button
+                type="button"
+                className="btn sm"
+                disabled={busy}
+                onClick={() => void runIr('reset_password', u.username, pwdValue)}
+              >
+                {t('btn_apply')}
+              </button>
+              <button
+                type="button"
+                className="btn ghost sm"
+                disabled={busy}
+                onClick={() => {
+                  setPwdUser(null)
+                  setPwdValue('')
+                }}
+              >
+                {t('btn_cancel')}
+              </button>
+            </div>
+          )}
+        </>
+      ),
+    },
+  ], [busy, pwdUser, pwdValue])
+
+
   return (
     <section className="page">
       <div className="page-head">
@@ -383,7 +626,7 @@ export function ThreatPage({ onToast }: Props) {
       <div className="cards three">
         <article className="clickable" onClick={() => setDetail('threat')}>
           <p>{t('threat_card_listed')}</p>
-          <strong>{attackers.length}</strong>
+          <strong>{threatRows.length}</strong>
           <small>{t('threat_card_listed_meta')}</small>
         </article>
         <article className="clickable" onClick={() => setDetail('threat')}>
@@ -429,480 +672,302 @@ export function ThreatPage({ onToast }: Props) {
         </button>
       </div>
 
-      <article className="panel" style={{ marginBottom: 18 }}>
-        <div className="page-head" style={{ marginBottom: 12, paddingBottom: 0, border: 'none' }}>
-          <div>
-            <p className="eyebrow">{t('threat_alerts_eyebrow')}</p>
-            <h3>
-              {t('threat_alerts_title')}
-              {recentAlerts.length > 0 ? <span className="pill danger threat-count-pill">{recentAlerts.length}</span> : null}
-              {!threatsReady && <span className="inline-spinner" />}
-            </h3>
-            <p className="muted">{t('threat_alerts_blurb')}</p>
-          </div>
-          <button type="button" className="btn ghost sm" onClick={() => void motorBridge.shell('open_dashboard', 'dash_threats')}>
-            {t('threat_alerts_all')}
+      <nav className="page-tabs" aria-label={t('threat_title')}>
+        {(
+          [
+            ['threats', t('threat_tab_threats'), threatRows.length],
+            ['accounts', t('threat_tab_accounts'), users.length],
+            ['system', t('threat_tab_system'), warnCount],
+            ['network', t('threat_tab_network'), shares.length + thirdParty.length],
+          ] as Array<[ThreatTab, string, number]>
+        ).map(([id, label, count]) => (
+          <button
+            key={id}
+            type="button"
+            className={`page-tab${threatTab === id ? ' active' : ''}`}
+            onClick={() => setThreatTab(id)}
+          >
+            {label}
+            <span className="tab-count">{count}</span>
           </button>
-        </div>
-        <div className="table-wrap">
-          <table className="threat-rich-table">
-            <thead>
-              <tr>
-                <th>{t('threat_col_time')}</th>
-                <th>{t('threat_col_threat')}</th>
-                <th>{t('threat_col_source')}</th>
-                <th>{t('threat_col_score')}</th>
-                <th className="actions-head">{t('threat_col_actions')}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {threatsReady && recentAlerts.length === 0 && (
-                <tr>
-                  <td colSpan={5} className="empty">{t('threat_alerts_empty')}</td>
-                </tr>
-              )}
-              {recentAlerts.map((row, idx) => {
-                const r = asRecord(row)
-                const f = alertFields(r)
-                const ip = f.ip
-                return (
-                  <tr key={`${ip}-${f.when}-${idx}`}>
-                    <td className="threat-time muted">{formatThreatTime(f.when === '—' ? null : f.when)}</td>
-                    <td className="threat-detail-cell">
-                      <strong className="threat-detail-title">{f.title !== '—' ? f.title : f.threatType}</strong>
-                      {f.description !== '—' && (
-                        <p className="threat-detail-desc">{f.description}</p>
-                      )}
-                      <div className="threat-detail-meta">
-                        {f.threatType !== '—' && <span className="pill muted">{f.threatType}</span>}
-                        {f.severity !== '—' && <span className={`pill ${f.severity === 'critical' || f.severity === 'high' ? 'danger' : 'muted'}`}>{f.severity}</span>}
-                        {f.service !== '—' && <span className="pill muted">{f.service}</span>}
-                        {f.action !== '—' && <span className="muted threat-action-hint">{f.action}</span>}
-                      </div>
-                    </td>
-                    <td className="mono">
-                      {ip}
-                      {f.user !== '—' ? <div className="muted">{f.user}</div> : null}
-                    </td>
-                    <td>
-                      <span className={`score-pill ${Number(f.score) >= 80 ? 'high' : ''}`}>{f.score}</span>
-                    </td>
-                    <td className="actions-cell">
-                      <div className="row-actions">
-                        {ip !== '—' && (
-                          <>
-                            <TextActionBtn
-                              label={t('btn_block')}
-                              danger
-                              disabled={busy}
-                              onClick={() => void block(ip)}
-                            />
-                            <TextActionBtn
-                              label={t('btn_unblock')}
-                              disabled={busy}
-                              onClick={() => void unblock(ip)}
-                            />
-                            <TextActionBtn
-                              label={t('btn_whitelist_add')}
-                              disabled={busy || whitelist.includes(ip)}
-                              onClick={() => void addWhitelist(ip)}
-                            />
-                          </>
-                        )}
-                        {canLogoffUser(f.user) && (
-                          <TextActionBtn
-                            label={t('threat_logoff')}
-                            disabled={busy}
-                            onClick={() => void runIr('logoff', f.user)}
-                          />
-                        )}
-                        {f.user !== '—' && f.user.toLowerCase() !== currentUser.toLowerCase() && (
-                          <TextActionBtn
-                            label={t('threat_disable')}
-                            danger
-                            disabled={busy}
-                            onClick={() => void runIr('disable', f.user)}
-                          />
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      </article>
+        ))}
+      </nav>
 
-      <article className="panel" style={{ marginBottom: 18 }}>
-        <div className="page-head" style={{ marginBottom: 12, paddingBottom: 0, border: 'none' }}>
-          <div>
-            <p className="eyebrow">{t('threat_attackers_eyebrow')}</p>
-            <h3>{t('threat_attackers_title')}{!threatsReady && <span className="inline-spinner" />}</h3>
-            <p className="muted">{t('threat_attackers_blurb')}</p>
-          </div>
-        </div>
-        <div className="table-wrap">
-          <table className="threat-rich-table">
-            <thead>
-              <tr>
-                <th>{t('threat_col_threat')}</th>
-                <th>{t('threat_col_source')}</th>
-                <th>{t('threat_col_score')}</th>
-                <th>{t('threat_col_events')}</th>
-                <th>{t('threat_col_last')}</th>
-                <th className="actions-head">{t('threat_col_actions')}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {threatsReady && attackers.length === 0 && (
-                <tr>
-                  <td colSpan={6} className="empty">{t('threat_empty')}</td>
-                </tr>
-              )}
-              {attackers.map((row) => {
-                const r = asRecord(row)
-                const f = alertFields(r)
-                const ip = f.ip
-                const user = f.user !== '—' ? f.user : pick(r, 'username', 'user', 'account')
-                const services = Array.isArray(r.services) ? r.services.map(String).filter(Boolean) : []
-                const users = Array.isArray(r.usernames) ? r.usernames.map(String).filter(Boolean) : []
-                return (
-                  <tr key={ip + pick(r, 'score', 'threat_score', 'last_seen')}>
-                    <td className="threat-detail-cell">
-                      <strong className="threat-detail-title">
-                        {f.title !== '—' ? f.title : t('threat_ip_activity')}
-                      </strong>
-                      {f.description !== '—' && (
-                        <p className="threat-detail-desc">{f.description}</p>
-                      )}
-                      <div className="threat-detail-meta">
-                        {f.threatType !== '—' && <span className="pill muted">{f.threatType}</span>}
-                        {services.slice(0, 4).map((svc) => (
-                          <span key={svc} className="pill muted">{svc}</span>
-                        ))}
-                        {users.slice(0, 3).map((u) => (
-                          <span key={u} className="pill muted">{u}</span>
-                        ))}
-                        {Boolean(r.is_blocked) && <span className="pill danger">{t('threat_badge_blocked')}</span>}
-                      </div>
-                    </td>
-                    <td className="mono">
-                      {ip}
-                      {user !== '—' ? <div className="muted">{user}</div> : null}
-                    </td>
-                    <td>
-                      <span className={`score-pill ${Number(pick(r, 'threat_score', 'score')) >= 80 ? 'high' : ''}`}>
-                        {pick(r, 'threat_score', 'score')}
-                      </span>
-                    </td>
-                    <td>{pick(r, 'failed_attempts', 'events', 'event_count', 'count')}</td>
-                    <td className="muted">{formatThreatTime(r.last_seen ?? r.updated_at)}</td>
-                    <td className="actions-cell">
-                      <div className="row-actions">
-                        {ip !== '—' && (
-                          <>
-                            {!r.is_blocked ? (
-                              <TextActionBtn
-                                label={t('btn_block')}
-                                danger
-                                disabled={busy}
-                                onClick={() => void block(ip)}
-                              />
-                            ) : (
-                              <TextActionBtn
-                                label={t('btn_unblock')}
-                                disabled={busy}
-                                onClick={() => void unblock(ip)}
-                              />
-                            )}
-                            <TextActionBtn
-                              label={t('btn_whitelist_add')}
-                              disabled={busy || whitelist.includes(ip)}
-                              onClick={() => void addWhitelist(ip)}
-                            />
-                          </>
-                        )}
-                        {canLogoffUser(user) && (
-                          <TextActionBtn
-                            label={t('threat_logoff')}
-                            disabled={busy}
-                            onClick={() => void runIr('logoff', user)}
-                          />
-                        )}
-                        {user !== '—' && user.toLowerCase() !== currentUser.toLowerCase() && (
-                          <TextActionBtn
-                            label={t('threat_disable')}
-                            danger
-                            disabled={busy}
-                            onClick={() => void runIr('disable', user)}
-                          />
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      </article>
-
-      <article className="panel" style={{ marginBottom: 18 }}>
-        <div className="page-head" style={{ marginBottom: 12, paddingBottom: 0, border: 'none' }}>
-          <div>
-            <p className="eyebrow">{t('threat_harden_eyebrow')}</p>
-            <h3>{t('threat_harden_title')}{!extrasReady && <span className="inline-spinner" />}</h3>
-            <p className="muted">
-              {warnCount > 0
-                ? t('threat_harden_warn', { count: warnCount })
-                : t('threat_harden_ok')}
-            </p>
-          </div>
-        </div>
-        <div className="check-list">
-          {extrasReady && checks.length === 0 && (
-            <p className="muted">{t('status_harden_loading')}</p>
-          )}
-          {checks.map((c) => (
-            <div key={String(c.id || c.label)} className="check-row">
-              <div>
-                <strong className={c.ok === false ? 'bad' : c.ok ? 'good' : ''}>{c.label}</strong>
-                <p className="muted">{c.detail}</p>
-              </div>
-              {c.fixable && c.id && (
-                <button type="button" className="btn sm" disabled={busy} onClick={() => void fixHarden(String(c.id))}>
-                  {t('btn_fix')}
-                </button>
-              )}
+      {threatTab === 'threats' && (
+        <article className="panel panel-spaced">
+          <div className="page-head" style={{ marginBottom: 12, paddingBottom: 0, border: 'none' }}>
+            <div>
+              <p className="eyebrow">{t('threat_alerts_eyebrow')}</p>
+              <h3>
+                {t('threat_alerts_title')}
+                {threatRows.length > 0 ? <span className="pill danger threat-count-pill">{threatRows.length}</span> : null}
+                {!threatsReady && <span className="inline-spinner" />}
+              </h3>
+              <p className="muted">{t('threat_alerts_blurb')}</p>
             </div>
-          ))}
-        </div>
-      </article>
-
-      <div className="split split-stack" style={{ marginBottom: 18 }}>
-        <article className="panel">
-          <p className="eyebrow">{t('threat_shares_eyebrow')}</p>
-          <h3>{t('threat_shares_title')}{!extrasReady && <span className="inline-spinner" />}</h3>
-          <p className="muted">
-            {shareCustom > 0
-              ? t('threat_shares_custom', { count: shareCustom })
-              : t('threat_shares_default_only')}
-          </p>
-          <div className="table-wrap" style={{ marginTop: 10 }}>
-            <table>
-              <thead>
-                <tr>
-                  <th>{t('threat_shares_col_name')}</th>
-                  <th>{t('threat_shares_col_path')}</th>
-                  <th className="actions-head">{t('threat_col_actions')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {extrasReady && shares.length === 0 && (
-                  <tr>
-                    <td colSpan={3} className="empty">{t('threat_shares_empty')}</td>
-                  </tr>
-                )}
-                {shares.map((row) => {
-                  const r = asRecord(row)
-                  const name = String(r.name || '')
-                  const isDefault = Boolean(r.is_default)
-                  const users = Number(r.current_users || 0) || 0
-                  const path = String(r.path || r.description || '—')
-                  return (
-                    <tr key={`share-${name}`}>
-                      <td>
-                        <strong className={`mono ${isDefault ? 'muted' : ''}`}>{name}</strong>
-                        {users > 0 && (
-                          <small className="muted"> · {t('threat_shares_users', { count: users })}</small>
-                        )}
-                      </td>
-                      <td className="muted">{path}</td>
-                      <td className="actions-cell">
-                        <div className="row-actions">
-                          {!isDefault ? (
-                            <TextActionBtn
-                              label={t('threat_shares_remove')}
-                              danger
-                              disabled={busy}
-                              onClick={() => void removeShare(name)}
-                            />
-                          ) : (
-                            <span className="muted" style={{ fontSize: 11 }}>—</span>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
+            <button type="button" className="btn ghost sm" onClick={() => void motorBridge.shell('open_dashboard', 'dash_threats')}>
+              {t('threat_alerts_all')}
+            </button>
           </div>
+          <DataTable
+            rows={threatRows}
+            rowKey={(row, idx) => {
+              const r = asRecord(row)
+              const f = alertFields(r)
+              return `${f.ip}-${f.when}-${idx}`
+            }}
+            empty={threatsReady ? t('threat_alerts_empty') : t('label_loading')}
+            tableClassName="threat-rich-table"
+            defaultPageSize={25}
+            columns={alertColumns}
+          />
         </article>
+      )}
 
-        <article className="panel">
-          <p className="eyebrow">{t('threat_svc_eyebrow')}</p>
-          <h3>{t('threat_svc_title')}{!extrasReady && <span className="inline-spinner" />}</h3>
-          <p className="muted">
-            {svcUnknown > 0
-              ? t('threat_svc_unknown', { count: svcUnknown })
-              : t('threat_svc_clean')}
-          </p>
-          <div className="table-wrap" style={{ marginTop: 10 }}>
-            <table>
-              <thead>
-                <tr>
-                  <th>{t('threat_svc_col_name')}</th>
-                  <th>{t('threat_svc_col_path')}</th>
-                  <th className="actions-head">{t('threat_col_actions')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {extrasReady && thirdParty.length === 0 && (
-                  <tr>
-                    <td colSpan={3} className="empty">{t('threat_svc_empty')}</td>
-                  </tr>
-                )}
-                {thirdParty.map((row) => {
-                  const r = asRecord(row)
-                  const name = String(r.name || '')
-                  const display = String(r.display || name)
-                  const known = Boolean(r.known)
-                  return (
-                    <tr key={`svc-${name}`}>
-                      <td>
+      {threatTab === 'system' && (
+        <>
+          <article className="panel panel-spaced">
+            <div className="page-head" style={{ marginBottom: 12, paddingBottom: 0, border: 'none' }}>
+              <div>
+                <p className="eyebrow">{t('threat_harden_eyebrow')}</p>
+                <h3>{t('threat_harden_title')}{!extrasReady && <span className="inline-spinner" />}</h3>
+                <p className="muted">
+                  {warnCount > 0
+                    ? t('threat_harden_warn', { count: warnCount })
+                    : t('threat_harden_ok')}
+                </p>
+              </div>
+            </div>
+            <div className="check-list">
+              {extrasReady && checks.length === 0 && (
+                <p className="muted">{t('status_harden_loading')}</p>
+              )}
+              {checks.map((c) => (
+                <div key={String(c.id || c.label)} className="check-row">
+                  <div>
+                    <strong className={c.ok === false ? 'bad' : c.ok ? 'good' : ''}>{c.label}</strong>
+                    <p className="muted">{c.detail}</p>
+                  </div>
+                  {c.fixable && c.id && (
+                    <button type="button" className="btn sm" disabled={busy} onClick={() => void fixHarden(String(c.id))}>
+                      {t('btn_fix')}
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </article>
+
+          <div className="split split-stack" style={{ marginBottom: 18 }}>
+            <article className="panel">
+              <p className="eyebrow">{t('threat_sessions_eyebrow')}</p>
+              <h3>{t('threat_sessions_title')}{!usersReady && <span className="inline-spinner" />}</h3>
+              <DataTable
+                rows={sessions}
+                rowKey={(u) => `s-${u.username}`}
+                empty={usersReady ? t('threat_sessions_empty') : t('label_loading')}
+                searchable={sessions.length > 8}
+                defaultPageSize={10}
+                columns={[
+                  {
+                    id: 'user',
+                    header: t('threat_col_user'),
+                    className: 'mono',
+                    searchText: (u) => u.username,
+                    cell: (u) => u.username,
+                  },
+                  {
+                    id: 'session',
+                    header: t('threat_col_session'),
+                    className: 'muted',
+                    cell: (u) => u.session_status || t('threat_session_yes'),
+                  },
+                  {
+                    id: 'actions',
+                    header: t('threat_col_actions'),
+                    headerClassName: 'actions-head',
+                    className: 'actions-cell',
+                    cell: (u) => (
+                      <RowActionMenu
+                        primary={u.can_logoff ? [{ id: 'logoff', label: t('threat_logoff'), onClick: () => void runIr('logoff', u.username), disabled: busy }] : []}
+                        more={[
+                          ...(u.can_disable
+                            ? [{ id: 'disable', label: t('threat_disable'), danger: true as const, onClick: () => void runIr('disable', u.username), disabled: busy }]
+                            : []),
+                        ]}
+                      />
+                    ),
+                  },
+                ]}
+              />
+            </article>
+
+            <article className="panel">
+              <div className="page-head" style={{ marginBottom: 8, paddingBottom: 0, border: 'none' }}>
+                <div>
+                  <p className="eyebrow">{t('threat_cmd_eyebrow')}</p>
+                  <h3>{t('threat_cmd_title')}{!extrasReady && <span className="inline-spinner" />}</h3>
+                </div>
+                <button type="button" className="btn ghost sm" disabled={busy} onClick={() => void refreshExtras()}>
+                  {t('btn_refresh')}
+                </button>
+              </div>
+              <DataTable
+                rows={commands}
+                rowKey={(row, idx) => `${pick(asRecord(row), 'command', 'cmd', 'type', 'name')}-${idx}`}
+                empty={extrasReady ? t('threat_cmd_empty') : t('label_loading')}
+                searchable={commands.length > 8}
+                defaultPageSize={10}
+                columns={[
+                  {
+                    id: 'cmd',
+                    header: t('threat_cmd_col'),
+                    className: 'mono',
+                    searchText: (row) => pick(asRecord(row), 'command', 'cmd', 'type', 'name'),
+                    cell: (row) => pick(asRecord(row), 'command', 'cmd', 'type', 'name'),
+                  },
+                  {
+                    id: 'status',
+                    header: t('threat_cmd_status'),
+                    className: 'muted',
+                    searchText: (row) => pick(asRecord(row), 'status', 'state', 'result'),
+                    cell: (row) => pick(asRecord(row), 'status', 'state', 'result'),
+                  },
+                ]}
+              />
+            </article>
+          </div>
+        </>
+      )}
+
+      {threatTab === 'network' && (
+        <div className="split split-stack" style={{ marginBottom: 18 }}>
+          <article className="panel">
+            <p className="eyebrow">{t('threat_shares_eyebrow')}</p>
+            <h3>{t('threat_shares_title')}{!extrasReady && <span className="inline-spinner" />}</h3>
+            <p className="muted">
+              {shareCustom > 0
+                ? t('threat_shares_custom', { count: shareCustom })
+                : t('threat_shares_default_only')}
+            </p>
+            <DataTable
+              rows={shares}
+              rowKey={(row) => `share-${String(asRecord(row).name || '')}`}
+              empty={extrasReady ? t('threat_shares_empty') : t('label_loading')}
+              defaultPageSize={10}
+              columns={[
+                {
+                  id: 'name',
+                  header: t('threat_shares_col_name'),
+                  searchText: (row) => String(asRecord(row).name || ''),
+                  cell: (row) => {
+                    const r = asRecord(row)
+                    const name = String(r.name || '')
+                    const isDefault = Boolean(r.is_default)
+                    const usersN = Number(r.current_users || 0) || 0
+                    return (
+                      <>
+                        <strong className={`mono ${isDefault ? 'muted' : ''}`}>{name}</strong>
+                        {usersN > 0 && (
+                          <small className="muted"> · {t('threat_shares_users', { count: usersN })}</small>
+                        )}
+                      </>
+                    )
+                  },
+                },
+                {
+                  id: 'path',
+                  header: t('threat_shares_col_path'),
+                  className: 'muted',
+                  searchText: (row) => String(asRecord(row).path || asRecord(row).description || ''),
+                  cell: (row) => String(asRecord(row).path || asRecord(row).description || '—'),
+                },
+                {
+                  id: 'actions',
+                  header: t('threat_col_actions'),
+                  headerClassName: 'actions-head',
+                  className: 'actions-cell',
+                  cell: (row) => {
+                    const r = asRecord(row)
+                    const name = String(r.name || '')
+                    if (r.is_default) return <span className="muted" style={{ fontSize: 11 }}>—</span>
+                    return (
+                      <RowActionMenu
+                        primary={[{ id: 'rm', label: t('threat_shares_remove'), danger: true, disabled: busy, onClick: () => void removeShare(name) }]}
+                      />
+                    )
+                  },
+                },
+              ]}
+            />
+          </article>
+
+          <article className="panel">
+            <p className="eyebrow">{t('threat_svc_eyebrow')}</p>
+            <h3>{t('threat_svc_title')}{!extrasReady && <span className="inline-spinner" />}</h3>
+            <p className="muted">
+              {svcUnknown > 0
+                ? t('threat_svc_unknown', { count: svcUnknown })
+                : t('threat_svc_clean')}
+            </p>
+            <DataTable
+              rows={thirdParty}
+              rowKey={(row) => `svc-${String(asRecord(row).name || '')}`}
+              empty={extrasReady ? t('threat_svc_empty') : t('label_loading')}
+              defaultPageSize={10}
+              columns={[
+                {
+                  id: 'name',
+                  header: t('threat_svc_col_name'),
+                  searchText: (row) => `${asRecord(row).display || ''} ${asRecord(row).name || ''}`,
+                  cell: (row) => {
+                    const r = asRecord(row)
+                    const name = String(r.name || '')
+                    const display = String(r.display || name)
+                    return (
+                      <>
                         <strong>{display}</strong>
                         <div className="mono muted" style={{ fontSize: 11 }}>{name}</div>
-                        {known && <span className="pill muted">{t('threat_svc_known')}</span>}
-                      </td>
-                      <td className="muted" style={{ fontSize: 11, wordBreak: 'break-all' }}>
-                        {String(r.path || '—')}
-                      </td>
-                      <td className="actions-cell">
-                        <div className="row-actions">
-                          {!known ? (
-                            <TextActionBtn
-                              label={t('threat_svc_stop')}
-                              danger
-                              disabled={busy}
-                              onClick={() => void stopService(name, display)}
-                            />
-                          ) : (
-                            <span className="muted" style={{ fontSize: 11 }}>{t('threat_svc_known')}</span>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        </article>
-      </div>
-
-      <div className="split split-stack" style={{ marginBottom: 18 }}>
-        <article className="panel">
-          <p className="eyebrow">{t('threat_sessions_eyebrow')}</p>
-          <h3>{t('threat_sessions_title')}{!usersReady && <span className="inline-spinner" />}</h3>
-          <div className="table-wrap" style={{ marginTop: 10 }}>
-            <table>
-              <thead>
-                <tr>
-                  <th>{t('threat_col_user')}</th>
-                  <th>{t('threat_col_session')}</th>
-                  <th className="actions-head">{t('threat_col_actions')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {usersReady && sessions.length === 0 && (
-                  <tr>
-                    <td colSpan={3} className="empty">{t('threat_sessions_empty')}</td>
-                  </tr>
-                )}
-                {sessions.map((u) => (
-                  <tr key={`s-${u.username}`}>
-                    <td className="mono">{u.username}</td>
-                    <td className="muted">{u.session_status || t('threat_session_yes')}</td>
-                    <td className="actions-cell">
-                      <div className="row-actions">
-                        {u.can_logoff && (
-                          <TextActionBtn
-                            label={t('threat_logoff')}
-                            disabled={busy}
-                            onClick={() => void runIr('logoff', u.username)}
-                          />
-                        )}
-                        {u.can_disable && (
-                          <TextActionBtn
-                            label={t('threat_disable')}
-                            danger
-                            disabled={busy}
-                            onClick={() => void runIr('disable', u.username)}
-                          />
-                        )}
-                        {!u.can_logoff && !u.can_disable && (
-                          <span className="muted" style={{ fontSize: 11 }}>{t('threat_badge_you')}</span>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </article>
-
-        <article className="panel">
-          <div className="page-head" style={{ marginBottom: 8, paddingBottom: 0, border: 'none' }}>
-            <div>
-              <p className="eyebrow">{t('threat_cmd_eyebrow')}</p>
-              <h3>{t('threat_cmd_title')}{!extrasReady && <span className="inline-spinner" />}</h3>
-            </div>
-            <TextActionBtn
-              label={t('btn_refresh')}
-              disabled={busy}
-              onClick={() => void refreshExtras()}
+                        {Boolean(r.known) && <span className="pill muted">{t('threat_svc_known')}</span>}
+                      </>
+                    )
+                  },
+                },
+                {
+                  id: 'path',
+                  header: t('threat_svc_col_path'),
+                  className: 'muted',
+                  searchText: (row) => String(asRecord(row).path || ''),
+                  cell: (row) => (
+                    <span style={{ fontSize: 11, wordBreak: 'break-all' }}>{String(asRecord(row).path || '—')}</span>
+                  ),
+                },
+                {
+                  id: 'actions',
+                  header: t('threat_col_actions'),
+                  headerClassName: 'actions-head',
+                  className: 'actions-cell',
+                  cell: (row) => {
+                    const r = asRecord(row)
+                    const name = String(r.name || '')
+                    const display = String(r.display || name)
+                    if (r.known) return <span className="muted" style={{ fontSize: 11 }}>{t('threat_svc_known')}</span>
+                    return (
+                      <RowActionMenu
+                        primary={[{ id: 'stop', label: t('threat_svc_stop'), danger: true, disabled: busy, onClick: () => void stopService(name, display) }]}
+                      />
+                    )
+                  },
+                },
+              ]}
             />
-          </div>
-          <div className="table-wrap" style={{ marginTop: 10 }}>
-            <table>
-              <thead>
-                <tr>
-                  <th>{t('threat_cmd_col')}</th>
-                  <th>{t('threat_cmd_status')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {extrasReady && commands.length === 0 && (
-                  <tr>
-                    <td colSpan={2} className="empty">{t('threat_cmd_empty')}</td>
-                  </tr>
-                )}
-                {commands.slice(0, 12).map((row, idx) => {
-                  const r = asRecord(row)
-                  const cmdName = pick(r, 'command', 'cmd', 'type', 'name')
-                  return (
-                    <tr key={`${cmdName}-${idx}`}>
-                      <td className="mono">{cmdName}</td>
-                      <td className="muted">{pick(r, 'status', 'state', 'result')}</td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        </article>
-      </div>
+          </article>
+        </div>
+      )}
 
-      <div className={`accordion ${accountsOpen ? 'open' : ''}`}>
-        <button
-          type="button"
-          className="accordion-trigger"
-          aria-expanded={accountsOpen}
-          onClick={() => setAccountsOpen((v) => !v)}
-        >
+      {threatTab === 'accounts' && (
+      <div className="accordion open">
+        <div className="accordion-trigger" aria-expanded={true}>
           <div>
             <p className="eyebrow">{t('threat_ir_eyebrow')}</p>
             <h3>{t('threat_users_title')}{!usersReady && <span className="inline-spinner" />}</h3>
@@ -914,150 +979,33 @@ export function ThreatPage({ onToast }: Props) {
               {currentUser ? ` · ${t('threat_you_are', { user: currentUser })}` : ''}
             </p>
           </div>
-          <span className="accordion-chevron" aria-hidden>▾</span>
-        </button>
+        </div>
         <div className="accordion-body">
           <p className="muted" style={{ marginBottom: 12 }}>{t('threat_users_blurb')}</p>
-          <div className="table-wrap">
-            <table className="accounts-table">
-              <thead>
-                <tr>
-                  <th>{t('threat_col_user')}</th>
-                  <th>{t('threat_col_status')}</th>
-                  <th>{t('threat_col_groups')}</th>
-                  <th>{t('threat_col_session')}</th>
-                  <th>{t('threat_col_last_logon')}</th>
-                  <th className="actions-head">{t('threat_col_actions')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {usersReady && users.length === 0 && (
-                  <tr>
-                    <td colSpan={6} className="empty">{t('threat_users_empty')}</td>
-                  </tr>
-                )}
-                {users.map((u) => {
-                  const groups = (u.groups || []).join(', ') || '—'
-                  return (
-                    <tr key={u.username} className={u.is_self ? 'row-self' : undefined}>
-                      <td>
-                        <div className="account-name">
-                          <strong className="mono">{u.username}</strong>
-                          {u.is_self && <span className="pill self">{t('threat_badge_you')}</span>}
-                          {u.is_admin && <span className="pill admin">{t('threat_badge_admin')}</span>}
-                          {u.protected && <span className="pill muted">{t('threat_badge_protected')}</span>}
-                        </div>
-                        {u.full_name ? <small className="muted">{u.full_name}</small> : null}
-                      </td>
-                      <td>
-                        <span className={`pill ${u.enabled ? 'ok' : 'off'}`}>
-                          {u.enabled ? t('threat_status_active') : t('threat_status_disabled')}
-                        </span>
-                      </td>
-                      <td className="muted">{groups}</td>
-                      <td className="muted">
-                        {u.has_session
-                          ? (u.session_status || t('threat_session_yes'))
-                          : t('threat_session_no')}
-                      </td>
-                      <td className="muted mono">{formatLogon(u.last_logon)}</td>
-                      <td className="actions-cell">
-                        <div className="row-actions">
-                          {u.can_logoff && (
-                            <TextActionBtn
-                              label={t('threat_logoff')}
-                              disabled={busy}
-                              onClick={() => void runIr('logoff', u.username)}
-                            />
-                          )}
-                          {u.can_disable && (
-                            <TextActionBtn
-                              label={t('threat_disable')}
-                              danger
-                              disabled={busy}
-                              onClick={() => void runIr('disable', u.username)}
-                            />
-                          )}
-                          {u.can_enable && (
-                            <TextActionBtn
-                              label={t('threat_enable')}
-                              disabled={busy}
-                              onClick={() => void runIr('enable', u.username)}
-                            />
-                          )}
-                          {u.can_reset_password && (
-                            <TextActionBtn
-                              label={t('threat_password')}
-                              disabled={busy}
-                              onClick={() => {
-                                setPwdUser(u.username)
-                                setPwdValue('')
-                              }}
-                            />
-                          )}
-                          {u.is_self && !u.can_disable && !u.can_logoff && (
-                            <span
-                              className="icon-btn tip tip-info"
-                              tabIndex={0}
-                              data-tooltip={t('threat_self_hint')}
-                              aria-label={t('threat_self_hint')}
-                            >
-                              <FontAwesomeIcon icon={icons.info} fixedWidth />
-                            </span>
-                          )}
-                        </div>
-                        {pwdUser === u.username && (
-                          <div className="inline-form pwd-row">
-                            <input
-                              type="password"
-                              autoComplete="new-password"
-                              placeholder={t('threat_pwd_ph')}
-                              value={pwdValue}
-                              onChange={(e) => setPwdValue(e.target.value)}
-                            />
-                            <button
-                              type="button"
-                              className="btn sm"
-                              disabled={busy}
-                              onClick={() => void runIr('reset_password', u.username, pwdValue)}
-                            >
-                              {t('btn_apply')}
-                            </button>
-                            <button
-                              type="button"
-                              className="btn ghost sm"
-                              disabled={busy}
-                              onClick={() => {
-                                setPwdUser(null)
-                                setPwdValue('')
-                              }}
-                            >
-                              {t('btn_cancel')}
-                            </button>
-                          </div>
-                        )}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
+          <DataTable
+            rows={users}
+            rowKey={(u) => u.username}
+            empty={usersReady ? t('threat_users_empty') : t('label_loading')}
+            tableClassName="accounts-table"
+            defaultPageSize={25}
+            columns={userColumns}
+          />
         </div>
       </div>
+      )}
 
       {detail === 'threat' && (
         <DetailModal
-          title={t('threat_attackers_title')}
-          eyebrow={t('threat_attackers_eyebrow')}
-          blurb={t('threat_attackers_blurb')}
+          title={t('threat_alerts_title')}
+          eyebrow={t('threat_alerts_eyebrow')}
+          blurb={t('threat_alerts_blurb')}
           rows={[
-            { label: t('threat_card_listed'), value: String(attackers.length) },
+            { label: t('threat_card_listed'), value: String(threatRows.length) },
             { label: t('threat_card_context'), value: String(total) },
             {
               label: t('threat_detail_top_score'),
-              value: attackers.length
-                ? pick(asRecord(attackers[0]), 'score', 'threat_score')
+              value: threatRows.length
+                ? String(alertFields(asRecord(threatRows[0])).score)
                 : '—',
             },
           ]}

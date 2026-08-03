@@ -338,6 +338,15 @@ export function SettingsPage({ pinEnabled, onToast, onSession }: Props) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [accountPin, setAccountPin] = useState('')
+  const [tab, setTab] = useState<
+    | 'account'
+    | 'settings_sec_email'
+    | 'settings_sec_autoblock'
+    | 'settings_sec_silent'
+    | 'settings_sec_webhook'
+    | 'rules'
+    | 'pin'
+  >('rules')
 
   const load = async () => {
     const result = await motorBridge.cloud('GET', 'threats/config')
@@ -491,6 +500,86 @@ export function SettingsPage({ pinEnabled, onToast, onSession }: Props) {
     return acc
   }, [])
 
+  type SettingsTab =
+    | 'account'
+    | 'settings_sec_email'
+    | 'settings_sec_autoblock'
+    | 'settings_sec_silent'
+    | 'settings_sec_webhook'
+    | 'rules'
+    | 'pin'
+
+  const tabMeta: Array<[SettingsTab, string]> = [
+    ['rules', t('settings_tab_rules')],
+    ['settings_sec_autoblock', t('settings_tab_autoblock')],
+    ['settings_sec_email', t('settings_tab_email')],
+    ['settings_sec_silent', t('settings_tab_silent')],
+    ['settings_sec_webhook', t('settings_tab_webhook')],
+    ['account', t('settings_tab_account')],
+    ['pin', t('settings_tab_pin')],
+  ]
+
+  const renderFields = (sectionKey: string) =>
+    FIELDS.filter((f) => f.sectionKey === sectionKey).map((field) => {
+      const value = nestedGet(draft, field.key)
+      const label = t(field.labelKey)
+      return (
+        <div key={field.key} className={`settings-row${!cfgReady ? ' loading' : ''}`}>
+          <div className="settings-row-copy">
+            <span className="field-label">{label}</span>
+            <p className="field-help">
+              {t(field.helpKey)}{' '}
+              <button type="button" className="field-dash-link" onClick={() => openDash(field.dash)}>
+                {t('settings_dash_link')}
+              </button>
+            </p>
+          </div>
+          <div className="settings-row-control">
+            {field.kind === 'bool' ? (
+              <Switch
+                checked={Boolean(value)}
+                loading={!cfgReady}
+                disabled={busy || !cfgReady}
+                label={label}
+                onChange={(next) => setDraft((prev) => nestedSet(prev, field.key, next))}
+              />
+            ) : field.kind === 'choice' ? (
+              <select
+                disabled={!cfgReady || busy}
+                value={value == null ? '' : String(value)}
+                onChange={(e) => setDraft((prev) => nestedSet(prev, field.key, e.target.value))}
+              >
+                {(field.choices || []).map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {t(opt.labelKey)}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type={field.kind === 'int' ? 'number' : field.kind === 'time' ? 'text' : 'text'}
+                inputMode={field.kind === 'time' ? 'numeric' : undefined}
+                placeholder={field.kind === 'time' ? t('settings_time_ph') : undefined}
+                min={field.min}
+                max={field.max}
+                disabled={!cfgReady || busy}
+                value={value == null ? '' : String(value)}
+                onChange={(e) =>
+                  setDraft((prev) =>
+                    nestedSet(
+                      prev,
+                      field.key,
+                      field.kind === 'int' ? Number(e.target.value) : e.target.value,
+                    ),
+                  )
+                }
+              />
+            )}
+          </div>
+        </div>
+      )
+    })
+
   return (
     <section className="page">
       <div className="page-head">
@@ -504,204 +593,175 @@ export function SettingsPage({ pinEnabled, onToast, onSession }: Props) {
         </button>
       </div>
 
-      <article className="panel">
-        <p className="eyebrow">{t('settings_account')}</p>
-        <h3>
-          {linked
-            ? t('settings_linked', { email: accountEmail ? `: ${accountEmail}` : '' })
-            : t('settings_not_linked')}
-        </h3>
-        <p className="muted">{t('settings_account_blurb')}</p>
-        {linked && (
-          <p className="muted" style={{ marginTop: 8 }}>{t('account_unlink_mail_note')}</p>
-        )}
-        <div className="inline-form" style={{ marginTop: 12 }}>
-          {!linked && (
-            <input
-              type="email"
-              placeholder={t('settings_email_ph')}
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              autoComplete="username"
-            />
-          )}
-          <PasswordInput value={password} onChange={setPassword} placeholder={t('settings_password_ph')} />
-          <PasswordInput
-            value={accountPin}
-            onChange={setAccountPin}
-            placeholder={t('account_pin_reauth')}
-            numeric
-          />
-          <button type="button" className="btn" disabled={busy || linked} onClick={() => void submitAccount('link')}>
-            {t('btn_link_account')}
+      <nav className="page-tabs" aria-label={t('settings_title')}>
+        {tabMeta.map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            className={`page-tab${tab === id ? ' active' : ''}`}
+            onClick={() => setTab(id)}
+          >
+            {label}
           </button>
-          <button type="button" className="btn danger" disabled={busy || !linked} onClick={() => void submitAccount('unlink')}>
-            {t('btn_unlink_account')}
-          </button>
-        </div>
-      </article>
-
-      <form className="settings-form" onSubmit={(e) => void save(e)} style={{ marginTop: 24 }}>
-        {!cfgReady && <p className="muted status-loading-hint">{t('status_section_loading')}</p>}
-        {sections.map((sectionKey) => (
-          <article key={sectionKey} className="panel" style={{ marginBottom: 16 }}>
-            <p className="eyebrow">{t(sectionKey)}</p>
-            {FIELDS.filter((f) => f.sectionKey === sectionKey).map((field) => {
-              const value = nestedGet(draft, field.key)
-              const label = t(field.labelKey)
-              return (
-                <div key={field.key} className={`field field-stack${!cfgReady ? ' loading' : ''}`}>
-                  <div className="field-main">
-                    <div className="field-copy">
-                      <span className="field-label">{label}</span>
-                      <p className="field-help">
-                        {t(field.helpKey)}{' '}
-                        <button type="button" className="field-dash-link" onClick={() => openDash(field.dash)}>
-                          {t('settings_dash_link')}
-                        </button>
-                      </p>
-                    </div>
-                    {field.kind === 'bool' ? (
-                      <Switch
-                        checked={Boolean(value)}
-                        loading={!cfgReady}
-                        disabled={busy || !cfgReady}
-                        label={label}
-                        onChange={(next) => setDraft((prev) => nestedSet(prev, field.key, next))}
-                      />
-                    ) : field.kind === 'choice' ? (
-                      <select
-                        disabled={!cfgReady || busy}
-                        value={value == null ? '' : String(value)}
-                        onChange={(e) => setDraft((prev) => nestedSet(prev, field.key, e.target.value))}
-                      >
-                        {(field.choices || []).map((opt) => (
-                          <option key={opt.value} value={opt.value}>
-                            {t(opt.labelKey)}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      <input
-                        type={field.kind === 'int' ? 'number' : field.kind === 'time' ? 'text' : 'text'}
-                        inputMode={field.kind === 'time' ? 'numeric' : undefined}
-                        placeholder={field.kind === 'time' ? t('settings_time_ph') : undefined}
-                        min={field.min}
-                        max={field.max}
-                        disabled={!cfgReady || busy}
-                        value={value == null ? '' : String(value)}
-                        onChange={(e) =>
-                          setDraft((prev) =>
-                            nestedSet(
-                              prev,
-                              field.key,
-                              field.kind === 'int' ? Number(e.target.value) : e.target.value,
-                            ),
-                          )
-                        }
-                      />
-                    )}
-                  </div>
-                </div>
-              )
-            })}
-          </article>
         ))}
+      </nav>
 
-        <article className="panel" style={{ marginBottom: 16 }}>
-          <p className="eyebrow">{t('settings_sec_block_rules')}</p>
-          <p className="muted" style={{ marginBottom: 12 }}>{t('settings_block_rules_blurb')}</p>
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>{t('settings_br_service')}</th>
-                  <th>{t('settings_br_enabled')}</th>
-                  <th>{t('settings_br_threshold')}</th>
-                  <th>{t('settings_br_window')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {blockRules.map((row) => (
-                  <tr key={row.id || row.service}>
-                    <td className="mono">{row.service}</td>
-                    <td>
-                      <Switch
-                        checked={row.enabled}
-                        loading={!cfgReady}
-                        disabled={busy || !cfgReady}
-                        label={row.service}
-                        onChange={(next) => updateRule(row.service, { enabled: next })}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        type="number"
-                        min={1}
-                        max={100}
-                        disabled={!cfgReady || busy}
-                        value={row.threshold}
-                        onChange={(e) =>
-                          updateRule(row.service, { threshold: Math.max(1, Number(e.target.value) || 1) })
-                        }
-                        style={{ width: 88 }}
-                      />
-                    </td>
-                    <td>
-                      <input
-                        type="number"
-                        min={1}
-                        max={1440}
-                        disabled={!cfgReady || busy}
-                        value={Math.max(1, Math.round(row.window_seconds / 60))}
-                        onChange={(e) => {
-                          const mins = Math.max(1, Math.min(1440, Number(e.target.value) || 30))
-                          updateRule(row.service, { window_seconds: mins * 60 })
-                        }}
-                        style={{ width: 88 }}
-                      />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </article>
-
-        <button type="submit" className="btn" disabled={busy}>{t('btn_save')}</button>
-      </form>
-
-      <article className="panel" style={{ marginTop: 24 }}>
-        <p className="eyebrow">{t('settings_pin')}</p>
-        <h3>{pinEnabled ? t('settings_pin_set') : t('settings_pin_none')}</h3>
-        <p className="muted">{t('settings_pin_desc')}</p>
-        {linked && (
-          <div className="lock-callout linked" style={{ marginTop: 12, marginBottom: 12 }} role="status">
-            <p style={{ marginBottom: 0 }}>{t('settings_pin_dashboard_hint')}</p>
-          </div>
-        )}
-        <div className="inline-form">
-          {pinEnabled && (
+      {tab === 'account' && (
+        <article className="panel settings-panel">
+          <p className="eyebrow">{t('settings_account')}</p>
+          <h3>
+            {linked
+              ? t('settings_linked', { email: accountEmail ? `: ${accountEmail}` : '' })
+              : t('settings_not_linked')}
+          </h3>
+          <p className="muted">{t('settings_account_blurb')}</p>
+          {linked && (
+            <p className="muted" style={{ marginTop: 8 }}>{t('account_unlink_mail_note')}</p>
+          )}
+          <div className="settings-account-form">
+            {!linked && (
+              <input
+                type="email"
+                placeholder={t('settings_email_ph')}
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                autoComplete="username"
+              />
+            )}
+            <PasswordInput value={password} onChange={setPassword} placeholder={t('settings_password_ph')} />
             <PasswordInput
-              value={pinCurrent}
-              onChange={setPinCurrent}
-              placeholder={t('settings_pin_current')}
+              value={accountPin}
+              onChange={setAccountPin}
+              placeholder={t('account_pin_reauth')}
               numeric
             />
+            <div className="btn-row">
+              <button type="button" className="btn" disabled={busy || linked} onClick={() => void submitAccount('link')}>
+                {t('btn_link_account')}
+              </button>
+              <button type="button" className="btn danger" disabled={busy || !linked} onClick={() => void submitAccount('unlink')}>
+                {t('btn_unlink_account')}
+              </button>
+            </div>
+          </div>
+        </article>
+      )}
+
+      {tab === 'pin' && (
+        <article className="panel settings-panel">
+          <p className="eyebrow">{t('settings_pin')}</p>
+          <h3>{pinEnabled ? t('settings_pin_set') : t('settings_pin_none')}</h3>
+          <p className="muted">{t('settings_pin_desc')}</p>
+          {linked && (
+            <div className="lock-callout linked" style={{ marginTop: 12, marginBottom: 12 }} role="status">
+              <p style={{ marginBottom: 0 }}>{t('settings_pin_dashboard_hint')}</p>
+            </div>
           )}
-          <PasswordInput
-            value={pin}
-            onChange={setPin}
-            placeholder={t('settings_pin_new')}
-            numeric
-            autoComplete="new-password"
-          />
-          <button type="button" className="btn" onClick={() => void setPinAction()}>{t('btn_save')}</button>
-          {pinEnabled && (
-            <button type="button" className="btn danger" onClick={() => void clearPin()}>{t('btn_remove')}</button>
+          <div className="settings-account-form">
+            {pinEnabled && (
+              <PasswordInput
+                value={pinCurrent}
+                onChange={setPinCurrent}
+                placeholder={t('settings_pin_current')}
+                numeric
+              />
+            )}
+            <PasswordInput
+              value={pin}
+              onChange={setPin}
+              placeholder={t('settings_pin_new')}
+              numeric
+              autoComplete="new-password"
+            />
+            <div className="btn-row">
+              <button type="button" className="btn" onClick={() => void setPinAction()}>{t('btn_save')}</button>
+              {pinEnabled && (
+                <button type="button" className="btn danger" onClick={() => void clearPin()}>{t('btn_remove')}</button>
+              )}
+            </div>
+          </div>
+        </article>
+      )}
+
+      {(tab === 'settings_sec_email' ||
+        tab === 'settings_sec_autoblock' ||
+        tab === 'settings_sec_silent' ||
+        tab === 'settings_sec_webhook' ||
+        tab === 'rules') && (
+        <form className="settings-form" onSubmit={(e) => void save(e)}>
+          {!cfgReady && <p className="muted status-loading-hint">{t('status_section_loading')}</p>}
+          {tab !== 'rules' && sections.includes(tab) && (
+            <article className="panel settings-panel">
+              <p className="eyebrow">{t(tab)}</p>
+              <div className="settings-rows">{renderFields(tab)}</div>
+            </article>
           )}
-        </div>
-      </article>
+          {tab === 'rules' && (
+            <article className="panel settings-panel">
+              <p className="eyebrow">{t('settings_sec_block_rules')}</p>
+              <p className="muted" style={{ marginBottom: 12 }}>{t('settings_block_rules_blurb')}</p>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>{t('settings_br_service')}</th>
+                      <th>{t('settings_br_enabled')}</th>
+                      <th>{t('settings_br_threshold')}</th>
+                      <th>{t('settings_br_window')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {blockRules.map((row) => (
+                      <tr key={row.id || row.service}>
+                        <td className="mono">{row.service}</td>
+                        <td>
+                          <Switch
+                            checked={row.enabled}
+                            loading={!cfgReady}
+                            disabled={busy || !cfgReady}
+                            label={row.service}
+                            onChange={(next) => updateRule(row.service, { enabled: next })}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="number"
+                            min={1}
+                            max={100}
+                            disabled={!cfgReady || busy}
+                            value={row.threshold}
+                            onChange={(e) =>
+                              updateRule(row.service, { threshold: Math.max(1, Number(e.target.value) || 1) })
+                            }
+                            style={{ width: 88 }}
+                          />
+                        </td>
+                        <td>
+                          <input
+                            type="number"
+                            min={1}
+                            max={1440}
+                            disabled={!cfgReady || busy}
+                            value={Math.max(1, Math.round(row.window_seconds / 60))}
+                            onChange={(e) => {
+                              const mins = Math.max(1, Math.min(1440, Number(e.target.value) || 30))
+                              updateRule(row.service, { window_seconds: mins * 60 })
+                            }}
+                            style={{ width: 88 }}
+                          />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </article>
+          )}
+          <div className="settings-save-bar">
+            <button type="submit" className="btn" disabled={busy}>{t('btn_save')}</button>
+          </div>
+        </form>
+      )}
     </section>
   )
 }
