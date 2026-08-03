@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.76"  # Unlink via email magic-link request; fix missing_confirm_code mislabel
+VERSION = "4.9.77"  # i18n: claim/unlink/settings error toasts — no raw API codes or hardcoded fallbacks
 
 
 

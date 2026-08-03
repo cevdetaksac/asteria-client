@@ -114,7 +114,7 @@ export default function App() {
           void refreshSession()
           return
         }
-        showToast(result.ok ? okMsg : String(result.error || action), result.ok ? 'ok' : 'err')
+        showToast(result.ok ? okMsg : t('toast_error_generic'), result.ok ? 'ok' : 'err')
       } catch (reason) {
         showToast(reason instanceof Error ? reason.message : String(reason), 'err')
       }
@@ -182,7 +182,7 @@ export default function App() {
         return
       }
       if (!result.ok) {
-        showToast(String(result.error || 'about'), 'err')
+        showToast(String(result.error || t('toast_error_generic')), 'err')
         return
       }
       setAbout({
@@ -199,7 +199,7 @@ export default function App() {
   const mapAccountError = useCallback((result: { error?: unknown; reason?: unknown }) => {
     const code = String(result.error || result.reason || 'account')
     if (code === 'pin_required') return t('account_pin_required')
-    if (code === 'pin_verification_failed') return t('account_pin_wrong')
+    if (code === 'pin_verification_failed' || code === 'pin_set_failed') return t('account_pin_wrong')
     if (code === 'invalid_credentials') return t('claim_bad_credentials')
     if (code === 'already_linked_other' || code === 'conflict_other_account') {
       return t('claim_other_account')
@@ -210,7 +210,11 @@ export default function App() {
     if (code === 'email_mismatch') return t('account_unlink_email_mismatch')
     if (code === 'missing_confirm_code') return t('account_unlink_need_mail_first')
     if (code === 'unlink_mail_unavailable') return t('account_unlink_mail_unavailable')
-    return code
+    if (code === 'token_missing') return t('toast_token_missing')
+    if (code === 'missing_credentials') return t('toast_need_creds')
+    if (code === 'account' || code === 'account_unknown_action') return t('toast_account_failed')
+    // Never surface raw API/error codes in the UI.
+    return t('toast_account_failed')
   }, [])
 
   const claimAccount = useCallback(async (email: string, password: string, accountPin: string) => {

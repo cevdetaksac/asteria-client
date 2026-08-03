@@ -319,7 +319,11 @@ function mapSettingsAccountError(code: string): string {
   if (code === 'invalid_confirm_code' || code === 'confirm_code_invalid') {
     return t('account_unlink_need_mail_first')
   }
-  return code
+  if (code === 'pin_verification_failed' || code === 'pin_set_failed') return t('account_pin_wrong')
+  if (code === 'pin_required') return t('account_pin_required')
+  if (code === 'missing_credentials') return t('toast_need_creds')
+  if (code === 'token_missing') return t('toast_token_missing')
+  return t('toast_account_failed')
 }
 
 export function SettingsPage({ pinEnabled, onToast, onSession }: Props) {
@@ -393,7 +397,7 @@ export function SettingsPage({ pinEnabled, onToast, onSession }: Props) {
         })),
       }
       const result = await motorBridge.cloud('POST', 'threats/config', patch)
-      onToast(result.ok ? t('toast_settings_saved') : String(result.error || 'save'), result.ok ? 'ok' : 'err')
+      onToast(result.ok ? t('toast_settings_saved') : t('toast_error_generic'), result.ok ? 'ok' : 'err')
       await load()
     } finally {
       setBusy(false)
@@ -402,7 +406,7 @@ export function SettingsPage({ pinEnabled, onToast, onSession }: Props) {
 
   const setPinAction = async () => {
     const result = await motorBridge.pin('set', pin, pinCurrent)
-    onToast(result.ok ? t('toast_pin_saved') : String(result.reason || result.error || 'PIN'), result.ok ? 'ok' : 'err')
+    onToast(result.ok ? t('toast_pin_saved') : t('toast_pin_failed'), result.ok ? 'ok' : 'err')
     if (result.ok) {
       setPin('')
       setPinCurrent('')
@@ -412,7 +416,7 @@ export function SettingsPage({ pinEnabled, onToast, onSession }: Props) {
 
   const clearPin = async () => {
     const result = await motorBridge.pin('clear', '', pinCurrent || pin)
-    onToast(result.ok ? t('toast_pin_cleared') : String(result.reason || result.error || 'PIN'), result.ok ? 'ok' : 'err')
+    onToast(result.ok ? t('toast_pin_cleared') : t('toast_pin_failed'), result.ok ? 'ok' : 'err')
     if (result.ok) onSession()
   }
 
@@ -581,7 +585,7 @@ export function SettingsPage({ pinEnabled, onToast, onSession }: Props) {
                       <input
                         type={field.kind === 'int' ? 'number' : field.kind === 'time' ? 'text' : 'text'}
                         inputMode={field.kind === 'time' ? 'numeric' : undefined}
-                        placeholder={field.kind === 'time' ? 'HH:MM' : undefined}
+                        placeholder={field.kind === 'time' ? t('settings_time_ph') : undefined}
                         min={field.min}
                         max={field.max}
                         disabled={!cfgReady || busy}
