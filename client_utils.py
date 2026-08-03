@@ -1209,6 +1209,7 @@ def refresh_account_link_status(token: str = "", api_client=None) -> Optional[bo
                 try:
                     r = requests.get(
                         f"{base}/{path}",
+                        headers={"Authorization": f"Bearer {tok}", "Accept": "application/json"},
                         params={"token": tok},
                         timeout=8,
                         verify=resolve_tls_verify(),
@@ -1440,12 +1441,18 @@ def clear_force_gui_onboarding() -> None:
 
 
 def should_force_gui_visible(has_token: bool = False) -> bool:
-    """True only while this machine has no durable agent token yet.
+    """True while this machine still needs first-run claim UX.
 
-    Once a token exists, onboarding is done — allow minimize-to-tray and clear
-    any stale force_gui_onboarding.flag (otherwise close-to-tray stays blocked forever).
+    Keep the window forced until there is a durable agent token **and** an
+    account link. Unlinked hosts must not disappear into the tray — critical
+    auto-actions stay passive until claim (anti-brick).
     """
-    if has_token:
+    linked = False
+    try:
+        linked = bool(is_account_linked())
+    except Exception:
+        linked = False
+    if has_token and linked:
         clear_force_gui_onboarding()
         return False
     try:
@@ -1453,7 +1460,7 @@ def should_force_gui_visible(has_token: bool = False) -> bool:
             return True
     except OSError:
         pass
-    # No token yet → keep window visible for first registration
+    # No token yet, or token without account → keep window visible
     return True
 
 

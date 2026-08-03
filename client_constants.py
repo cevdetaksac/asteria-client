@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.74"  # GUI: full-width threat cards, logoff gate, quieter poll, hidden PS, RDP badge, settings block_rules
+VERSION = "4.9.75"  # Claim-gate first-run account link + unlink mail-confirm UX; anti-brick messaging
 
 
 

@@ -392,18 +392,34 @@ export function installMockBridge(): void {
       }
       return { ok: true, mock: true, action }
     },
-    async account(action = 'status', email = '', password = '', pin = '') {
+    async account(action = 'status', email = '', password = '', pin = '', code = '') {
       if (locked) return { ok: false, error: 'gui_locked' }
-      if (action === 'status') return { ok: true, linked: accountLinked, email: accountEmail }
-      if (!pinEnabled) return { ok: false, error: 'pin_required' }
-      if (pin.length < 4) return { ok: false, error: 'pin_verification_failed', reason: 'bad_pin' }
-      if (!email || !password) return { ok: false, error: 'missing_credentials' }
+      if (action === 'status') {
+        return { ok: true, linked: accountLinked, email: accountEmail, needs_account_link: !accountLinked }
+      }
       if (action === 'link') {
+        if (!pinEnabled) {
+          if (pin.length < 4) return { ok: false, error: 'pin_required' }
+          pinEnabled = true
+        } else if (pin.length < 4) {
+          return { ok: false, error: 'pin_verification_failed', reason: 'bad_pin' }
+        }
+        if (!email || !password) return { ok: false, error: 'missing_credentials' }
         accountLinked = true
         accountEmail = email
         return { ok: true, account_linked: true, email }
       }
-      if (action === 'unlink') {
+      if (!pinEnabled) return { ok: false, error: 'pin_required' }
+      if (pin.length < 4) return { ok: false, error: 'pin_verification_failed', reason: 'bad_pin' }
+      if (!email || !password) return { ok: false, error: 'missing_credentials' }
+      if (action === 'unlink_request') {
+        // Simulate cloud mailer missing in browser mock → soft fallback path.
+        return { ok: false, error: 'unlink_mail_unavailable', mail_confirm: false }
+      }
+      if (action === 'unlink' || action === 'unlink_confirm') {
+        if (action === 'unlink_confirm' && !code) {
+          return { ok: false, error: 'missing_confirm_code' }
+        }
         accountLinked = false
         accountEmail = ''
         return { ok: true, account_linked: false }

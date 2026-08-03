@@ -3,6 +3,7 @@ import { motorBridge, type MotorStatus } from './bridge'
 import { AccountActionModal } from './components/AccountActionModal'
 import { AboutModal, type AboutInfo } from './components/AboutModal'
 import { BrandSidebar } from './components/Brand'
+import { ClaimAccountGate } from './components/ClaimAccountGate'
 import { HeaderMenu, type MenuAction } from './components/HeaderMenu'
 import { IdentityStrip } from './components/IdentityStrip'
 import { LiveMeters } from './components/LiveMeters'
@@ -60,6 +61,10 @@ export default function App() {
   const [unlinkOpen, setUnlinkOpen] = useState(false)
   const [accountBusy, setAccountBusy] = useState(false)
   const [accountError, setAccountError] = useState('')
+  const [claimBusy, setClaimBusy] = useState(false)
+  const [claimError, setClaimError] = useState('')
+  const [unlinkCodeSent, setUnlinkCodeSent] = useState(false)
+  const [unlinkMailAvailable, setUnlinkMailAvailable] = useState<boolean | null>(null)
 
   useEffect(() => subscribeI18n(() => {
     setLang(currentLang())
@@ -192,16 +197,92 @@ export default function App() {
     }
   }, [enterLockScreen, refreshSession, showToast, status?.version])
 
-  const unlinkAccount = useCallback(async (password: string, accountPin: string) => {
+  const mapAccountError = useCallback((result: { error?: unknown; reason?: unknown }) => {
+    const code = String(result.error || result.reason || 'account')
+    if (code === 'pin_required') return t('account_pin_required')
+    if (code === 'pin_verification_failed') return t('account_pin_wrong')
+    if (code === 'invalid_credentials') return t('claim_bad_credentials')
+    if (code === 'already_linked_other' || code === 'conflict_other_account') {
+      return t('claim_other_account')
+    }
+    if (code === 'invalid_confirm_code' || code === 'confirm_code_invalid') {
+      return t('account_unlink_bad_code')
+    }
+    if (code === 'email_mismatch') return t('account_unlink_email_mismatch')
+    if (code === 'missing_confirm_code') return t('account_unlink_need_code')
+    return code
+  }, [])
+
+  const claimAccount = useCallback(async (email: string, password: string, accountPin: string) => {
+    setClaimBusy(true)
+    setClaimError('')
+    try {
+      const result = await motorBridge.account('link', email, password, accountPin)
+      if (isGuiLockedPayload(result)) {
+        enterLockScreen()
+        void refreshSession()
+        return
+      }
+      if (!result.ok) {
+        setClaimError(mapAccountError(result))
+        return
+      }
+      showToast(t('toast_link_ok'))
+      setClaimError('')
+      await refreshSession()
+    } catch (reason) {
+      setClaimError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setClaimBusy(false)
+    }
+  }, [enterLockScreen, mapAccountError, refreshSession, showToast])
+
+  const requestUnlinkCode = useCallback(async (password: string, accountPin: string) => {
     setAccountBusy(true)
     setAccountError('')
     try {
-      const result = await motorBridge.account(
-        'unlink',
-        accountEmail,
-        password,
-        accountPin,
-      )
+      const result = await motorBridge.account('unlink_request', accountEmail, password, accountPin)
+      if (isGuiLockedPayload(result)) {
+        setUnlinkOpen(false)
+        enterLockScreen()
+        void refreshSession()
+        return
+      }
+      if (result.error === 'unlink_mail_unavailable' || result.mail_confirm === false) {
+        setUnlinkMailAvailable(false)
+        setUnlinkCodeSent(false)
+        setAccountError('')
+        return
+      }
+      if (!result.ok) {
+        setAccountError(mapAccountError(result))
+        return
+      }
+      setUnlinkMailAvailable(true)
+      setUnlinkCodeSent(true)
+      showToast(t('toast_unlink_code_sent'))
+    } catch (reason) {
+      setAccountError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setAccountBusy(false)
+    }
+  }, [accountEmail, enterLockScreen, mapAccountError, refreshSession, showToast])
+
+  const unlinkAccount = useCallback(async (
+    password: string,
+    accountPin: string,
+    code: string,
+    emailConfirm: string,
+  ) => {
+    setAccountBusy(true)
+    setAccountError('')
+    try {
+      if (emailConfirm.trim().toLowerCase() !== accountEmail.trim().toLowerCase()) {
+        setAccountError(t('account_unlink_email_mismatch'))
+        return
+      }
+      const action = code ? 'unlink_confirm' : 'unlink'
+      const result = await motorBridge.account(action, accountEmail, password, accountPin, code)
       if (isGuiLockedPayload(result)) {
         setUnlinkOpen(false)
         enterLockScreen()
@@ -209,16 +290,12 @@ export default function App() {
         return
       }
       if (!result.ok) {
-        const message =
-          result.error === 'pin_required'
-            ? t('account_pin_required')
-            : result.error === 'pin_verification_failed'
-              ? t('account_pin_wrong')
-              : String(result.error || result.reason || 'account')
-        setAccountError(message)
+        setAccountError(mapAccountError(result))
         return
       }
       setUnlinkOpen(false)
+      setUnlinkCodeSent(false)
+      setUnlinkMailAvailable(null)
       showToast(t('toast_unlink_ok'))
       await refreshSession()
     } catch (reason) {
@@ -226,7 +303,7 @@ export default function App() {
     } finally {
       setAccountBusy(false)
     }
-  }, [accountEmail, enterLockScreen, refreshSession, showToast])
+  }, [accountEmail, enterLockScreen, mapAccountError, refreshSession, showToast])
 
   const refresh = useCallback(async (opts?: { silent?: boolean }) => {
     const silent = Boolean(opts?.silent && statusHydrated)
@@ -324,10 +401,13 @@ export default function App() {
       }
       if (action === 'link_account') {
         setPage('settings')
+        setClaimError('')
         return
       }
       if (action === 'unlink_account') {
         setAccountError('')
+        setUnlinkCodeSent(false)
+        setUnlinkMailAvailable(null)
         setUnlinkOpen(true)
         return
       }
@@ -450,6 +530,20 @@ export default function App() {
         onOpenDashboard={() => void motorBridge.shell('open_dashboard')}
         lang={lang}
         onLang={(next) => void switchLang(next)}
+      />
+    )
+  }
+
+  // First-run / orphan: claim this agent before full Control Center (anti-brick).
+  if (!accountLinked) {
+    return (
+      <ClaimAccountGate
+        pinEnabled={pinEnabled}
+        busy={claimBusy}
+        error={claimError}
+        onLink={(email, password, accountPin) => void claimAccount(email, password, accountPin)}
+        onOpenDashboard={() => void motorBridge.shell('open_dashboard')}
+        onOpenRegister={() => void motorBridge.shell('open_website')}
       />
     )
   }
@@ -685,10 +779,19 @@ export default function App() {
           email={accountEmail}
           busy={accountBusy}
           error={accountError}
+          codeSent={unlinkCodeSent}
+          mailConfirmAvailable={unlinkMailAvailable}
           onClose={() => {
-            if (!accountBusy) setUnlinkOpen(false)
+            if (!accountBusy) {
+              setUnlinkOpen(false)
+              setUnlinkCodeSent(false)
+              setUnlinkMailAvailable(null)
+            }
           }}
-          onConfirm={(password, accountPin) => void unlinkAccount(password, accountPin)}
+          onRequestCode={(password, accountPin) => void requestUnlinkCode(password, accountPin)}
+          onConfirm={(password, accountPin, code, emailConfirm) =>
+            void unlinkAccount(password, accountPin, code, emailConfirm)
+          }
         />
       )}
     </div>

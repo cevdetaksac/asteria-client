@@ -9,6 +9,7 @@ type Props = {
   autoComplete?: string
   numeric?: boolean
   autoFocus?: boolean
+  disabled?: boolean
 }
 
 function EyeIcon({ off }: { off: boolean }) {
@@ -30,6 +31,7 @@ export function PasswordInput({
   autoComplete = 'current-password',
   numeric = false,
   autoFocus = false,
+  disabled = false,
 }: Props) {
   const [shown, setShown] = useState(false)
   return (
@@ -38,6 +40,7 @@ export function PasswordInput({
         type={shown ? 'text' : 'password'}
         inputMode={numeric ? 'numeric' : undefined}
         value={value}
+        disabled={disabled}
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}
         aria-label={ariaLabel || placeholder}

@@ -1262,6 +1262,23 @@ def link_account_with_credentials(
                     "error": "invalid_credentials",
                     "source": "agent_api",
                 }
+            if r.status_code in (403, 409):
+                detail = ""
+                try:
+                    detail = str((r.json() or {}).get("detail") or "")
+                except Exception:
+                    detail = ""
+                detail_l = detail.lower()
+                err = "already_linked_other"
+                if "other" in detail_l or "another" in detail_l or "conflict" in detail_l:
+                    err = "already_linked_other"
+                return {
+                    "ok": False,
+                    "account_linked": False,
+                    "error": err,
+                    "detail": detail,
+                    "source": "agent_api",
+                }
             if 200 <= r.status_code < 300:
                 try:
                     data = r.json() if r.content else {}
@@ -1397,7 +1414,7 @@ def link_account_with_credentials(
         }
 
 
-def unlink_account_with_credentials(
+def request_unlink_confirmation(
     email: str,
     password: str,
     agent_token: str,
@@ -1405,10 +1422,123 @@ def unlink_account_with_credentials(
     api_url: str = "",
     log_func=None,
 ) -> Dict[str, Any]:
+    """Ask cloud to email a one-time unlink confirmation code (contract P0d).
+
+    Returns ok=True when mail was queued. When endpoints are missing, returns
+    ``mail_confirm=False`` / ``unlink_mail_unavailable`` so the GUI can fall
+    back to password+PIN unlink until cloud ships the mailer.
+    """
+    import requests
+    from client_constants import API_URL
+
+    def _log(msg: str):
+        if log_func:
+            try:
+                log_func(msg)
+            except Exception:
+                pass
+
+    email = (email or "").strip()
+    password = password or ""
+    tok = (agent_token or "").strip()
+    if not email or not password:
+        return {"ok": False, "error": "missing_credentials", "mail_confirm": True}
+    if not tok:
+        return {"ok": False, "error": "missing_token", "mail_confirm": True}
+
+    api_base = (api_url or API_URL).rstrip("/")
+    verify = resolve_tls_verify()
+    body = {
+        "email": email,
+        "password": password,
+        "token": tok,
+        "client_token": tok,
+    }
+    saw_404 = False
+    for path in (
+        "agent/unlink-account/request",
+        "agent/unlink-account-request",
+        "account/unlink-request",
+    ):
+        try:
+            r = requests.post(
+                f"{api_base}/{path}",
+                json=body,
+                timeout=20,
+                verify=verify,
+                headers={"Accept": "application/json"},
+            )
+            if r.status_code == 404:
+                saw_404 = True
+                continue
+            if r.status_code == 401:
+                return {
+                    "ok": False,
+                    "error": "invalid_credentials",
+                    "mail_confirm": True,
+                    "source": "agent_api",
+                }
+            if 200 <= r.status_code < 300:
+                try:
+                    data = r.json() if r.content else {}
+                except Exception:
+                    data = {}
+                if not isinstance(data, dict):
+                    data = {}
+                _log(f"[ACCOUNT] Unlink confirm code requested via {path}")
+                return {
+                    "ok": True,
+                    "sent": True,
+                    "mail_confirm": True,
+                    "expires_in": data.get("expires_in"),
+                    "source": "agent_api",
+                    "raw": data,
+                }
+            detail = ""
+            try:
+                detail = str((r.json() or {}).get("detail") or "")
+            except Exception:
+                detail = (r.text or "")[:120]
+            return {
+                "ok": False,
+                "error": detail or f"http_{r.status_code}",
+                "mail_confirm": True,
+                "source": "agent_api",
+            }
+        except Exception as e:
+            _log(f"[ACCOUNT] unlink request {path}: {e}")
+            continue
+
+    if saw_404:
+        return {
+            "ok": False,
+            "error": "unlink_mail_unavailable",
+            "mail_confirm": False,
+            "source": "none",
+        }
+    return {
+        "ok": False,
+        "error": "unlink_mail_unavailable",
+        "mail_confirm": False,
+        "source": "none",
+    }
+
+
+def unlink_account_with_credentials(
+    email: str,
+    password: str,
+    agent_token: str,
+    *,
+    confirm_code: str = "",
+    require_confirm_code: bool = False,
+    api_url: str = "",
+    log_func=None,
+) -> Dict[str, Any]:
     """Unlink this agent token from an Asteria Account (email+password confirm).
 
     Prefer JSON: POST /api/agent/unlink-account
-    Fallback: open-web instruction if endpoint missing (caller shows /servers).
+    When ``require_confirm_code`` is True, ``confirm_code`` must be present and
+    is sent for cloud mail-OTP verification (contract P0d).
 
     Returns dict: ok, account_linked, error?, source
     """
@@ -1426,24 +1556,40 @@ def unlink_account_with_credentials(
     email = (email or "").strip()
     password = password or ""
     tok = (agent_token or "").strip()
+    code = str(confirm_code or "").strip()
     if not email or not password:
         return {"ok": False, "account_linked": True, "error": "missing_credentials"}
     if not tok:
         return {"ok": False, "account_linked": True, "error": "missing_token"}
+    if require_confirm_code and not code:
+        return {"ok": False, "account_linked": True, "error": "missing_confirm_code"}
 
     api_base = (api_url or API_URL).rstrip("/")
     verify = resolve_tls_verify()
 
-    for path in ("agent/unlink-account", "account/unlink-by-agent"):
+    payload = {
+        "email": email,
+        "password": password,
+        "token": tok,
+        "client_token": tok,
+    }
+    if code:
+        payload["confirm_code"] = code
+        payload["code"] = code
+
+    paths = ("agent/unlink-account", "account/unlink-by-agent")
+    if code:
+        paths = (
+            "agent/unlink-account/confirm",
+            "agent/unlink-account",
+            "account/unlink-by-agent",
+        )
+
+    for path in paths:
         try:
             r = requests.post(
                 f"{api_base}/{path}",
-                json={
-                    "email": email,
-                    "password": password,
-                    "token": tok,
-                    "client_token": tok,
-                },
+                json=payload,
                 timeout=20,
                 verify=verify,
                 headers={"Accept": "application/json"},
@@ -1451,10 +1597,25 @@ def unlink_account_with_credentials(
             if r.status_code == 404:
                 continue
             if r.status_code == 401:
+                detail = ""
+                try:
+                    detail = str((r.json() or {}).get("detail") or "").lower()
+                except Exception:
+                    detail = ""
+                err = "invalid_credentials"
+                if "code" in detail or "confirm" in detail:
+                    err = "invalid_confirm_code"
                 return {
                     "ok": False,
                     "account_linked": True,
-                    "error": "invalid_credentials",
+                    "error": err,
+                    "source": "agent_api",
+                }
+            if r.status_code == 422 and require_confirm_code:
+                return {
+                    "ok": False,
+                    "account_linked": True,
+                    "error": "missing_confirm_code",
                     "source": "agent_api",
                 }
             if 200 <= r.status_code < 300:
@@ -1480,10 +1641,14 @@ def unlink_account_with_credentials(
                 detail = str((r.json() or {}).get("detail") or "")
             except Exception:
                 detail = (r.text or "")[:120]
+            detail_l = detail.lower()
+            err = detail or f"http_{r.status_code}"
+            if "code" in detail_l or "confirm" in detail_l:
+                err = "invalid_confirm_code"
             return {
                 "ok": False,
                 "account_linked": True,
-                "error": detail or f"http_{r.status_code}",
+                "error": err,
                 "source": "agent_api",
             }
         except Exception as e:

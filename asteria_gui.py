@@ -213,7 +213,7 @@ def _build_dashboard_url(target_key: str, token: str = "") -> Optional[str]:
         url = f"{url}#{fragment}"
     return url
 
-_ACCOUNT_ACTIONS = frozenset({"status", "link", "unlink"})
+_ACCOUNT_ACTIONS = frozenset({"status", "link", "unlink", "unlink_request", "unlink_confirm"})
 _HARDEN_FIX_TARGETS = frozenset({"winrm", "nla", "antivirus"})
 _RDP_MOVE_MODES = frozenset({"secure", "rollback"})
 _RDP_ACTIONS = frozenset({"status", "move", "begin", "confirm", "cancel"})
@@ -791,6 +791,7 @@ class MotorBridge:
             "pin_enabled": has_pin,
             "account_linked": linked,
             "account_email": email,
+            "needs_account_link": not linked,
             "server_name": identity.get("server_name") or "",
             "token_present": bool(identity.get("token_present")),
             "token_preview": identity.get("token_preview") or "",
@@ -1081,6 +1082,7 @@ class MotorBridge:
         email: str = "",
         password: str = "",
         pin: str = "",
+        code: str = "",
     ) -> Dict[str, Any]:
         """In-app Account link/unlink with fresh local PIN confirmation."""
         if not self._authorized():
@@ -1096,24 +1098,38 @@ class MotorBridge:
                     "ok": True,
                     "linked": bool(is_account_linked()),
                     "email": get_linked_account_email() or "",
+                    "needs_account_link": not bool(is_account_linked()),
                 }
-            # A currently unlocked session is not sufficient for account ownership
-            # changes. Require the local PIN again and do not extend the session.
+
+            pin_val = str(pin or "").strip()
+            # First-claim: when no PIN exists yet, the provided pin becomes the new PIN.
             if not self._gui_lock.has_pin():
-                return {"ok": False, "error": "pin_required"}
-            ok_pin, pin_reason = self._gui_lock.verify_pin(
-                str(pin or ""), unlock_on_success=False
-            )
-            if not ok_pin:
-                return {
-                    "ok": False,
-                    "error": "pin_verification_failed",
-                    "reason": pin_reason,
-                    "lockout_seconds": round(self._gui_lock.lockout_remaining()),
-                }
+                if act == "link":
+                    if len(pin_val) < 4:
+                        return {"ok": False, "error": "pin_required"}
+                    set_ok, set_reason = self._gui_lock.set_pin(pin_val, source="claim")
+                    if not set_ok:
+                        return {"ok": False, "error": "pin_set_failed", "reason": set_reason}
+                else:
+                    return {"ok": False, "error": "pin_required"}
+            else:
+                # A currently unlocked session is not sufficient for account ownership
+                # changes. Require the local PIN again and do not extend the session.
+                ok_pin, pin_reason = self._gui_lock.verify_pin(
+                    pin_val, unlock_on_success=False
+                )
+                if not ok_pin:
+                    return {
+                        "ok": False,
+                        "error": "pin_verification_failed",
+                        "reason": pin_reason,
+                        "lockout_seconds": round(self._gui_lock.lockout_remaining()),
+                    }
+
             token = self._load_token()
             if not token:
                 return {"ok": False, "error": "token_missing"}
+
             if act == "link":
                 from client_api import link_account_with_credentials
 
@@ -1124,12 +1140,39 @@ class MotorBridge:
                     log_func=self.log.info,
                 )
                 return _json_safe({"ok": bool(result.get("ok")), **result})
+
+            if act == "unlink_request":
+                from client_api import request_unlink_confirmation
+
+                result = request_unlink_confirmation(
+                    str(email or ""),
+                    str(password or ""),
+                    token,
+                    log_func=self.log.info,
+                )
+                return _json_safe({"ok": bool(result.get("ok")), **result})
+
+            if act == "unlink_confirm":
+                from client_api import unlink_account_with_credentials
+
+                result = unlink_account_with_credentials(
+                    str(email or ""),
+                    str(password or ""),
+                    token,
+                    confirm_code=str(code or ""),
+                    require_confirm_code=True,
+                    log_func=self.log.info,
+                )
+                return _json_safe({"ok": bool(result.get("ok")), **result})
+
             from client_api import unlink_account_with_credentials
 
             result = unlink_account_with_credentials(
                 str(email or ""),
                 str(password or ""),
                 token,
+                confirm_code=str(code or ""),
+                require_confirm_code=False,
                 log_func=self.log.info,
             )
             return _json_safe({"ok": bool(result.get("ok")), **result})

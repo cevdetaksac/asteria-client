@@ -178,8 +178,31 @@ class MotorBridgeTests(unittest.TestCase):
             "2468", unlock_on_success=False
         )
         mocked_unlink.assert_called_once()
+        kwargs = mocked_unlink.call_args.kwargs
+        self.assertFalse(kwargs.get("require_confirm_code"))
 
-    def test_i18n_returns_strings(self):
+    @mock.patch.object(asteria_gui.MotorBridge, "_load_token", return_value="tok-test")
+    @mock.patch("client_api.request_unlink_confirmation")
+    def test_account_unlink_request(self, mocked_req, _token):
+        self.bridge._gui_lock.has_pin.return_value = True
+        self.bridge._gui_lock.is_session_unlocked.return_value = True
+        self.bridge._gui_lock.verify_pin.return_value = (True, "ok")
+        mocked_req.return_value = {"ok": True, "sent": True, "mail_confirm": True}
+        result = self.bridge.account("unlink_request", "a@b.c", "secret", "2468")
+        self.assertTrue(result["ok"])
+        mocked_req.assert_called_once()
+
+    @mock.patch.object(asteria_gui.MotorBridge, "_load_token", return_value="tok-test")
+    @mock.patch("client_api.link_account_with_credentials")
+    def test_account_link_sets_pin_when_missing(self, mocked_link, _token):
+        self.bridge._gui_lock.has_pin.return_value = False
+        self.bridge._gui_lock.is_session_unlocked.return_value = True
+        self.bridge._gui_lock.set_pin.return_value = (True, "ok")
+        mocked_link.return_value = {"ok": True, "account_linked": True}
+        result = self.bridge.account("link", "a@b.c", "secret", "1357")
+        self.assertTrue(result["ok"])
+        self.bridge._gui_lock.set_pin.assert_called_once_with("1357", source="claim")
+        mocked_link.assert_called_once()
         with mock.patch("client_utils.resolve_app_language", return_value="tr"), mock.patch(
             "client_utils.load_i18n", return_value={"tr": {"app_title": "Asteria"}}
         ):

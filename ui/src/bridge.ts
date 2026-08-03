@@ -46,7 +46,7 @@ type AsteriaApi = {
   cloud(method: string, path: string, body?: Record<string, unknown>): Promise<BridgeResult>
   pin(action: string, value?: string, current?: string): Promise<BridgeResult>
   shell(action: string, path?: string): Promise<BridgeResult>
-  account(action?: string, email?: string, password?: string, pin?: string): Promise<BridgeResult>
+    account(action?: string, email?: string, password?: string, pin?: string, code?: string): Promise<BridgeResult>
   harden(action?: string, target?: string): Promise<BridgeResult>
   rdp(action?: string, mode?: string): Promise<BridgeResult>
   relocate(action?: string, service?: string, port?: number, autoStartBait?: boolean): Promise<BridgeResult>
@@ -143,8 +143,8 @@ export const motorBridge = {
   pin: (action: string, value = '', current = '') =>
     withApi((api) => api.pin(action, value, current)),
   shell: (action: string, path = '') => withApi((api) => api.shell(action, path)),
-  account: (action = 'status', email = '', password = '', pin = '') =>
-    optional('account', (api) => api.account(action, email, password, pin)),
+  account: (action = 'status', email = '', password = '', pin = '', code = '') =>
+    optional('account', (api) => api.account(action, email, password, pin, code)),
   harden: (action = 'status', target = '') => optional('harden', (api) => api.harden(action, target)),
   rdp: (action = 'status', mode = '') => optional('rdp', (api) => api.rdp(action, mode)),
   relocate: (action = 'prefill', service = '', port = 0, autoStartBait = false) =>

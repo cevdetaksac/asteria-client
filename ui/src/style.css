@@ -1857,6 +1857,75 @@ input::-ms-clear { display: none; }
     0 0 0 1px rgba(46, 168, 209, 0.06) inset,
     0 28px 80px rgba(0, 0, 0, 0.55);
 }
+
+.claim-gate {
+  position: relative;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 28px 16px;
+  background:
+    radial-gradient(ellipse at 50% 12%, rgba(46, 168, 209, 0.14), transparent 40%),
+    radial-gradient(ellipse at 85% 90%, rgba(63, 77, 94, 0.3), transparent 46%),
+    linear-gradient(165deg, #080d14 0%, #0c1420 52%, #080d14 100%);
+}
+.claim-gate-card {
+  width: min(520px, 96vw);
+  padding: 28px 30px 24px;
+  border: 1px solid rgba(135, 146, 160, 0.22);
+  border-radius: 18px;
+  background: linear-gradient(165deg, rgba(14, 22, 34, 0.97), rgba(8, 13, 20, 0.98));
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.55);
+  text-align: left;
+}
+.claim-gate-card .brand-logo-square {
+  display: block;
+  margin: 0 auto 18px;
+}
+.claim-gate-card h2 {
+  margin: 6px 0 10px;
+  font-size: 22px;
+  letter-spacing: 0.02em;
+}
+.claim-blurb { margin-bottom: 14px; line-height: 1.45; }
+.claim-risk {
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border: 1px solid rgba(214, 165, 36, 0.35);
+  border-radius: 12px;
+  background: rgba(214, 165, 36, 0.08);
+  color: #f0e2b0;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.claim-risk.soft {
+  border-color: rgba(46, 168, 209, 0.28);
+  background: rgba(46, 168, 209, 0.08);
+  color: #cfeaf5;
+}
+.claim-risk strong { display: block; margin-bottom: 6px; color: #ffe9a8; }
+.claim-risk ul { margin: 0; padding-left: 18px; }
+.claim-risk li { margin: 4px 0; }
+.claim-form .modal-field { margin-bottom: 10px; }
+.claim-form .modal-field span { display: block; margin-bottom: 4px; color: var(--muted); font-size: 12px; }
+.claim-form input[type="email"],
+.claim-form input[type="text"],
+.account-action-modal input[type="email"],
+.account-action-modal input[type="text"] {
+  width: 100%;
+  border: 1px solid #29425c;
+  border-radius: 10px;
+  padding: 11px 12px;
+  color: #eef6ff;
+  background: #07111e;
+  outline: none;
+}
+.claim-alt {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(135, 146, 160, 0.18);
+}
+.claim-alt .btn-row { margin-top: 10px; flex-wrap: wrap; }
 .lock-lang {
   position: absolute;
   top: 14px;
