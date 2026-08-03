@@ -77,8 +77,8 @@ function Write-StopFlags {
 }
 
 function Stop-HoneypotTasksFast {
-    # End + disable only the respawn-critical tasks (fast).
-    # Full task deletion is handled by installer DeleteAllHoneypotTasks.
+    # End + disable only the respawn-critical tasks (parallel, fast).
+    # Full task deletion is handled by installer-prep-cleanup.ps1.
     $names = @(
         "AsteriaClientGuard",
         "Asteria-Watchdog",
@@ -92,9 +92,30 @@ function Stop-HoneypotTasksFast {
         "CloudHoneypot-Tray",
         "CloudHoneypot-MemoryRestart"
     )
+    $procs = New-Object System.Collections.Generic.List[System.Diagnostics.Process]
     foreach ($n in $names) {
-        schtasks /end /tn $n 2>$null | Out-Null
-        schtasks /change /tn $n /disable 2>$null | Out-Null
+        try {
+            $p = Start-Process -FilePath "schtasks.exe" `
+                -ArgumentList @("/end", "/tn", $n) `
+                -WindowStyle Hidden -PassThru -ErrorAction SilentlyContinue
+            if ($p) { [void]$procs.Add($p) }
+        } catch {}
+        try {
+            $p2 = Start-Process -FilePath "schtasks.exe" `
+                -ArgumentList @("/change", "/tn", $n, "/disable") `
+                -WindowStyle Hidden -PassThru -ErrorAction SilentlyContinue
+            if ($p2) { [void]$procs.Add($p2) }
+        } catch {}
+    }
+    $deadline = (Get-Date).AddMilliseconds(8000)
+    foreach ($p in $procs) {
+        try {
+            if ($p.HasExited) { continue }
+            $remain = [int](($deadline - (Get-Date)).TotalMilliseconds)
+            if ($remain -lt 1) { $remain = 1 }
+            $null = $p.WaitForExit($remain)
+            if (-not $p.HasExited) { try { $p.Kill() } catch {} }
+        } catch {}
     }
 }
 

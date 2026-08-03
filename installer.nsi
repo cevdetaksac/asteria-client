@@ -12,7 +12,7 @@ OutFile "asteria-client-installer.exe"
 !define DESCRIPTION "Asteria Client - Deception Cloud Agent"
 !define VERSIONMAJOR 4
 !define VERSIONMINOR 9
-!define VERSIONBUILD 77
+!define VERSIONBUILD 78
 
 InstallDir "$PROGRAMFILES64\${COMPANYNAME}\${APPNAME}"
 
@@ -95,11 +95,12 @@ Function un.onInit
         unGateAbortQuiet:
         Abort
     ${EndIf}
-    ; Install no longer ships kill-honeypot.ps1 under Program Files — embed it
+    ; Install no longer ships kill helpers under Program Files — embed them
     ; into the uninstaller payload so GUI/motor DACL kill still works.
     InitPluginsDir
     SetOutPath "$PLUGINSDIR"
     File "scripts\kill-honeypot.ps1"
+    File "scripts\installer-prep-cleanup.ps1"
 FunctionEnd
 
 ; ===================================================================
@@ -172,145 +173,50 @@ FunctionEnd
 
 ; ===================================================================
 ; DELETE ALL ASTERIA + LEGACY CLOUDHONEYPOT SCHEDULED TASKS
-; Uses PowerShell wildcard to catch ALL task name variants
+; One PowerShell pass (parallel end/disable/delete) — see installer-prep-cleanup.ps1
 ; ===================================================================
 Function DeleteAllHoneypotTasks
     Push $0
-
-    DetailPrint "[TASKS] Stopping Asteria / legacy scheduled tasks..."
-    ; Current Asteria wire names
-    nsExec::Exec 'schtasks /end /tn "Asteria-Background" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "Asteria-Tray" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "Asteria-Watchdog" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "Asteria-Updater" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "Asteria-SilentUpdater" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "Asteria-MemoryRestart" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "AsteriaClientGuard" >nul 2>&1'
-    nsExec::Exec 'schtasks /change /tn "AsteriaClientGuard" /disable >nul 2>&1'
-    ; Pre-4.9.41 CloudHoneypot / HoneypotClient names
-    nsExec::Exec 'schtasks /end /tn "CloudHoneypot-Background" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "CloudHoneypot-Tray" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "CloudHoneypot-Watchdog" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "CloudHoneypot-Updater" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "CloudHoneypot-SilentUpdater" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "CloudHoneypot-MemoryRestart" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "CloudHoneypotClientBoot" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "CloudHoneypotClientLogon" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "HoneypotClientGuard" >nul 2>&1'
-    nsExec::Exec 'schtasks /change /tn "HoneypotClientGuard" /disable >nul 2>&1'
-    Sleep 300
-
-    DetailPrint "[TASKS] Deleting Asteria / CloudHoneypot / HoneypotClient tasks..."
-    nsExec::Exec 'powershell -ExecutionPolicy Bypass -Command "Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $$_.TaskName -like ''Asteria-*'' -or $$_.TaskName -like ''AsteriaClient*'' -or $$_.TaskName -like ''CloudHoneypot*'' -or $$_.TaskName -like ''HoneypotClient*'' } | ForEach-Object { schtasks /end /tn $$_.TaskName 2>$$null; Unregister-ScheduledTask -TaskName $$_.TaskName -Confirm:$$false -ErrorAction SilentlyContinue }"'
+    DetailPrint "[TASKS] Parallel Asteria / legacy task purge..."
+    InitPluginsDir
+    SetOutPath "$PLUGINSDIR"
+    File "scripts\installer-prep-cleanup.ps1"
+    nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\installer-prep-cleanup.ps1" -Mode TasksOnly'
     Pop $0
-
-    ; Fallback: explicit deletion of every known task name
-    nsExec::Exec 'schtasks /delete /tn "Asteria-Background" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "Asteria-Tray" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "Asteria-Watchdog" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "Asteria-Updater" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "Asteria-SilentUpdater" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "Asteria-MemoryRestart" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "AsteriaClientGuard" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "CloudHoneypot-Background" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "CloudHoneypot-Tray" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "CloudHoneypot-Watchdog" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "CloudHoneypot-Updater" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "CloudHoneypot-SilentUpdater" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "CloudHoneypot-MemoryRestart" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "CloudHoneypotClientBoot" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "CloudHoneypotClientLogon" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "HoneypotClientGuard" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "Cloud Honeypot Client" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "HoneypotClientAutostart" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "CloudHoneypotTray" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "CloudHoneypotWatchdog" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "CloudHoneypotUpdater" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "CloudHoneypotSilentUpdater" /f >nul 2>&1'
-
-    DetailPrint "[TASKS] All Asteria / legacy tasks deleted."
+    DetailPrint "[TASKS] installer-prep-cleanup TasksOnly exit: $0"
     Pop $0
 FunctionEnd
 
 ; Uninstaller variant of task deletion
 Function un.DeleteAllHoneypotTasks
     Push $0
-
-    DetailPrint "[TASKS] Stopping Asteria / legacy scheduled tasks..."
-    nsExec::Exec 'schtasks /end /tn "Asteria-Background" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "Asteria-Tray" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "Asteria-Watchdog" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "Asteria-Updater" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "Asteria-SilentUpdater" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "Asteria-MemoryRestart" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "AsteriaClientGuard" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "CloudHoneypot-Background" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "CloudHoneypot-Tray" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "CloudHoneypot-Watchdog" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "CloudHoneypot-Updater" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "CloudHoneypot-SilentUpdater" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "CloudHoneypot-MemoryRestart" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "CloudHoneypotClientBoot" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "CloudHoneypotClientLogon" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "HoneypotClientGuard" >nul 2>&1'
-    Sleep 500
-
-    nsExec::Exec 'powershell -ExecutionPolicy Bypass -Command "Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $$_.TaskName -like ''Asteria-*'' -or $$_.TaskName -like ''AsteriaClient*'' -or $$_.TaskName -like ''CloudHoneypot*'' -or $$_.TaskName -like ''HoneypotClient*'' } | ForEach-Object { schtasks /end /tn $$_.TaskName 2>$$null; Unregister-ScheduledTask -TaskName $$_.TaskName -Confirm:$$false -ErrorAction SilentlyContinue }"'
+    DetailPrint "[TASKS] Parallel Asteria / legacy task purge..."
+    InitPluginsDir
+    SetOutPath "$PLUGINSDIR"
+    File "scripts\installer-prep-cleanup.ps1"
+    nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\installer-prep-cleanup.ps1" -Mode TasksOnly'
     Pop $0
-
-    nsExec::Exec 'schtasks /delete /tn "Asteria-Background" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "Asteria-Tray" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "Asteria-Watchdog" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "Asteria-Updater" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "Asteria-SilentUpdater" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "Asteria-MemoryRestart" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "AsteriaClientGuard" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "CloudHoneypot-Background" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "CloudHoneypot-Tray" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "CloudHoneypot-Watchdog" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "CloudHoneypot-Updater" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "CloudHoneypot-SilentUpdater" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "CloudHoneypot-MemoryRestart" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "CloudHoneypotClientBoot" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "CloudHoneypotClientLogon" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "HoneypotClientGuard" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "Cloud Honeypot Client" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "HoneypotClientAutostart" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "CloudHoneypotTray" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "CloudHoneypotWatchdog" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "CloudHoneypotUpdater" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "CloudHoneypotSilentUpdater" /f >nul 2>&1'
-
-    DetailPrint "[TASKS] All Asteria / legacy tasks deleted."
+    DetailPrint "[TASKS] installer-prep-cleanup TasksOnly exit: $0"
     Pop $0
 FunctionEnd
 
 ; ===================================================================
-; FAST PRE-KILL — runs at installer startup (before UI pages)
-; Uses kill-honeypot.ps1: QUIT socket + SeDebugPrivilege + task purge
+; FAST PRE-KILL — guardian first, then parallel kill + task purge
+; Uses installer-prep-cleanup.ps1 + kill-honeypot.ps1
 ; ===================================================================
 Function PreInstallKillFast
-    DetailPrint "[PRE-KILL] Extracting kill helper..."
+    DetailPrint "[PRE-KILL] Extracting prep helpers..."
     InitPluginsDir
     SetOutPath "$PLUGINSDIR"
     File "scripts\kill-honeypot.ps1"
+    File "scripts\installer-prep-cleanup.ps1"
     File "scripts\prepare-install-dir.ps1"
     File "scripts\remove-legacy-install.ps1"
 
-    DetailPrint "[PRE-KILL] Stopping tasks + DACL-protected processes..."
-    ; Legacy guardian service otherwise respawns the old YesNext binary while
-    ; the Asteria files are being installed.
-    nsExec::Exec 'sc.exe stop AsteriaGuardian >nul 2>&1'
-    nsExec::Exec 'sc.exe delete AsteriaGuardian >nul 2>&1'
-    nsExec::Exec 'sc.exe stop CloudHoneypotGuardian >nul 2>&1'
-    nsExec::Exec 'sc.exe delete CloudHoneypotGuardian >nul 2>&1'
-    nsExec::Exec 'sc.exe stop CloudHoneypotMonitor >nul 2>&1'
-    nsExec::Exec 'sc.exe delete CloudHoneypotMonitor >nul 2>&1'
-    Sleep 500
-    nsExec::Exec 'taskkill /F /T /IM asteria-gui.exe >nul 2>&1'
-    nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\kill-honeypot.ps1" -Force'
+    DetailPrint "[PRE-KILL] Guardian -> kill -> tasks (parallel prep)..."
+    nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\installer-prep-cleanup.ps1" -Mode Full -KillScript "$PLUGINSDIR\kill-honeypot.ps1"'
     Pop $0
-    DetailPrint "[PRE-KILL] kill-honeypot.ps1 exit code: $0"
+    DetailPrint "[PRE-KILL] installer-prep-cleanup Full exit: $0"
     DetailPrint "[PRE-KILL] Removing legacy YesNext Program Files trees..."
     ; Prefer 64-bit PowerShell (Sysnative) so WOW64 does not hide C:\Program Files\YesNext.
     IfFileExists "$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe" 0 LegacyCleanWow64
@@ -518,35 +424,24 @@ Function un.KillHoneypotProcesses
 FunctionEnd
 
 Function un.PreInstallKillFast
-    DetailPrint "[PRE-KILL] Uninstall stop sequence..."
-    nsExec::Exec 'sc.exe stop AsteriaGuardian >nul 2>&1'
-    nsExec::Exec 'sc.exe delete AsteriaGuardian >nul 2>&1'
-    nsExec::Exec 'sc.exe stop CloudHoneypotGuardian >nul 2>&1'
-    nsExec::Exec 'sc.exe delete CloudHoneypotGuardian >nul 2>&1'
-    nsExec::Exec 'sc.exe stop CloudHoneypotMonitor >nul 2>&1'
-    nsExec::Exec 'sc.exe delete CloudHoneypotMonitor >nul 2>&1'
-    nsExec::Exec 'cmd /c echo stop > "%TEMP%\honeypot_watchdog_token.txt"'
-    nsExec::Exec 'cmd /c echo stop > "%APPDATA%\YesNext\CloudHoneypot\watchdog_token.txt"'
-    nsExec::Exec 'cmd /c mkdir "%ProgramData%\YesNext\CloudHoneypot" 2>nul'
-    nsExec::Exec 'cmd /c echo stop > "%ProgramData%\YesNext\CloudHoneypot\watchdog_stop.flag"'
-    nsExec::Exec 'cmd /c mkdir "%APPDATA%\Asteria" 2>nul'
-    nsExec::Exec 'cmd /c echo stop > "%APPDATA%\Asteria\watchdog.token"'
-    nsExec::Exec 'schtasks /end /tn "AsteriaClientGuard" >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "AsteriaClientGuard" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "HoneypotClientGuard" >nul 2>&1'
-    nsExec::Exec 'schtasks /delete /tn "HoneypotClientGuard" /f >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "Asteria-Watchdog" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "Asteria-Background" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "Asteria-Tray" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "Asteria-Updater" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "Asteria-SilentUpdater" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "Asteria-MemoryRestart" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "CloudHoneypot-Watchdog" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "CloudHoneypot-Background" >nul 2>&1'
-    nsExec::Exec 'schtasks /end /tn "CloudHoneypot-Tray" >nul 2>&1'
+    DetailPrint "[PRE-KILL] Uninstall stop sequence (parallel prep)..."
+    InitPluginsDir
+    SetOutPath "$PLUGINSDIR"
+    File "scripts\kill-honeypot.ps1"
+    File "scripts\installer-prep-cleanup.ps1"
 
-    ; Always prefer the kill helper embedded in the uninstaller (see un.onInit).
-    ; $INSTDIR\scripts\kill-honeypot.ps1 is intentionally NOT installed anymore.
+    ; Prefer embedded prep + kill (see un.onInit). Full = guardian -> kill -> tasks.
+    IfFileExists "$PLUGINSDIR\installer-prep-cleanup.ps1" 0 UnKillTryLegacy
+        IfFileExists "$PLUGINSDIR\kill-honeypot.ps1" 0 UnPrepNoKill
+            nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\installer-prep-cleanup.ps1" -Mode Full -KillScript "$PLUGINSDIR\kill-honeypot.ps1"'
+            Pop $0
+            Goto UnKillDone
+        UnPrepNoKill:
+            nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\installer-prep-cleanup.ps1" -Mode Full'
+            Pop $0
+            Goto UnKillDone
+
+    UnKillTryLegacy:
     IfFileExists "$PLUGINSDIR\kill-honeypot.ps1" 0 UnKillTryInstalled
         nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\kill-honeypot.ps1" -Force'
         Pop $0
@@ -781,17 +676,17 @@ Section "Asteria Client (Required)" SEC_MAIN
     ; =================================================================
     !insertmacro LOG "[PHASE 1] Starting pre-installation cleanup..."
 
-    ; Full stop + legacy purge (moved here from .onInit so Welcome UI is instant)
-    !insertmacro LOG "[PREP] Step 0 - PreInstallKillFast (tasks/processes/legacy)..."
+    ; Full stop + legacy purge (moved here from .onInit so Welcome UI is instant).
+    ; PreInstallKillFast already runs guardian -> kill -> bulk task delete in one PS pass.
+    !insertmacro LOG "[PREP] Step 0 - PreInstallKillFast (guardian/kill/tasks/legacy)..."
     Call PreInstallKillFast
 
-    ; Step 1: Delete ALL scheduled tasks FIRST (prevents respawn)
-    !insertmacro LOG "[PREP] Step 1 - Deleting all scheduled tasks..."
+    ; Step 1: Belt-and-suspenders task sweep (cheap if already purged)
+    !insertmacro LOG "[PREP] Step 1 - Task sweep (TasksOnly)..."
     Call DeleteAllHoneypotTasks
-    Sleep 200
 
-    ; Step 2: Kill all honeypot processes with verification
-    !insertmacro LOG "[PREP] Step 2 - Killing Asteria / legacy client processes..."
+    ; Step 2: Verify processes gone; retry only if still running
+    !insertmacro LOG "[PREP] Step 2 - Verify / retry process kill..."
     Call KillHoneypotProcesses
 
     ; Step 3: Rename locked _internal/exe aside + Defender exclude BEFORE extract
