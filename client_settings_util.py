@@ -59,6 +59,10 @@ SECTIONS: List[Tuple[str, list]] = [
         ("silent_hours.mode", "choice", "settings_silent_mode", SILENT_MODES),
         ("silent_hours.night_start", "time", "settings_silent_night_start", None),
         ("silent_hours.night_end", "time", "settings_silent_night_end", None),
+        ("silent_hours.weekend_all_day_silent", "bool", "settings_silent_weekend", None),
+        ("silent_hours.auto_block_ip", "bool", "settings_silent_auto_block", None),
+        ("silent_hours.auto_logoff", "bool", "settings_silent_auto_logoff", None),
+        ("silent_hours.auto_disable_account", "bool", "settings_silent_auto_disable", None),
     ]),
     ("settings_sec_webhook", [
         ("webhook_enabled", "bool", "settings_webhook_enabled", None),
@@ -80,6 +84,10 @@ DEFAULTS: Dict[str, Any] = {
     "silent_hours.mode": "night_only",
     "silent_hours.night_start": "00:00",
     "silent_hours.night_end": "07:00",
+    "silent_hours.weekend_all_day_silent": False,
+    "silent_hours.auto_block_ip": False,
+    "silent_hours.auto_logoff": False,
+    "silent_hours.auto_disable_account": False,
     "webhook_enabled": False,
     "webhook_url": "",
 }

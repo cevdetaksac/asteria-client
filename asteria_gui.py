@@ -1067,7 +1067,9 @@ class MotorBridge:
                 return {"ok": False, "error": "cloud_unhandled"}
             if data is None:
                 return {"ok": False, "error": "cloud_empty"}
-            self.log.info("cloud %s %s -> ok", m, p)
+            # High-frequency GUI polls — avoid INFO spam every few seconds.
+            if p not in ("threats/config", "alerts/list", "premium/tunnel-status"):
+                self.log.info("cloud %s %s -> ok", m, p)
             return _json_safe({"ok": True, "data": data})
         except Exception as exc:
             self.log.info("cloud %s %s failed: %s", m, p, exc)
@@ -1331,13 +1333,21 @@ class MotorBridge:
                     entry = state.get(svc) or state.get(svc.lower()) or {}
                     if not isinstance(entry, dict):
                         entry = {}
-                    cur = entry.get("current_port")
-                    try:
-                        cur_n = int(cur) if cur is not None else None
-                    except (TypeError, ValueError):
-                        cur_n = None
-                    if cur_n is None:
-                        cur_n = int(current_rdp) if svc == "RDP" else well_known_port(svc)
+                    well = int(entry.get("classic_port") or well_known_port(svc))
+                    # Prefer local probe for RDP so a stale cloud relocated flag
+                    # cannot paint a green "Taşındı" badge when still on classic.
+                    if svc == "RDP":
+                        cur_n = int(current_rdp)
+                    else:
+                        cur = entry.get("current_port")
+                        try:
+                            cur_n = int(cur) if cur is not None else None
+                        except (TypeError, ValueError):
+                            cur_n = None
+                        if cur_n is None:
+                            cur_n = int(well)
+                    relocated = int(cur_n) != int(well)
+                    relocating = bool(entry.get("relocating")) and not relocated
                     target_busy = False
                     try:
                         from client_service_relocate import _bind_ok
@@ -1348,14 +1358,14 @@ class MotorBridge:
                     rows.append(
                         {
                             "service": svc,
-                            "well_known": int(entry.get("classic_port") or well_known_port(svc)),
+                            "well_known": well,
                             "current_port": cur_n,
                             "target_port": int(safe),
                             "default_safe_port": int(
                                 entry.get("default_safe_port") or default_safe_port(svc)
                             ),
-                            "relocated": bool(entry.get("relocated")),
-                            "relocating": bool(entry.get("relocating")),
+                            "relocated": relocated,
+                            "relocating": relocating,
                             "port_available": entry.get("port_available"),
                             "target_busy": target_busy,
                             "last_status": entry.get("last_status"),

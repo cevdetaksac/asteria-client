@@ -193,6 +193,21 @@ export function ThreatPage({ onToast }: Props) {
   }, [refreshAll])
 
   const sessions = useMemo(() => users.filter((u) => u.has_session), [users])
+  const logoffable = useMemo(() => {
+    const map = new Map<string, LocalUser>()
+    for (const u of users) {
+      if (u.can_logoff) map.set(u.username.toLowerCase(), u)
+    }
+    return map
+  }, [users])
+  const canLogoffUser = useCallback(
+    (name: string) => {
+      const key = String(name || '').trim().toLowerCase()
+      if (!key || key === '—') return false
+      return logoffable.has(key)
+    },
+    [logoffable],
+  )
   const warnCount = useMemo(() => checks.filter((c) => c.ok === false).length, [checks])
 
   const block = async (ip: string) => {
@@ -494,20 +509,20 @@ export function ThreatPage({ onToast }: Props) {
                             />
                           </>
                         )}
+                        {canLogoffUser(f.user) && (
+                          <TextActionBtn
+                            label={t('threat_logoff')}
+                            disabled={busy}
+                            onClick={() => void runIr('logoff', f.user)}
+                          />
+                        )}
                         {f.user !== '—' && f.user.toLowerCase() !== currentUser.toLowerCase() && (
-                          <>
-                            <TextActionBtn
-                              label={t('threat_logoff')}
-                              disabled={busy}
-                              onClick={() => void runIr('logoff', f.user)}
-                            />
-                            <TextActionBtn
-                              label={t('threat_disable')}
-                              danger
-                              disabled={busy}
-                              onClick={() => void runIr('disable', f.user)}
-                            />
-                          </>
+                          <TextActionBtn
+                            label={t('threat_disable')}
+                            danger
+                            disabled={busy}
+                            onClick={() => void runIr('disable', f.user)}
+                          />
                         )}
                       </div>
                     </td>
@@ -608,20 +623,20 @@ export function ThreatPage({ onToast }: Props) {
                             />
                           </>
                         )}
+                        {canLogoffUser(user) && (
+                          <TextActionBtn
+                            label={t('threat_logoff')}
+                            disabled={busy}
+                            onClick={() => void runIr('logoff', user)}
+                          />
+                        )}
                         {user !== '—' && user.toLowerCase() !== currentUser.toLowerCase() && (
-                          <>
-                            <TextActionBtn
-                              label={t('threat_logoff')}
-                              disabled={busy}
-                              onClick={() => void runIr('logoff', user)}
-                            />
-                            <TextActionBtn
-                              label={t('threat_disable')}
-                              danger
-                              disabled={busy}
-                              onClick={() => void runIr('disable', user)}
-                            />
-                          </>
+                          <TextActionBtn
+                            label={t('threat_disable')}
+                            danger
+                            disabled={busy}
+                            onClick={() => void runIr('disable', user)}
+                          />
                         )}
                       </div>
                     </td>
@@ -665,7 +680,7 @@ export function ThreatPage({ onToast }: Props) {
         </div>
       </article>
 
-      <div className="split" style={{ marginBottom: 18 }}>
+      <div className="split split-stack" style={{ marginBottom: 18 }}>
         <article className="panel">
           <p className="eyebrow">{t('threat_shares_eyebrow')}</p>
           <h3>{t('threat_shares_title')}{!extrasReady && <span className="inline-spinner" />}</h3>
@@ -787,7 +802,7 @@ export function ThreatPage({ onToast }: Props) {
         </article>
       </div>
 
-      <div className="split" style={{ marginBottom: 18 }}>
+      <div className="split split-stack" style={{ marginBottom: 18 }}>
         <article className="panel">
           <p className="eyebrow">{t('threat_sessions_eyebrow')}</p>
           <h3>{t('threat_sessions_title')}{!usersReady && <span className="inline-spinner" />}</h3>

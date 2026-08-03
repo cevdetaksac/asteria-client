@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.73"  # Update hygiene: ACL file heal + no cloud-client alias; fleet update verify
+VERSION = "4.9.74"  # GUI: full-width threat cards, logoff gate, quieter poll, hidden PS, RDP badge, settings block_rules
 
 
 

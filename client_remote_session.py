@@ -194,9 +194,16 @@ def list_local_users(*, include_disabled: bool = True) -> List[Dict[str, Any]]:
             u["groups"] = []
         s = by_user.get(u["username"].lower())
         if s:
-            u["has_session"] = True
-            u["session_id"] = s.get("session_id")
-            u["session_status"] = s.get("status")
+            st = str(s.get("status") or "").strip().lower()
+            # Only live interactive sessions (not Disc/Listen) — avoids
+            # showing "Oturumu kapat" for stale/disconnected rows.
+            live = st in ("active", "connected")
+            u["has_session"] = live
+            u["session_id"] = s.get("session_id") if live else None
+            u["session_status"] = s.get("status") if live else None
+            if not live and s.get("status"):
+                # Keep disconnected hint for UI without enabling logoff.
+                u["session_status"] = s.get("status")
 
     return users
 

@@ -1312,8 +1312,9 @@ h1, h2, h3, p { margin: 0; }
   vertical-align: middle;
 }
 .threat-rich-table .threat-detail-cell {
-  min-width: 220px;
-  max-width: 420px;
+  min-width: 280px;
+  max-width: none;
+  width: 42%;
 }
 .threat-detail-title {
   display: block;
@@ -1433,6 +1434,10 @@ tr.row-self td {
   grid-template-columns: 1fr 1fr;
   gap: 14px;
 }
+/* Threat Center: each section uses full content width (tables stay readable). */
+.split.split-stack {
+  grid-template-columns: 1fr;
+}
 .panel {
   overflow: visible;
 }
@@ -1498,7 +1503,7 @@ td.actions-cell .row-actions {
   justify-content: flex-end;
   align-items: center;
   gap: 6px;
-  max-width: 320px;
+  max-width: none;
 }
 .row-actions .btn.sm {
   white-space: nowrap;
@@ -1511,7 +1516,7 @@ td.actions-cell .row-actions {
   margin: 8px 0 4px;
 }
 .inline-form input, .settings-form input[type="text"], .settings-form input[type="number"],
-.settings-form input[type="email"], .lock-card input, .pw-field input {
+.settings-form input[type="email"], .settings-form select, .lock-card input, .pw-field input {
   border: 1px solid #29425c;
   border-radius: 10px;
   padding: 11px 12px;
@@ -1519,7 +1524,10 @@ td.actions-cell .row-actions {
   background: #07111e;
   outline: none;
 }
-.inline-form input:focus, .settings-form input:focus, .lock-card input:focus, .pw-field input:focus {
+.settings-form select {
+  min-width: 180px;
+}
+.inline-form input:focus, .settings-form input:focus, .settings-form select:focus, .lock-card input:focus, .pw-field input:focus {
   border-color: var(--accent);
 }
 input::placeholder { color: #5d738f; }

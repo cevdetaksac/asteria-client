@@ -80,7 +80,10 @@ export function ServicesPage({ onToast }: Props) {
           target_port: Number(row.target_port || row.default_safe_port || 0),
           default_safe_port: Number(row.default_safe_port || 0),
           supported: row.supported !== false,
-          relocated: Boolean(row.relocated),
+          // Local truth: only badge when port actually left the well-known.
+          relocated:
+            Number(row.current_port || row.well_known || 0) !==
+            Number(row.well_known || 0),
           relocating: Boolean(row.relocating),
           port_available: row.port_available as boolean | null | undefined,
           target_busy: Boolean(row.target_busy),

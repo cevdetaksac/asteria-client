@@ -3,7 +3,6 @@
 
 import os
 import sys
-import subprocess
 import time
 import threading
 import tkinter as tk
@@ -143,26 +142,24 @@ class RDPManager:
     def _get_current_rdp_port(self) -> int:
         """Registry'den mevcut RDP portunu oku"""
         try:
-            registry_path = "HKLM:\\System\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\RDP-Tcp"
-            
-            # PowerShell komutu ile port değerini oku - direkt subprocess kullan
-            ps_cmd = f'powershell -Command "Get-ItemProperty -Path \'{registry_path}\' -Name PortNumber | Select-Object -ExpandProperty PortNumber"'
-            
-            result = subprocess.run(
-                ps_cmd, shell=True, capture_output=True, text=True,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
+            from client_winproc import run_ps
+
+            registry_path = (
+                r"HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp"
             )
-            
-            if result.returncode == 0 and result.stdout:
-                port = int(result.stdout.strip())
+            rc, out, err = run_ps(
+                f"Get-ItemProperty -Path '{registry_path}' -Name PortNumber "
+                f"| Select-Object -ExpandProperty PortNumber",
+                timeout=15,
+            )
+            if rc == 0 and (out or "").strip():
+                port = int(out.strip().splitlines()[-1].strip())
                 log(f"🔍 Registry'den RDP port okundu: {port}")
                 return port
-            else:
-                log(f"⚠️ Registry'den port okunamadı (RC:{result.returncode}), varsayılan 3389 kullanılıyor")
-                if result.stderr:
-                    log(f"⚠️ PowerShell hatası: {result.stderr}")
-                return 3389
-                
+            log(f"⚠️ Registry'den port okunamadı (RC:{rc}), varsayılan 3389 kullanılıyor")
+            if err:
+                log(f"⚠️ PowerShell hatası: {err}")
+            return 3389
         except Exception as e:
             log(f"❌ RDP port okuma hatası: {e}")
             return 3389
@@ -170,58 +167,47 @@ class RDPManager:
     def _set_rdp_port_registry(self, new_port: int) -> bool:
         """RDP portunu registry'de güncelle - PowerShell kullanarak"""
         try:
-            # Admin yetkisi kontrolü
             if not is_admin():
                 log(f"❌ Admin yetkisi gerekli - RDP port değişikliği yapılamaz")
                 return False
-            
-            # PowerShell komutu ile registry güncellemesi - tırnak problemsiz
-            registry_path = "HKLM:\\System\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\RDP-Tcp"
-            ps_cmd = f'powershell -Command "Set-ItemProperty -Path \'{registry_path}\' -Name PortNumber -Value {new_port} -Type DWord"'
-            
+
+            from client_winproc import run_ps
+
+            registry_path = (
+                r"HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp"
+            )
             log(f"🔧 PowerShell Registry komutu çalıştırılıyor...")
             log(f"📝 Hedef yol: {registry_path}")
             log(f"🎯 Yeni port değeri: {new_port}")
-            
-            result = subprocess.run(
-                ps_cmd, shell=True, capture_output=True, text=True,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
+
+            rc, out, err = run_ps(
+                f"Set-ItemProperty -Path '{registry_path}' -Name PortNumber "
+                f"-Value {int(new_port)} -Type DWord",
+                timeout=20,
             )
-            
-            if result.returncode == 0:
+            if rc == 0:
                 log(f"✅ Registry başarıyla güncellendi: Port {new_port}")
-                
-                # Doğrulama - port değerini oku
-                verify_cmd = f'powershell -Command "Get-ItemProperty -Path \'{registry_path}\' -Name PortNumber | Select-Object -ExpandProperty PortNumber"'
-                verify_result = subprocess.run(
-                    verify_cmd, shell=True, capture_output=True, text=True,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
+                vrc, vout, _ = run_ps(
+                    f"Get-ItemProperty -Path '{registry_path}' -Name PortNumber "
+                    f"| Select-Object -ExpandProperty PortNumber",
+                    timeout=15,
                 )
-                
-                if verify_result.returncode == 0 and verify_result.stdout:
-                    actual_port = verify_result.stdout.strip()
+                if vrc == 0 and (vout or "").strip():
+                    actual_port = vout.strip().splitlines()[-1].strip()
                     log(f"🔍 Registry doğrulaması: Okunan port = {actual_port}")
                     if actual_port == str(new_port):
                         log(f"✅ Registry değeri doğrulandı: {new_port}")
                         return True
-                    else:
-                        log(f"❌ Registry değeri eşleşmiyor: beklenen={new_port}, okunan={actual_port}")
-                        return False
-                else:
-                    log(f"⚠️ Registry doğrulaması yapılamadı, ama komut başarılı")
-                    return True
-            else:
-                log(f"❌ PowerShell komutu başarısız - RC: {result.returncode}")
-                if result.stderr:
-                    log(f"❌ PowerShell hatası: {result.stderr}")
-                if result.stdout:
-                    log(f"ℹ️ PowerShell çıktısı: {result.stdout}")
+                    log(f"❌ Registry değeri eşleşmiyor: beklenen={new_port}, okunan={actual_port}")
+                    return False
+                log(f"❌ Registry doğrulaması başarısız")
+                if err:
+                    log(f"⚠️ Set stderr: {err}")
                 return False
-                
+            log(f"❌ Registry güncelleme başarısız RC:{rc} err={(err or '')[:200]}")
+            return False
         except Exception as e:
-            log(f"❌ Registry güncelleme exception: {e}")
-            import traceback
-            log(f"❌ Traceback: {traceback.format_exc()}")
+            log(f"❌ RDP registry güncelleme hatası: {e}")
             return False
     
     def _ensure_rdp_firewall_both(self):

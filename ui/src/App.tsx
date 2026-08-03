@@ -300,8 +300,9 @@ export default function App() {
     window.addEventListener('focus', syncGate)
     document.addEventListener('visibilitychange', syncGate)
     void ready()
-    // Fast poll so dashboard remote actions show up in GUI quickly.
-    const ms = locked === false ? (statusGeneration > 0 ? 1500 : 2000) : 4000
+    // Quiet poll: remote cmds still surface within a few seconds without
+    // hammering STATUS / threats/config (StatusPage extras) every 2s.
+    const ms = locked === false ? (statusGeneration > 0 ? 3000 : 5000) : 8000
     const timer = window.setInterval(() => {
       if (locked === false) void refresh({ silent: true })
       else void refreshSession()

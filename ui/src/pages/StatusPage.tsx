@@ -112,7 +112,12 @@ export function StatusPage({ status, online, statusLoading = false, updatedAt, o
 
   useEffect(() => {
     void loadExtras()
-  }, [status])
+    const timer = window.setInterval(() => void loadExtras(), 20000)
+    return () => window.clearInterval(timer)
+    // Intentionally not tied to `status` — App silent poll was re-firing
+    // harden/IP_TABLE/threats/config every ~2s and spamming logs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const unlockRs = async () => {
     const result = await motorBridge.ipc('RS_UNLOCK')

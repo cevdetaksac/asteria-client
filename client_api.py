@@ -179,7 +179,9 @@ class AsteriaAPIClient:
                 "agent/pending-blocks",
                 "agent/pending-unblocks",
                 "commands/result",
-            } or ep.startswith("commands/")
+                "threats/config",
+                "alerts/list",
+            } or ep.startswith("commands/") or ep.startswith("alerts/")
             # Opt-in only: caller verbose_logging=True OR global VERBOSE_LOGGING.
             show_logs = bool(verbose_logging or VERBOSE_LOGGING) and not is_frequent_endpoint
 
