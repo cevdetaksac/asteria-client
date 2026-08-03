@@ -1252,11 +1252,7 @@ def _resolve_latest_from_cloud(api_client=None) -> Optional[dict]:
 
 
 def _installer_urls_for_tag(tag: str) -> List[str]:
-    """Official GitHub asset URLs when API/cloud omit download_url.
-
-    Asteria-branded name first, legacy name second: releases published during the
-    rename window carry both assets, and older releases only carry the legacy one.
-    """
+    """Official GitHub asset URL when API/cloud omit download_url."""
     t = _normalize_version_tag(tag)
     if not t:
         return []
@@ -1265,15 +1261,11 @@ def _installer_urls_for_tag(tag: str) -> List[str]:
             GITHUB_OWNER,
             GITHUB_REPO,
             INSTALLER_ASSET_NAME,
-            INSTALLER_ASSET_NAME_LEGACY,
         )
     except Exception:
         return []
     base = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/download/v{t}"
-    return [
-        f"{base}/{INSTALLER_ASSET_NAME}",
-        f"{base}/{INSTALLER_ASSET_NAME_LEGACY}",
-    ]
+    return [f"{base}/{INSTALLER_ASSET_NAME}"]
 
 
 def _default_installer_url(tag: str) -> str:

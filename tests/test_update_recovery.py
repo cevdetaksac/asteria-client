@@ -202,7 +202,7 @@ class TestSelfUpdatePreempt(unittest.TestCase):
                     "tag": "4.9.62",
                     "download_url": (
                         "https://github.com/cevdetaksac/asteria-client/"
-                        "releases/download/v4.9.62/cloud-client-installer.exe"
+                        "releases/download/v4.9.62/asteria-client-installer.exe"
                     ),
                     "force": False,
                 },

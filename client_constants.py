@@ -66,11 +66,9 @@ GITHUB_OWNER = "cevdetaksac"
 GITHUB_REPO = "asteria-client"
 GITHUB_REPO_LEGACY = "yesnext-cloud-honeypot-client"
 
-# Release installer asset names. Agents <= 4.9.40 hardcode the legacy name as
-# their fallback download URL, so every release must keep publishing both until
-# the fleet has moved past that build.
+# Release installer asset (single name — no legacy cloud-client-installer alias).
 INSTALLER_ASSET_NAME = "asteria-client-installer.exe"
-INSTALLER_ASSET_NAME_LEGACY = "cloud-client-installer.exe"
+# Cleanup still recognizes leftover staged files from the rename era.
 INSTALLER_FILE_PREFIXES = ("asteria-client-installer", "cloud-client-installer")
 
 # ===================== NETWORK CONFIGURATION ===================== #
@@ -598,7 +596,7 @@ __all__ = [
     # Application metadata
     '__version__', 'APP_NAME', 'BRAND_NAME', 'VENDOR_NAME',
     'GITHUB_OWNER', 'GITHUB_REPO', 'GITHUB_REPO_LEGACY',
-    'INSTALLER_ASSET_NAME', 'INSTALLER_ASSET_NAME_LEGACY', 'INSTALLER_FILE_PREFIXES',
+    'INSTALLER_ASSET_NAME', 'INSTALLER_FILE_PREFIXES',
     'CLIENT_EXE_NAME', 'CLIENT_EXE_ALIASES',
     
     # Network configuration  

@@ -50,8 +50,7 @@ python -m pip install -r requirements-webrtc.txt
 powershell -ExecutionPolicy Bypass -File build.ps1 -Clean -WebRTC
 ```
 
-Output: `asteria-client-installer.exe` (plus a `cloud-client-installer.exe`
-alias copy for pre-4.9.41 self-update) containing motor-only
+Output: `asteria-client-installer.exe` containing motor-only
 `asteria-client.exe` + onefile `asteria-gui.exe`. Optional dev signing:
 `-Sign`; production `-Release` refuses unsigned/non-WebRTC builds.
 
@@ -59,8 +58,7 @@ alias copy for pre-4.9.41 self-update) containing motor-only
 
 ```powershell
 .\build.ps1 -Clean -WebRTC -Sign -Release
-# Upload BOTH assets: agents <= 4.9.40 fall back to the legacy name.
-gh release create vX.Y.Z asteria-client-installer.exe cloud-client-installer.exe `
+gh release create vX.Y.Z asteria-client-installer.exe `
   --title "vX.Y.Z" --notes-file release_notes_vX.Y.Z.md
 ```
 

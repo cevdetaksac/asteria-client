@@ -175,8 +175,6 @@ try {
 # Signing after makensis only Authenticodes the outer stub; installed exe stay unsigned.
 Write-Host "[3/6] Signing payload executables..." -ForegroundColor Yellow
 $installerPath = Join-Path (Get-Location) "asteria-client-installer.exe"
-# Agents <= 4.9.40 hardcode this asset name as their fallback download URL.
-$legacyInstallerPath = Join-Path (Get-Location) "cloud-client-installer.exe"
 $mainExe = Join-Path (Get-Location) "dist\asteria-client\asteria-client.exe"
 $guiExe = Join-Path (Get-Location) "dist\asteria-gui.exe"
 $signed = $false
@@ -300,13 +298,6 @@ if ($Sign) {
     Invoke-AsteriaSign @($installerPath)
 }
 
-# Legacy-named duplicate: upload it alongside the Asteria asset so agents that
-# still resolve cloud-client-installer.exe can self-update to this release.
-if (Test-Path $installerPath) {
-    Copy-Item -LiteralPath $installerPath -Destination $legacyInstallerPath -Force
-    Write-Host "   Legacy alias: cloud-client-installer.exe (upload both assets)" -ForegroundColor Cyan
-}
-
 # Step 6: Show results + emit provenance manifest
 Write-Host "`n[6/6] Build completed successfully!" -ForegroundColor Green
 Write-Host "===============================================" -ForegroundColor Green
@@ -319,7 +310,6 @@ if ($installerFile) {
         product = "asteria-client"
         version = $VERSION
         artifact = "asteria-client-installer.exe"
-        artifact_legacy_alias = "cloud-client-installer.exe"
         sha256 = $sha
         size_bytes = $installerFile.Length
         built_at = (Get-Date).ToUniversalTime().ToString("o")

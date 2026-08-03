@@ -4,6 +4,10 @@
 - Update banner + motor/error strip share one `top-alerts` stack above the identity row
 - Avoid duplicate **Motoru kurtar** when the update banner already shows it
 
+## GitHub hygiene (follow-up)
+- Drop `cloud-client-installer.exe` release alias; self-update resolves only `asteria-client-installer.exe`
+- Staging cleanup still recognizes leftover `cloud-client-installer*` files on disk
+
 # v4.9.71
 
 ## Fix `launch_helper_failed` / `stage_helper` (ACL brick)

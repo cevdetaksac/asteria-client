@@ -101,7 +101,7 @@ class TestDownloadInstallerComplete(unittest.TestCase):
             ):
                 ok, detail = download_installer_complete(
                     "https://github.com/cevdetaksac/yesnext-cloud-honeypot-client/"
-                    "releases/download/v4.9.25/cloud-client-installer.exe",
+                    "releases/download/v4.9.25/asteria-client-installer.exe",
                     dest,
                     max_attempts=3,
                     log_func=lambda *_a, **_k: None,

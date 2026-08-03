@@ -253,7 +253,7 @@ class TestSelfUpdateHelperRetry(unittest.TestCase):
                         "tag": "4.9.63",
                         "download_url": (
                             "https://github.com/cevdetaksac/asteria-client/"
-                            "releases/download/v4.9.63/cloud-client-installer.exe"
+                            "releases/download/v4.9.63/asteria-client-installer.exe"
                         ),
                         "force": True,
                         "size": 1000,

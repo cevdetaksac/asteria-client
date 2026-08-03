@@ -12,14 +12,10 @@ cd asteria-client
 # or: .\build.ps1 -Clean     # JPEG/WS only
 ```
 
-Artifact: `asteria-client-installer.exe` (repo root, not `dist\`). `build.ps1`
-also drops an identical `cloud-client-installer.exe` copy.
-
-Both assets must be uploaded: agents up to 4.9.40 hardcode the legacy name as
-their fallback download URL, so dropping it breaks their self-update.
+Artifact: `asteria-client-installer.exe` (repo root, not `dist\`).
 
 ```powershell
-gh release create vX.Y.Z asteria-client-installer.exe cloud-client-installer.exe `
+gh release create vX.Y.Z asteria-client-installer.exe `
   --title "vX.Y.Z" --notes-file release_notes_vX.Y.Z.md
 ```
 
