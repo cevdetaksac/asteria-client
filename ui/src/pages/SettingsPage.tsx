@@ -311,6 +311,17 @@ function openDash(path: DashPath) {
   void motorBridge.shell('open_dashboard', path)
 }
 
+function mapSettingsAccountError(code: string): string {
+  if (code === 'invalid_credentials') return t('claim_bad_credentials')
+  if (code === 'already_linked_other' || code === 'conflict_other_account') return t('claim_other_account')
+  if (code === 'missing_confirm_code') return t('account_unlink_need_mail_first')
+  if (code === 'unlink_mail_unavailable') return t('account_unlink_mail_unavailable')
+  if (code === 'invalid_confirm_code' || code === 'confirm_code_invalid') {
+    return t('account_unlink_need_mail_first')
+  }
+  return code
+}
+
 export function SettingsPage({ pinEnabled, onToast, onSession }: Props) {
   const [draft, setDraft] = useState<Record<string, unknown>>({})
   const [blockRules, setBlockRules] = useState<BlockRule[]>(DEFAULT_BLOCK_RULES)
@@ -417,15 +428,47 @@ export function SettingsPage({ pinEnabled, onToast, onSession }: Props) {
     }
     setBusy(true)
     try {
+      if (action === 'unlink') {
+        const result = await motorBridge.account('unlink_request', targetEmail, password, accountPin)
+        if (!result.ok) {
+          const code = String(result.error || '')
+          onToast(
+            code === 'pin_verification_failed'
+              ? t('account_pin_wrong')
+              : code === 'invalid_credentials'
+                ? t('claim_bad_credentials')
+                : code === 'missing_confirm_code'
+                  ? t('account_unlink_need_mail_first')
+                  : mapSettingsAccountError(code),
+            'err',
+          )
+          return
+        }
+        onToast(t('toast_unlink_link_sent'))
+        setPassword('')
+        setAccountPin('')
+        // Wait until the user clicks the email magic-link (cloud completes unlink).
+        for (let i = 0; i < 90; i++) {
+          await new Promise((resolve) => window.setTimeout(resolve, 4000))
+          const st = await motorBridge.account('status')
+          if (st.ok && !st.linked) {
+            onToast(t('toast_unlink_ok'))
+            await loadAccount()
+            onSession()
+            return
+          }
+        }
+        onToast(t('account_unlink_link_sent_wait'), 'ok')
+        return
+      }
+
       const result = await motorBridge.account(action, targetEmail, password, accountPin)
       onToast(
         result.ok
-          ? action === 'link'
-            ? t('toast_link_ok')
-            : t('toast_unlink_ok')
+          ? t('toast_link_ok')
           : result.error === 'pin_verification_failed'
             ? t('account_pin_wrong')
-            : String(result.error || 'account'),
+            : mapSettingsAccountError(String(result.error || 'account')),
         result.ok ? 'ok' : 'err',
       )
       if (result.ok) {
@@ -465,6 +508,9 @@ export function SettingsPage({ pinEnabled, onToast, onSession }: Props) {
             : t('settings_not_linked')}
         </h3>
         <p className="muted">{t('settings_account_blurb')}</p>
+        {linked && (
+          <p className="muted" style={{ marginTop: 8 }}>{t('account_unlink_mail_note')}</p>
+        )}
         <div className="inline-form" style={{ marginTop: 12 }}>
           {!linked && (
             <input

@@ -1485,11 +1485,12 @@ def request_unlink_confirmation(
                     data = {}
                 if not isinstance(data, dict):
                     data = {}
-                _log(f"[ACCOUNT] Unlink confirm code requested via {path}")
+                _log(f"[ACCOUNT] Unlink confirm email requested via {path}")
                 return {
                     "ok": True,
                     "sent": True,
                     "mail_confirm": True,
+                    "channel": data.get("channel") or "email_link",
                     "expires_in": data.get("expires_in"),
                     "source": "agent_api",
                     "raw": data,
@@ -1596,14 +1597,21 @@ def unlink_account_with_credentials(
             )
             if r.status_code == 404:
                 continue
+
+            detail = ""
+            try:
+                detail = str((r.json() or {}).get("detail") or "")
+            except Exception:
+                detail = (r.text or "")[:120]
+            detail_l = detail.lower()
+
             if r.status_code == 401:
-                detail = ""
-                try:
-                    detail = str((r.json() or {}).get("detail") or "").lower()
-                except Exception:
-                    detail = ""
                 err = "invalid_credentials"
-                if "code" in detail or "confirm" in detail:
+                if "missing_confirm" in detail_l:
+                    err = "missing_confirm_code"
+                elif ("invalid" in detail_l or "expired" in detail_l) and (
+                    "code" in detail_l or "confirm" in detail_l
+                ):
                     err = "invalid_confirm_code"
                 return {
                     "ok": False,
@@ -1611,13 +1619,17 @@ def unlink_account_with_credentials(
                     "error": err,
                     "source": "agent_api",
                 }
-            if r.status_code == 422 and require_confirm_code:
+
+            if r.status_code == 422 or (
+                "missing_confirm" in detail_l or detail_l == "missing_confirm_code"
+            ):
                 return {
                     "ok": False,
                     "account_linked": True,
                     "error": "missing_confirm_code",
                     "source": "agent_api",
                 }
+
             if 200 <= r.status_code < 300:
                 try:
                     data = r.json() if r.content else {}
@@ -1636,15 +1648,14 @@ def unlink_account_with_credentials(
                     "source": "agent_api",
                     "raw": data,
                 }
-            detail = ""
-            try:
-                detail = str((r.json() or {}).get("detail") or "")
-            except Exception:
-                detail = (r.text or "")[:120]
-            detail_l = detail.lower()
+
             err = detail or f"http_{r.status_code}"
-            if "code" in detail_l or "confirm" in detail_l:
+            if ("invalid" in detail_l or "expired" in detail_l) and (
+                "code" in detail_l or "confirm" in detail_l
+            ):
                 err = "invalid_confirm_code"
+            elif "missing_confirm" in detail_l:
+                err = "missing_confirm_code"
             return {
                 "ok": False,
                 "account_linked": True,

@@ -392,7 +392,7 @@ export function installMockBridge(): void {
       }
       return { ok: true, mock: true, action }
     },
-    async account(action = 'status', email = '', password = '', pin = '', code = '') {
+    async account(action = 'status', email = '', password = '', pin = '', _code = '') {
       if (locked) return { ok: false, error: 'gui_locked' }
       if (action === 'status') {
         return { ok: true, linked: accountLinked, email: accountEmail, needs_account_link: !accountLinked }
@@ -413,16 +413,11 @@ export function installMockBridge(): void {
       if (pin.length < 4) return { ok: false, error: 'pin_verification_failed', reason: 'bad_pin' }
       if (!email || !password) return { ok: false, error: 'missing_credentials' }
       if (action === 'unlink_request') {
-        // Simulate cloud mailer missing in browser mock → soft fallback path.
-        return { ok: false, error: 'unlink_mail_unavailable', mail_confirm: false }
+        return { ok: true, sent: true, mail_confirm: true, channel: 'email_link' }
       }
       if (action === 'unlink' || action === 'unlink_confirm') {
-        if (action === 'unlink_confirm' && !code) {
-          return { ok: false, error: 'missing_confirm_code' }
-        }
-        accountLinked = false
-        accountEmail = ''
-        return { ok: true, account_linked: false }
+        // Direct unlink without email redeem is rejected (cloud parity).
+        return { ok: false, error: 'missing_confirm_code' }
       }
       return { ok: false, error: 'account_unknown_action' }
     },

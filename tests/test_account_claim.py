@@ -29,13 +29,16 @@ class TestUnlinkMail(unittest.TestCase):
 
     @mock.patch("client_api.resolve_tls_verify", return_value=True)
     @mock.patch("requests.post")
-    def test_unlink_requires_code_when_forced(self, mocked_post, _verify):
-        out = unlink_account_with_credentials(
-            "a@b.c", "pw", "tok", require_confirm_code=True, confirm_code=""
-        )
+    def test_unlink_maps_missing_confirm_not_invalid(self, mocked_post, _verify):
+        resp = mock.Mock()
+        resp.status_code = 422
+        resp.content = b'{"detail":"missing_confirm_code"}'
+        resp.json.return_value = {"detail": "missing_confirm_code"}
+        resp.text = '{"detail":"missing_confirm_code"}'
+        mocked_post.return_value = resp
+        out = unlink_account_with_credentials("a@b.c", "pw", "tok")
         self.assertFalse(out.get("ok"))
         self.assertEqual(out.get("error"), "missing_confirm_code")
-        mocked_post.assert_not_called()
 
 
 class TestForceGuiUntilClaim(unittest.TestCase):

@@ -63,8 +63,7 @@ export default function App() {
   const [accountError, setAccountError] = useState('')
   const [claimBusy, setClaimBusy] = useState(false)
   const [claimError, setClaimError] = useState('')
-  const [unlinkCodeSent, setUnlinkCodeSent] = useState(false)
-  const [unlinkMailAvailable, setUnlinkMailAvailable] = useState<boolean | null>(null)
+  const [unlinkLinkSent, setUnlinkLinkSent] = useState(false)
 
   useEffect(() => subscribeI18n(() => {
     setLang(currentLang())
@@ -209,7 +208,8 @@ export default function App() {
       return t('account_unlink_bad_code')
     }
     if (code === 'email_mismatch') return t('account_unlink_email_mismatch')
-    if (code === 'missing_confirm_code') return t('account_unlink_need_code')
+    if (code === 'missing_confirm_code') return t('account_unlink_need_mail_first')
+    if (code === 'unlink_mail_unavailable') return t('account_unlink_mail_unavailable')
     return code
   }, [])
 
@@ -237,41 +237,26 @@ export default function App() {
     }
   }, [enterLockScreen, mapAccountError, refreshSession, showToast])
 
-  const requestUnlinkCode = useCallback(async (password: string, accountPin: string) => {
-    setAccountBusy(true)
-    setAccountError('')
-    try {
-      const result = await motorBridge.account('unlink_request', accountEmail, password, accountPin)
-      if (isGuiLockedPayload(result)) {
-        setUnlinkOpen(false)
-        enterLockScreen()
-        void refreshSession()
-        return
+  const watchUnlinkCompletion = useCallback(async () => {
+    for (let i = 0; i < 90; i++) {
+      await new Promise((resolve) => window.setTimeout(resolve, 4000))
+      try {
+        const session = await refreshSession()
+        if (!session.account_linked) {
+          setUnlinkOpen(false)
+          setUnlinkLinkSent(false)
+          showToast(t('toast_unlink_ok'))
+          return
+        }
+      } catch {
+        // keep waiting — user may still click the email link
       }
-      if (result.error === 'unlink_mail_unavailable' || result.mail_confirm === false) {
-        setUnlinkMailAvailable(false)
-        setUnlinkCodeSent(false)
-        setAccountError('')
-        return
-      }
-      if (!result.ok) {
-        setAccountError(mapAccountError(result))
-        return
-      }
-      setUnlinkMailAvailable(true)
-      setUnlinkCodeSent(true)
-      showToast(t('toast_unlink_code_sent'))
-    } catch (reason) {
-      setAccountError(reason instanceof Error ? reason.message : String(reason))
-    } finally {
-      setAccountBusy(false)
     }
-  }, [accountEmail, enterLockScreen, mapAccountError, refreshSession, showToast])
+  }, [refreshSession, showToast])
 
-  const unlinkAccount = useCallback(async (
+  const requestUnlinkLink = useCallback(async (
     password: string,
     accountPin: string,
-    code: string,
     emailConfirm: string,
   ) => {
     setAccountBusy(true)
@@ -281,8 +266,7 @@ export default function App() {
         setAccountError(t('account_unlink_email_mismatch'))
         return
       }
-      const action = code ? 'unlink_confirm' : 'unlink'
-      const result = await motorBridge.account(action, accountEmail, password, accountPin, code)
+      const result = await motorBridge.account('unlink_request', accountEmail, password, accountPin)
       if (isGuiLockedPayload(result)) {
         setUnlinkOpen(false)
         enterLockScreen()
@@ -293,17 +277,15 @@ export default function App() {
         setAccountError(mapAccountError(result))
         return
       }
-      setUnlinkOpen(false)
-      setUnlinkCodeSent(false)
-      setUnlinkMailAvailable(null)
-      showToast(t('toast_unlink_ok'))
-      await refreshSession()
+      setUnlinkLinkSent(true)
+      showToast(t('toast_unlink_link_sent'))
+      void watchUnlinkCompletion()
     } catch (reason) {
       setAccountError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setAccountBusy(false)
     }
-  }, [accountEmail, enterLockScreen, mapAccountError, refreshSession, showToast])
+  }, [accountEmail, enterLockScreen, mapAccountError, refreshSession, showToast, watchUnlinkCompletion])
 
   const refresh = useCallback(async (opts?: { silent?: boolean }) => {
     const silent = Boolean(opts?.silent && statusHydrated)
@@ -406,8 +388,7 @@ export default function App() {
       }
       if (action === 'unlink_account') {
         setAccountError('')
-        setUnlinkCodeSent(false)
-        setUnlinkMailAvailable(null)
+        setUnlinkLinkSent(false)
         setUnlinkOpen(true)
         return
       }
@@ -779,18 +760,15 @@ export default function App() {
           email={accountEmail}
           busy={accountBusy}
           error={accountError}
-          codeSent={unlinkCodeSent}
-          mailConfirmAvailable={unlinkMailAvailable}
+          linkSent={unlinkLinkSent}
           onClose={() => {
             if (!accountBusy) {
               setUnlinkOpen(false)
-              setUnlinkCodeSent(false)
-              setUnlinkMailAvailable(null)
+              setUnlinkLinkSent(false)
             }
           }}
-          onRequestCode={(password, accountPin) => void requestUnlinkCode(password, accountPin)}
-          onConfirm={(password, accountPin, code, emailConfirm) =>
-            void unlinkAccount(password, accountPin, code, emailConfirm)
+          onRequestLink={(password, accountPin, emailConfirm) =>
+            void requestUnlinkLink(password, accountPin, emailConfirm)
           }
         />
       )}

@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.75"  # Claim-gate first-run account link + unlink mail-confirm UX; anti-brick messaging
+VERSION = "4.9.76"  # Unlink via email magic-link request; fix missing_confirm_code mislabel
 
 
 
