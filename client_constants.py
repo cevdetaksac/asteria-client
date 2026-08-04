@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.80"  # tools_repair cloud brief parity (flat catalog/diagnose + dry_run plans)
+VERSION = "4.9.81"  # restart_explorer/taskmgr via WTS CreateProcessAsUser (user session)
 
 
 

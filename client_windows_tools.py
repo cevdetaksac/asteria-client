@@ -416,30 +416,105 @@ def fix_shell() -> Dict[str, Any]:
 
 
 def restart_explorer() -> Dict[str, Any]:
-    _run_hidden(["taskkill", "/F", "/IM", "explorer.exe"], timeout=20)
-    time.sleep(0.8)
+    """Kill explorer in the interactive user session and relaunch via CreateProcessAsUser.
+
+    Session-0 / no interactive session → explorer_wrong_session (never start there).
+    """
     try:
-        subprocess.Popen(  # noqa: S603
-            ["explorer.exe"],
-            cwd=os.environ.get("SystemRoot", r"C:\Windows"),
-            creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+        from client_helpers import (
+            create_process_in_session,
+            kill_image_in_session,
+            process_running_in_session,
+            resolve_interactive_session_id,
         )
-        time.sleep(1.2)
-        return {"ok": _process_running("explorer.exe"), "detail": "explorer_restarted"}
     except Exception as exc:
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": "explorer_wrong_session", "detail": str(exc), "session_id": 0}
+
+    sid = int(resolve_interactive_session_id() or 0)
+    if sid <= 0:
+        return {
+            "ok": False,
+            "error": "explorer_wrong_session",
+            "detail": "no_interactive_session",
+            "session_id": 0,
+        }
+
+    kill = kill_image_in_session("explorer.exe", sid)
+    time.sleep(0.8)
+    root = os.environ.get("SystemRoot", r"C:\Windows")
+    cmd = f'"{root}\\explorer.exe"'
+    launched = create_process_in_session(
+        sid,
+        cmd,
+        desktop=r"winsta0\default",
+        wait_ms=0,
+    )
+    if not launched.get("ok"):
+        return {
+            "ok": False,
+            "error": str(launched.get("error") or "explorer_wrong_session"),
+            "detail": launched.get("detail") or "launch_failed",
+            "session_id": sid,
+            "killed": kill.get("killed") or [],
+        }
+    time.sleep(1.2)
+    running = process_running_in_session("explorer.exe", sid)
+    return {
+        "ok": bool(running),
+        "detail": "explorer_restarted" if running else "explorer_launch_no_process",
+        "session_id": sid,
+        "pid": launched.get("pid"),
+        "desktop": r"winsta0\default",
+        "killed": kill.get("killed") or [],
+        "error": None if running else "explorer_wrong_session",
+    }
 
 
 def restart_taskmgr() -> Dict[str, Any]:
+    """Unlock Task Manager policy and launch taskmgr.exe in the user session."""
     fix_taskmgr()
     try:
-        subprocess.Popen(  # noqa: S603
-            ["taskmgr.exe"],
-            creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+        from client_helpers import (
+            create_process_in_session,
+            process_running_in_session,
+            resolve_interactive_session_id,
         )
-        return {"ok": True, "detail": "taskmgr_started"}
     except Exception as exc:
-        return {"ok": False, "error": str(exc)}
+        return {"ok": False, "error": "explorer_wrong_session", "detail": str(exc), "session_id": 0}
+
+    sid = int(resolve_interactive_session_id() or 0)
+    if sid <= 0:
+        return {
+            "ok": False,
+            "error": "explorer_wrong_session",
+            "detail": "no_interactive_session",
+            "session_id": 0,
+        }
+    root = os.environ.get("SystemRoot", r"C:\Windows")
+    cmd = f'"{root}\\System32\\taskmgr.exe"'
+    launched = create_process_in_session(
+        sid,
+        cmd,
+        desktop=r"winsta0\\default",
+        wait_ms=0,
+    )
+    if not launched.get("ok"):
+        return {
+            "ok": False,
+            "error": str(launched.get("error") or "explorer_wrong_session"),
+            "detail": launched.get("detail") or "launch_failed",
+            "session_id": sid,
+        }
+    time.sleep(0.6)
+    running = process_running_in_session("taskmgr.exe", sid)
+    return {
+        "ok": bool(running or launched.get("pid")),
+        "detail": "taskmgr_started",
+        "session_id": sid,
+        "pid": launched.get("pid"),
+        "desktop": r"winsta0\default",
+        "error": None if (running or launched.get("pid")) else "explorer_wrong_session",
+    }
 
 
 def restart_critical_services() -> Dict[str, Any]:
@@ -452,9 +527,24 @@ def restart_critical_services() -> Dict[str, Any]:
 
 
 def rebuild_icon_cache() -> Dict[str, Any]:
-    # Stop explorer, delete iconcache*, restart
+    # Stop explorer in interactive session, delete iconcache*, restart via CreateProcessAsUser
+    try:
+        from client_helpers import kill_image_in_session, resolve_interactive_session_id
+    except Exception:
+        kill_image_in_session = None  # type: ignore[assignment]
+        resolve_interactive_session_id = None  # type: ignore[assignment]
+
     local = os.environ.get("LOCALAPPDATA", "")
-    killed = _run_hidden(["taskkill", "/F", "/IM", "explorer.exe"], timeout=20)
+    sid = 0
+    killed: Dict[str, Any] = {"killed": [], "count": 0}
+    if resolve_interactive_session_id and kill_image_in_session:
+        sid = int(resolve_interactive_session_id() or 0)
+        if sid > 0:
+            killed = kill_image_in_session("explorer.exe", sid)
+        else:
+            killed = {"killed": [], "count": 0, "error": "no_interactive_session"}
+    else:
+        _run_hidden(["taskkill", "/F", "/IM", "explorer.exe"], timeout=20)
     deleted = []
     if local:
         base = Path(local) / "Microsoft" / "Windows" / "Explorer"
@@ -473,7 +563,13 @@ def rebuild_icon_cache() -> Dict[str, Any]:
                     except OSError:
                         pass
     restart = restart_explorer()
-    return {"ok": bool(restart.get("ok")), "deleted": deleted[:20], "kill": killed, "explorer": restart}
+    return {
+        "ok": bool(restart.get("ok")),
+        "deleted": deleted[:20],
+        "kill": killed,
+        "explorer": restart,
+        "session_id": restart.get("session_id") or sid,
+    }
 
 
 def clear_temp() -> Dict[str, Any]:
@@ -1066,6 +1162,15 @@ def dry_run_plan(action: str) -> List[Dict[str, Any]]:
             {"step": "spooler_restart", "args": ["clear_queue"]},
         ],
         "audio_fix": [{"step": "service_restart", "args": ["Audiosrv", "AudioEndpointBuilder"]}],
+        "restart_explorer": [
+            {"step": "resolve_session", "args": ["WTSGetActiveConsoleSessionId|>0"]},
+            {"step": "kill_in_session", "args": ["explorer.exe"]},
+            {"step": "CreateProcessAsUser", "args": ["explorer.exe", r"winsta0\default"]},
+        ],
+        "restart_taskmgr": [
+            {"step": "resolve_session", "args": ["WTSGetActiveConsoleSessionId|>0"]},
+            {"step": "CreateProcessAsUser", "args": ["taskmgr.exe", r"winsta0\default"]},
+        ],
         "full_safe": [
             {"step": "auto_fix_findings"},
             {"step": "webview2"},

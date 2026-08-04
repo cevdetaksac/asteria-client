@@ -24,7 +24,7 @@ import socket
 import threading
 import requests
 import tkinter as tk
-from typing import Dict, Optional
+from typing import Any, Dict, List, Optional
 import logging
 
 # Import required modules
@@ -158,6 +158,224 @@ def get_active_interactive_session_id() -> int:
     except Exception:
         pass
     return 0
+
+
+def resolve_interactive_session_id() -> int:
+    """Prefer WTSGetActiveConsoleSessionId, else query Active RDP/console (>0)."""
+    try:
+        import ctypes
+
+        sid = int(ctypes.windll.kernel32.WTSGetActiveConsoleSessionId())
+        # 0xFFFFFFFF = no session; 0 = Session-0 services (never use)
+        if sid > 0 and sid != 0xFFFFFFFF:
+            return sid
+    except Exception:
+        pass
+    return int(get_active_interactive_session_id() or 0)
+
+
+def kill_image_in_session(image_name: str, session_id: int) -> Dict[str, Any]:
+    """Force-kill processes named image_name only in the given WTS session."""
+    killed: List[int] = []
+    sid_want = int(session_id or 0)
+    if sid_want <= 0:
+        return {"ok": False, "killed": [], "count": 0, "error": "invalid_session"}
+    target = str(image_name or "").strip().lower()
+    if not target:
+        return {"ok": False, "killed": [], "count": 0, "error": "missing_image"}
+    if not target.endswith(".exe"):
+        target_exe = target + ".exe"
+    else:
+        target_exe = target
+        target = target[:-4]
+    try:
+        import ctypes
+        import psutil
+        from ctypes import wintypes
+
+        kernel = ctypes.windll.kernel32
+        for proc in psutil.process_iter(["pid", "name"]):
+            try:
+                name = (proc.info.get("name") or "").lower()
+                if name not in (target_exe, target):
+                    continue
+                pid = int(proc.info.get("pid") or 0)
+                if pid <= 0:
+                    continue
+                sid = wintypes.DWORD()
+                if not kernel.ProcessIdToSessionId(pid, ctypes.byref(sid)):
+                    continue
+                if int(sid.value) != sid_want:
+                    continue
+                proc.kill()
+                killed.append(pid)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, TypeError, ValueError):
+                continue
+        return {"ok": True, "killed": killed, "count": len(killed)}
+    except Exception as exc:
+        return {"ok": False, "killed": killed, "count": len(killed), "error": str(exc)}
+
+
+def process_running_in_session(image_name: str, session_id: int) -> bool:
+    sid_want = int(session_id or 0)
+    if sid_want <= 0:
+        return False
+    target = str(image_name or "").strip().lower()
+    if not target.endswith(".exe"):
+        target_exe = target + ".exe"
+    else:
+        target_exe = target
+    try:
+        import ctypes
+        import psutil
+        from ctypes import wintypes
+
+        kernel = ctypes.windll.kernel32
+        for proc in psutil.process_iter(["pid", "name"]):
+            try:
+                name = (proc.info.get("name") or "").lower()
+                if name != target_exe:
+                    continue
+                pid = int(proc.info.get("pid") or 0)
+                sid = wintypes.DWORD()
+                if not kernel.ProcessIdToSessionId(pid, ctypes.byref(sid)):
+                    continue
+                if int(sid.value) == sid_want:
+                    return True
+            except (psutil.NoSuchProcess, psutil.AccessDenied, TypeError, ValueError):
+                continue
+        return False
+    except Exception:
+        return False
+
+
+def create_process_in_session(
+    session_id: int,
+    command: str,
+    *,
+    desktop: str = r"winsta0\default",
+    wait_ms: int = 0,
+) -> Dict[str, Any]:
+    """WTSQueryUserToken + CreateProcessAsUser into interactive session (SYSTEM).
+
+    Never launches into Session-0. Desktop defaults to WinSta0\\Default.
+    """
+    sid = int(session_id or 0)
+    if sid <= 0:
+        return {
+            "ok": False,
+            "error": "explorer_wrong_session",
+            "session_id": sid,
+            "detail": "refused_session_zero_or_missing",
+        }
+    cmd = str(command or "").strip()
+    if not cmd:
+        return {"ok": False, "error": "missing_command", "session_id": sid}
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        wts = ctypes.windll.wtsapi32
+        adv = ctypes.windll.advapi32
+        kernel = ctypes.windll.kernel32
+
+        h_token = wintypes.HANDLE()
+        if not wts.WTSQueryUserToken(sid, ctypes.byref(h_token)):
+            err = int(kernel.GetLastError() or 0)
+            return {
+                "ok": False,
+                "error": "explorer_wrong_session",
+                "session_id": sid,
+                "detail": f"WTSQueryUserToken_failed_{err}",
+            }
+
+        class STARTUPINFO(ctypes.Structure):
+            _fields_ = [
+                ("cb", wintypes.DWORD),
+                ("lpReserved", wintypes.LPWSTR),
+                ("lpDesktop", wintypes.LPWSTR),
+                ("lpTitle", wintypes.LPWSTR),
+                ("dwX", wintypes.DWORD),
+                ("dwY", wintypes.DWORD),
+                ("dwXSize", wintypes.DWORD),
+                ("dwYSize", wintypes.DWORD),
+                ("dwXCountChars", wintypes.DWORD),
+                ("dwYCountChars", wintypes.DWORD),
+                ("dwFillAttribute", wintypes.DWORD),
+                ("dwFlags", wintypes.DWORD),
+                ("wShowWindow", wintypes.WORD),
+                ("cbReserved2", wintypes.WORD),
+                ("lpReserved2", ctypes.POINTER(wintypes.BYTE)),
+                ("hStdInput", wintypes.HANDLE),
+                ("hStdOutput", wintypes.HANDLE),
+                ("hStdError", wintypes.HANDLE),
+            ]
+
+        class PROCESS_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("hProcess", wintypes.HANDLE),
+                ("hThread", wintypes.HANDLE),
+                ("dwProcessId", wintypes.DWORD),
+                ("dwThreadId", wintypes.DWORD),
+            ]
+
+        si = STARTUPINFO()
+        si.cb = ctypes.sizeof(STARTUPINFO)
+        si.lpDesktop = str(desktop or r"winsta0\default")
+        pi = PROCESS_INFORMATION()
+        CREATE_UNICODE_ENVIRONMENT = 0x00000400
+        CREATE_NEW_CONSOLE = 0x00000010
+        cmd_buf = ctypes.create_unicode_buffer(cmd)
+
+        ok = bool(
+            adv.CreateProcessAsUserW(
+                h_token,
+                None,
+                cmd_buf,
+                None,
+                None,
+                False,
+                CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_CONSOLE,
+                None,
+                None,
+                ctypes.byref(si),
+                ctypes.byref(pi),
+            )
+        )
+        last_err = int(kernel.GetLastError() or 0)
+        try:
+            kernel.CloseHandle(h_token)
+        except Exception:
+            pass
+        if not ok:
+            return {
+                "ok": False,
+                "error": "explorer_wrong_session",
+                "session_id": sid,
+                "detail": f"CreateProcessAsUser_failed_{last_err}",
+            }
+        pid = int(pi.dwProcessId or 0)
+        try:
+            if wait_ms > 0:
+                kernel.WaitForSingleObject(pi.hProcess, int(wait_ms))
+            kernel.CloseHandle(pi.hThread)
+            kernel.CloseHandle(pi.hProcess)
+        except Exception:
+            pass
+        log(f"[SESSION] CreateProcessAsUser ok pid={pid} session={sid} desktop={desktop}")
+        return {
+            "ok": True,
+            "session_id": sid,
+            "pid": pid,
+            "desktop": str(desktop),
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": "explorer_wrong_session",
+            "session_id": sid,
+            "detail": str(exc),
+        }
 
 
 def resolve_interactive_tray_command() -> tuple[str, str]:
