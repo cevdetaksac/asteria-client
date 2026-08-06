@@ -358,7 +358,7 @@ class AiortcMediaTransport(OptionalMediaTransport):
         self._codec = ""
         self._preferred_codec = ""
         self._encoder_label = ""
-        self._target_bitrate_bps = 2_500_000
+        self._target_bitrate_bps = 5_000_000
         self._error = ""
         self._closing = False
         self._start_thread()

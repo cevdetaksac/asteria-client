@@ -30,14 +30,18 @@ from urllib.parse import urlencode
 from client_helpers import log
 from client_rd_adaptive import AdaptiveStreamController
 
-# Defaults tuned for smooth dashboard viewing (prompt: 5–10 fps, q~30–40)
-DEFAULT_FPS = 6.0
-DEFAULT_QUALITY = 35
+# Defaults: JPEG-WS is fallback only; WebRTC/H.264 is the smooth primary path.
+DEFAULT_FPS = 15.0
+DEFAULT_QUALITY = 50
 DEFAULT_MAX_WIDTH = 1280
 MIN_ENCODE_WIDTH = 800
 MIN_ENCODE_HEIGHT = 600
 TARGET_FRAME_BYTES = 320 * 1024       # aim ≤ ~320 KB
 MAX_FRAME_BYTES = 2 * 1024 * 1024
+# WebRTC primary capture rate (independent of JPEG knobs).
+MEDIA_CAPTURE_FPS = 45.0
+MEDIA_CAPTURE_QUALITY = 78
+JPEG_FALLBACK_FPS_WHILE_NEGOTIATING = 12.0
 IDLE_STOP_SECONDS = 300
 INPUT_RATE_LIMIT = 60                 # legacy alias (kept for backward compat)
 INPUT_RATE_WINDOW = 1.0
@@ -140,8 +144,8 @@ class RemoteDesktopStreamer:
         self._requested_quality = DEFAULT_QUALITY
         self._requested_max_width = DEFAULT_MAX_WIDTH
         # WebRTC capture pacing is independent from JPEG-era stream knobs.
-        self._media_fps = 45.0
-        self._media_quality = 78
+        self._media_fps = MEDIA_CAPTURE_FPS
+        self._media_quality = MEDIA_CAPTURE_QUALITY
         self._media_mode_applied = False
         self._dxcam = None
         self._last_raw_hash = b""
@@ -163,6 +167,7 @@ class RemoteDesktopStreamer:
         self._last_capture_mono = 0.0
         self._last_send_mono = 0.0
         self._last_helper_capture_ms = 0.0
+        self._last_helper_raw: Optional[Tuple[bytes, int, int]] = None
         self._stream_id = ""
         self._media_session_id = ""
         # Contract 1.4.39 — agent → viewer stage honesty (C-RD-PROG-*)
@@ -616,6 +621,11 @@ class RemoteDesktopStreamer:
                 persistent_started = self._start_persistent_helper()
                 if persistent_started:
                     jpeg, w, h = self._grab_via_persistent_helper(PROBE_TIMEOUT_SEC)
+                    if (
+                        (not jpeg or len(jpeg) < MIN_JPEG_BYTES)
+                        and self._last_helper_raw
+                    ):
+                        jpeg, w, h = self._encode_helper_raw_jpeg()
                 if (
                     not persistent_started
                     or not jpeg
@@ -759,8 +769,19 @@ class RemoteDesktopStreamer:
             self._stream_started_at = time.time()
             if self._use_user_helper:
                 if not self._persistent_helper_connected():
-                    # Legacy CreateProcessAsUser-per-frame fallback is expensive.
-                    self._fps = min(self._fps, 2.0)
+                    # Legacy CreateProcessAsUser-per-frame is expensive —
+                    # keep a usable floor (not 2 fps) until persistent reconnects.
+                    self._fps = min(self._fps, 8.0)
+                elif self._webrtc_available():
+                    # Warm helper for H.264: raw RGB + media FPS from the start.
+                    self._session_helper.update_config({
+                        "fps": self._media_fps,
+                        "quality": self._media_quality,
+                        "max_width": self._max_width,
+                        "monitor": self._monitor_index,
+                        "prefer_raw": True,
+                        "winlogon": bool(self._winlogon_mode),
+                    })
 
             self._thread = threading.Thread(
                 target=self._capture_loop,
@@ -801,12 +822,15 @@ class RemoteDesktopStreamer:
             except Exception:
                 pass
 
-            log(f"[REMOTE-DESKTOP] ▶ Stream started "
+            log(
+                f"[REMOTE-DESKTOP] ▶ Stream started "
                 f"(fps={self._fps} q={self._quality} max_w={self._max_width} "
-                f"session={self._target_session_id} ws+http)")
+                f"session={self._target_session_id} "
+                f"prefer=webrtc webrtc_avail={self._webrtc_available()})"
+            )
             return {
                 "success": True,
-                "message": "remote stream started (websocket preferred)",
+                "message": "remote stream started (webrtc preferred; jpeg-ws fallback)",
                 "data": self.get_status(),
             }
 
@@ -1174,6 +1198,12 @@ class RemoteDesktopStreamer:
 
     # ── Capture loop ──────────────────────────────────────────────
 
+    def _webrtc_available(self) -> bool:
+        try:
+            return bool(self._media.capabilities().get("webrtc"))
+        except Exception:
+            return False
+
     def _media_ready(self) -> bool:
         try:
             status = self._media.status()
@@ -1188,6 +1218,15 @@ class RemoteDesktopStreamer:
     def _effective_capture_settings(self) -> Tuple[float, int, int]:
         if self._media_ready():
             return self._media_fps, self._media_quality, self._max_width
+        # WebRTC-first: while offer/ICE is in flight, don't crawl at JPEG 6 fps —
+        # keep a fluid provisional rate so H.264 handover has fresh frames and
+        # JPEG fallback still looks like video, not a slideshow.
+        if self._webrtc_available() and self._running:
+            return (
+                max(float(self._fps), JPEG_FALLBACK_FPS_WHILE_NEGOTIATING),
+                max(int(self._quality), DEFAULT_QUALITY),
+                self._max_width,
+            )
         return self._fps, self._quality, self._max_width
 
     def _sync_media_capture_mode(self) -> None:
@@ -1197,9 +1236,18 @@ class RemoteDesktopStreamer:
         self._media_mode_applied = ready
         if self._persistent_helper_connected():
             fps, quality, max_width = self._effective_capture_settings()
-            self._session_helper.update_config({
-                "fps": fps, "quality": quality, "max_width": max_width,
-            })
+            cfg = {
+                "fps": fps,
+                "quality": quality,
+                "max_width": max_width,
+                "prefer_raw": bool(self._webrtc_available()),
+                "winlogon": bool(self._winlogon_mode),
+            }
+            if ready:
+                cfg["fps"] = self._media_fps
+                cfg["quality"] = self._media_quality
+                cfg["prefer_raw"] = True
+            self._session_helper.update_config(cfg)
         if ready:
             # Drop any JPEG captured before DTLS/ICE became ready.
             with self._out_lock:
@@ -1265,6 +1313,7 @@ class RemoteDesktopStreamer:
                     return
                 # Media publish failed — fall through to JPEG for WS/HTTP.
 
+        self._last_helper_raw = None
         if self._use_user_helper:
             if not self._persistent_helper_connected():
                 if not self._start_persistent_helper():
@@ -1295,9 +1344,29 @@ class RemoteDesktopStreamer:
             self._last_helper_capture_ms = 0.0
         self._adaptive.observe_capture(capture_elapsed)
         self._adaptive_tick()
+
+        # Helper raw RGB → WebRTC mailbox (no JPEG decode/re-encode).
+        if self._media_ready() and self._last_helper_raw:
+            rgb, rw, rh = self._last_helper_raw
+            self._last_helper_raw = None
+            if rgb and rw > 0 and rh > 0:
+                if self._should_skip_unchanged_frame(rgb):
+                    return
+                self._seq += 1
+                seq = self._seq
+                if self._dispatch_raw_frame(rgb, rw, rh, seq):
+                    return
+                # Publish failed — keep bytes for JPEG-WS fallthrough.
+                self._last_helper_raw = (rgb, rw, rh)
+
         if not jpeg or w <= 0 or h <= 0:
-            self._stats["frames_failed"] += 1
-            return
+            # Raw-only helper frame without JPEG and without media — encode for WS.
+            encoded = self._encode_helper_raw_jpeg()
+            if encoded[0]:
+                jpeg, w, h = encoded
+            else:
+                self._stats["frames_failed"] += 1
+                return
         # API rejects tiny frames; black frames look like "live" black desktop
         if len(jpeg) < MIN_JPEG_BYTES:
             self._stats["frames_failed"] += 1
@@ -2358,7 +2427,13 @@ class RemoteDesktopStreamer:
                 "max_width": self._max_width,
                 "monitor": self._monitor_index,
                 "winlogon": bool(self._winlogon_mode),
+                # Prefer raw RGB over loopback whenever WebRTC runtime exists.
+                "prefer_raw": bool(self._webrtc_available()),
             }
+            if self._webrtc_available():
+                config["fps"] = self._media_fps
+                config["quality"] = self._media_quality
+                config["prefer_raw"] = True
             if not helper.start(config, timeout=PROBE_TIMEOUT_SEC):
                 log(f"[REMOTE-DESKTOP] persistent helper start failed: {helper.error}")
                 helper.stop()
@@ -2383,10 +2458,34 @@ class RemoteDesktopStreamer:
             self._stop_persistent_helper()
             return False
 
+    def _encode_helper_raw_jpeg(self) -> Tuple[Optional[bytes], int, int]:
+        """Encode last helper raw RGB into JPEG for probe / JPEG-WS fallback."""
+        if not self._last_helper_raw:
+            return None, 0, 0
+        rgb, width, height = self._last_helper_raw
+        self._last_helper_raw = None
+        try:
+            from PIL import Image
+            img = Image.frombytes("RGB", (int(width), int(height)), rgb)
+            buf = io.BytesIO()
+            img.save(
+                buf,
+                format="JPEG",
+                quality=max(22, int(self._quality or DEFAULT_QUALITY)),
+                optimize=False,
+                subsampling=2,
+            )
+            data = buf.getvalue()
+            return data, int(width), int(height)
+        except Exception as exc:
+            log(f"[REMOTE-DESKTOP] helper raw→jpeg encode failed: {exc}")
+            return None, 0, 0
+
     def _grab_via_persistent_helper(
         self, timeout: float = 2.0
     ) -> Tuple[Optional[bytes], int, int]:
         helper = self._session_helper
+        self._last_helper_raw = None
         if helper is None or not helper.connected:
             return None, 0, 0
         frame = helper.wait_frame(after_id=self._helper_frame_id, timeout=timeout)
@@ -2397,7 +2496,7 @@ class RemoteDesktopStreamer:
                 self._stop_persistent_helper()
             return None, 0, 0
         self._helper_frame_misses = 0
-        frame_id, jpeg, meta = frame
+        frame_id, payload, meta = frame
         self._helper_frame_id = int(frame_id)
         width = int(meta.get("width") or 0)
         height = int(meta.get("height") or 0)
@@ -2416,9 +2515,19 @@ class RemoteDesktopStreamer:
             if self._winlogon_mode
             else "persistent-user-helper"
         )
+        fmt = str(meta.get("format") or "jpeg").lower()
+        if fmt == "rgb" and payload and width > 0 and height > 0:
+            if len(payload) < width * height * 3:
+                self._stats["frames_failed"] += 1
+                return None, 0, 0
+            self._last_helper_raw = (bytes(payload), width, height)
+            self._capture_method = f"{prefix}:raw"
+            self._stats["capture_method"] = self._capture_method
+            # No JPEG when feeding WebRTC; callers encode on demand for WS fallback.
+            return None, width, height
         self._capture_method = f"{prefix}:{method}"
         self._stats["capture_method"] = self._capture_method
-        return jpeg, width, height
+        return payload, width, height
 
     def _stop_persistent_helper(self) -> None:
         helper = self._session_helper
@@ -2724,6 +2833,8 @@ class RemoteDesktopStreamer:
             "input_v2": True,
             "winlogon": True,
             "pre_logon": True,
+            "preferred_transport": "webrtc",
+            "preferred_codec": "h264",
             "transports": transports,
             "fallback": "jpeg-ws",
             "codecs": codecs,

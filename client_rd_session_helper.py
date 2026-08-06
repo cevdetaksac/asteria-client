@@ -21,7 +21,8 @@ from typing import Callable, Optional, Tuple
 
 
 MAX_HEADER = 64 * 1024
-MAX_PAYLOAD = 3 * 1024 * 1024
+# Raw RGB @ 1280×720 ≈ 2.7 MB; allow 1080p headroom over loopback.
+MAX_PAYLOAD = 8 * 1024 * 1024
 _PREFIX = struct.Struct("!4sBIIQ")
 _MAGIC = b"RDH1"
 _MAC_SIZE = hashlib.sha256().digest_size
@@ -267,8 +268,12 @@ class PersistentSessionHelper:
             while not self._stop.is_set() and channel is not None:
                 kind, header, payload = channel.recv()
                 with self._condition:
-                    if kind == "F":
+                    if kind in ("F", "R"):
                         self._frame_id += 1
+                        # R = raw RGB for WebRTC; F = JPEG fallback.
+                        if kind == "R" and isinstance(header, dict):
+                            header = dict(header)
+                            header.setdefault("format", "rgb")
                         self._latest = (payload, header)
                     elif kind == "A":
                         self._pending[int(header.get("id", 0))] = bool(header.get("ok"))
@@ -344,8 +349,9 @@ def run_session_helper(
     rd._running = True
     # Winlogon / lock UI: stay on named Winlogon desktop (C-RD-CON-4).
     rd._winlogon_mode = bool(winlogon or config.get("winlogon"))
-    # JPEG fallback normally stays <=10 fps; WebRTC media mode can request
-    # 30-60 fps independently through update_config.
+    # WebRTC-first: parent may request raw RGB over loopback (prefer_raw).
+    prefer_raw = bool(config.get("prefer_raw"))
+    # JPEG fallback normally stays lower; WebRTC/media can request 30–60 fps.
     rd._fps = max(1.0, min(float(config.get("fps", 6.0)), 60.0))
     rd._quality = max(20, min(int(config.get("quality", 35)), 85))
     rd._max_width = max(800, min(int(config.get("max_width", 1280)), 1920))
@@ -353,23 +359,51 @@ def run_session_helper(
     stop = threading.Event()
 
     def capture_loop():
+        nonlocal prefer_raw
         while not stop.is_set():
             started = time.monotonic()
             try:
-                jpeg, width, height = rd._grab_jpeg()
-                if jpeg and width > 0 and height > 0:
-                    captured_mono = time.monotonic()
-                    channel.send("F", {
-                        "width": width,
-                        "height": height,
-                        "native_width": int(rd._screen_w or width),
-                        "native_height": int(rd._screen_h or height),
-                        "origin_x": int(rd._screen_x),
-                        "origin_y": int(rd._screen_y),
-                        "capture_ms": round((captured_mono - started) * 1000.0, 3),
-                        "capture_mono_ms": int(captured_mono * 1000),
-                        "method": rd._capture_method,
-                    }, jpeg)
+                sent = False
+                if prefer_raw:
+                    img, method = rd._capture_screen_image()
+                    if (
+                        img is not None
+                        and "+black" not in (method or "")
+                        and img.width > 0
+                        and img.height > 0
+                    ):
+                        rgb = img.convert("RGB").tobytes()
+                        if len(rgb) <= MAX_PAYLOAD:
+                            captured_mono = time.monotonic()
+                            channel.send("R", {
+                                "format": "rgb",
+                                "width": int(img.width),
+                                "height": int(img.height),
+                                "native_width": int(rd._screen_w or img.width),
+                                "native_height": int(rd._screen_h or img.height),
+                                "origin_x": int(rd._screen_x),
+                                "origin_y": int(rd._screen_y),
+                                "capture_ms": round((captured_mono - started) * 1000.0, 3),
+                                "capture_mono_ms": int(captured_mono * 1000),
+                                "method": method or "gdi",
+                            }, rgb)
+                            sent = True
+                if not sent:
+                    jpeg, width, height = rd._grab_jpeg()
+                    if jpeg and width > 0 and height > 0:
+                        captured_mono = time.monotonic()
+                        channel.send("F", {
+                            "format": "jpeg",
+                            "width": width,
+                            "height": height,
+                            "native_width": int(rd._screen_w or width),
+                            "native_height": int(rd._screen_h or height),
+                            "origin_x": int(rd._screen_x),
+                            "origin_y": int(rd._screen_y),
+                            "capture_ms": round((captured_mono - started) * 1000.0, 3),
+                            "capture_mono_ms": int(captured_mono * 1000),
+                            "method": rd._capture_method,
+                        }, jpeg)
             except Exception as exc:
                 try:
                     channel.send("E", {"error": str(exc)})
@@ -385,6 +419,8 @@ def run_session_helper(
             if kind == "S":
                 break
             if kind == "C":
+                prefer_raw = bool(header.get("prefer_raw", prefer_raw))
+                rd._winlogon_mode = bool(header.get("winlogon", rd._winlogon_mode))
                 rd._fps = max(1.0, min(float(header.get("fps", rd._fps)), 60.0))
                 rd._quality = max(20, min(int(header.get("quality", rd._quality)), 85))
                 try:
