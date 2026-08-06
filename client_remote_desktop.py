@@ -557,11 +557,12 @@ class RemoteDesktopStreamer:
                 self._target_username = ""
 
             pid_sid, csid = self._session_ids()
-            # Capture other user's desktop via helper when not already in that session.
-            # Pre-logon / Winlogon must stay in-process (WinSta0 attach) — no user helper.
+            # Cross-session capture MUST use CreateProcessAsUser helper.
+            # Session-0 OpenWindowStation("WinSta0") opens *Session 0's* WinSta0 —
+            # named Winlogon attach there yields desktop=Winlogon + gdi+black (C-RD-P0-WL).
+            # Launch helper into the console session with lpDesktop=winsta0\Winlogon.
             need_helper = (
-                not self._winlogon_mode
-                and self._target_session_id is not None
+                self._target_session_id is not None
                 and (pid_sid is None or int(pid_sid) != int(self._target_session_id))
             )
             log(
@@ -639,8 +640,20 @@ class RemoteDesktopStreamer:
                         "CreateProcessAsUser into the selected RDP/console session."
                     )
                     # Do NOT fall back to Session-0 BitBlt (always black for other sessions)
-                    err = "CAPTURE_NO_DESKTOP"
-                    msg = helper_err
+                    err = (
+                        "winlogon_capture_black"
+                        if self._winlogon_mode
+                        else "CAPTURE_NO_DESKTOP"
+                    )
+                    msg = (
+                        (
+                            "Winlogon helper failed to capture logon UI pixels "
+                            f"(session={self._target_session_id}, "
+                            f"desktop={self._helper_desktop()}). {helper_err}"
+                        )
+                        if self._winlogon_mode
+                        else helper_err
+                    )
                     log(f"[REMOTE-DESKTOP] ✖ {err}: {msg}")
                     self._running = False
                     self._transport = "idle"
@@ -950,8 +963,9 @@ class RemoteDesktopStreamer:
                     self._stats["inputs_applied"] += 1
                     return result({"success": True, "message": f"input {event} forwarded"})
                 return result({"success": False, "error": f"input {event} not forwarded"})
-            if self._use_user_helper and not self._winlogon_mode:
-                # Never inject from Session 0 after a cross-session helper failure.
+            if self._use_user_helper:
+                # Never inject from Session 0 after a cross-session helper failure
+                # (includes Winlogon — Session-0 SendInput cannot reach console Winlogon).
                 return result({"success": False, "error": "target session helper is unavailable"})
 
             ok = self._inject_local(event, params)
@@ -1870,7 +1884,9 @@ class RemoteDesktopStreamer:
             memdc = gdi32.CreateCompatibleDC(hdc)
             bmp = gdi32.CreateCompatibleBitmap(hdc, width, height)
             old = gdi32.SelectObject(memdc, bmp)
-            ok = gdi32.BitBlt(memdc, 0, 0, width, height, hdc, left, top, 0x00CC0020)
+            # SRCCOPY|CAPTUREBLT — LogonUI / lock layered windows often missing without CAPTUREBLT.
+            SRCCOPY_CAPTUREBLT = 0x40CC0020
+            ok = gdi32.BitBlt(memdc, 0, 0, width, height, hdc, left, top, SRCCOPY_CAPTUREBLT)
             if not ok:
                 log(f"[REMOTE-DESKTOP] GDI BitBlt failed {width}x{height}")
                 # Release primary and try desktop window DC
@@ -1891,7 +1907,7 @@ class RemoteDesktopStreamer:
                 memdc = gdi32.CreateCompatibleDC(hdc)
                 bmp = gdi32.CreateCompatibleBitmap(hdc, width, height)
                 old = gdi32.SelectObject(memdc, bmp)
-                ok = gdi32.BitBlt(memdc, 0, 0, width, height, hdc, left, top, 0x00CC0020)
+                ok = gdi32.BitBlt(memdc, 0, 0, width, height, hdc, left, top, SRCCOPY_CAPTUREBLT)
                 if not ok:
                     return None
 
@@ -2307,7 +2323,15 @@ class RemoteDesktopStreamer:
             "--rd-helper-session", str(int(self._target_session_id or 0)),
             "--silent",
         ])
+        if self._winlogon_mode:
+            argv.append("--rd-helper-winlogon")
         return subprocess.list2cmdline(argv)
+
+    def _helper_desktop(self) -> str:
+        """lpDesktop for CreateProcessAsUser — Winlogon for logon/lock UI."""
+        if self._winlogon_mode:
+            return r"winsta0\Winlogon"
+        return r"winsta0\default"
 
     def _start_persistent_helper(self) -> bool:
         target = self._target_session_id
@@ -2319,9 +2343,12 @@ class RemoteDesktopStreamer:
         try:
             from client_rd_session_helper import PersistentSessionHelper
 
+            desktop = self._helper_desktop()
             helper = PersistentSessionHelper(
                 int(target),
-                launch=lambda sid, cmd: self._launch_in_session(sid, cmd, wait=False),
+                launch=lambda sid, cmd: self._launch_in_session(
+                    sid, cmd, wait=False, desktop=desktop
+                ),
                 command_builder=self._helper_command,
                 log=log,
             )
@@ -2330,6 +2357,7 @@ class RemoteDesktopStreamer:
                 "quality": self._quality,
                 "max_width": self._max_width,
                 "monitor": self._monitor_index,
+                "winlogon": bool(self._winlogon_mode),
             }
             if not helper.start(config, timeout=PROBE_TIMEOUT_SEC):
                 log(f"[REMOTE-DESKTOP] persistent helper start failed: {helper.error}")
@@ -2338,9 +2366,17 @@ class RemoteDesktopStreamer:
             self._session_helper = helper
             self._helper_frame_id = 0
             self._helper_frame_misses = 0
-            self._capture_method = "persistent-user-helper"
+            method = (
+                "persistent-winlogon-helper"
+                if self._winlogon_mode
+                else "persistent-user-helper"
+            )
+            self._capture_method = method
             self._stats["capture_method"] = self._capture_method
-            log(f"[REMOTE-DESKTOP] persistent helper connected session={target}")
+            log(
+                f"[REMOTE-DESKTOP] persistent helper connected session={target} "
+                f"desktop={desktop}"
+            )
             return True
         except Exception as e:
             log(f"[REMOTE-DESKTOP] persistent helper error: {e}")
@@ -2375,7 +2411,12 @@ class RemoteDesktopStreamer:
         self._screen_w, self._screen_h = native_width, native_height
         self._capture_w, self._capture_h = width, height
         method = str(meta.get("method") or "capture")
-        self._capture_method = f"persistent-user-helper:{method}"
+        prefix = (
+            "persistent-winlogon-helper"
+            if self._winlogon_mode
+            else "persistent-user-helper"
+        )
+        self._capture_method = f"{prefix}:{method}"
         self._stats["capture_method"] = self._capture_method
         return jpeg, width, height
 
@@ -2432,13 +2473,17 @@ class RemoteDesktopStreamer:
             pass
 
         exe = sys.executable
-        cmd = f'"{exe}" --rd-capture-once "{out_path}"'
+        winlogon_flag = " --rd-capture-winlogon" if self._winlogon_mode else ""
+        cmd = f'"{exe}" --rd-capture-once "{out_path}"{winlogon_flag}'
 
-        launched = self._launch_in_session(int(target), cmd)
+        launched = self._launch_in_session(
+            int(target), cmd, desktop=self._helper_desktop()
+        )
         if not launched:
             # Session-0 subprocess cannot see another user's desktop — do not fake it
             log(
                 f"[REMOTE-DESKTOP] helper launch failed for session={target} "
+                f"desktop={self._helper_desktop()} "
                 "(no Session-0 fallback — would capture black)"
             )
             return None, 0, 0
@@ -2465,8 +2510,10 @@ class RemoteDesktopStreamer:
             except Exception:
                 w = self._max_width
                 h = int(self._max_width * 9 / 16)
-            self._capture_method = "user-helper"
-            self._stats["capture_method"] = "user-helper"
+            self._capture_method = (
+                "winlogon-helper" if self._winlogon_mode else "user-helper"
+            )
+            self._stats["capture_method"] = self._capture_method
             self._use_user_helper = True
             self._screen_w, self._screen_h = w, h
             self._capture_w, self._capture_h = w, h
@@ -2497,21 +2544,95 @@ class RemoteDesktopStreamer:
         except Exception:
             return None
 
-    def _launch_in_session(self, session_id: int, command: str, wait: bool = True) -> bool:
-        """CreateProcessAsUser in target WTS session (requires SYSTEM / SeTcbPrivilege)."""
+    def _open_session_token(self, session_id: int):
+        """WTSQueryUserToken, or SYSTEM primary with TokenSessionId (pre-logon).
+
+        Returns ``(HANDLE|None, source_tag)``. Caller closes the handle.
+        """
+        import ctypes
+        from ctypes import wintypes
+
+        wts = ctypes.windll.wtsapi32
+        adv = ctypes.windll.advapi32
+        kernel = ctypes.windll.kernel32
+
+        h_token = wintypes.HANDLE()
+        if wts.WTSQueryUserToken(int(session_id), ctypes.byref(h_token)):
+            return h_token, "user"
+
+        user_err = int(kernel.GetLastError() or 0)
+
+        TOKEN_ALL_ACCESS = 0xF01FF
+        TokenPrimary = 1
+        SecurityImpersonation = 2
+        TokenSessionId = 12
+
+        h_proc = wintypes.HANDLE()
+        if not adv.OpenProcessToken(
+            kernel.GetCurrentProcess(), TOKEN_ALL_ACCESS, ctypes.byref(h_proc)
+        ):
+            log(
+                f"[REMOTE-DESKTOP] WTSQueryUserToken({session_id}) err={user_err}; "
+                f"OpenProcessToken err={kernel.GetLastError()}"
+            )
+            return None, "no_token"
+
+        h_dup = wintypes.HANDLE()
+        ok_dup = adv.DuplicateTokenEx(
+            h_proc,
+            TOKEN_ALL_ACCESS,
+            None,
+            SecurityImpersonation,
+            TokenPrimary,
+            ctypes.byref(h_dup),
+        )
+        kernel.CloseHandle(h_proc)
+        if not ok_dup:
+            log(
+                f"[REMOTE-DESKTOP] WTSQueryUserToken({session_id}) err={user_err}; "
+                f"DuplicateTokenEx err={kernel.GetLastError()}"
+            )
+            return None, "no_token"
+
+        sid = wintypes.DWORD(int(session_id))
+        if not adv.SetTokenInformation(
+            h_dup, TokenSessionId, ctypes.byref(sid), ctypes.sizeof(sid)
+        ):
+            err = int(kernel.GetLastError() or 0)
+            kernel.CloseHandle(h_dup)
+            log(
+                f"[REMOTE-DESKTOP] WTSQueryUserToken({session_id}) err={user_err}; "
+                f"SetTokenInformation(TokenSessionId) err={err}"
+            )
+            return None, "no_token"
+
+        log(
+            f"[REMOTE-DESKTOP] session token via SYSTEM+TokenSessionId "
+            f"session={session_id} (WTS user token err={user_err})"
+        )
+        return h_dup, "system_session"
+
+    def _launch_in_session(
+        self,
+        session_id: int,
+        command: str,
+        wait: bool = True,
+        desktop: Optional[str] = None,
+    ) -> bool:
+        """CreateProcessAsUser in target WTS session (requires SYSTEM / SeTcbPrivilege).
+
+        ``desktop`` defaults to ``winsta0\\default``; Winlogon path uses
+        ``winsta0\\Winlogon`` so LogonUI pixels are in-process for the helper.
+        """
         try:
             import ctypes
             from ctypes import wintypes
-            import subprocess
 
-            wts = ctypes.windll.wtsapi32
             adv = ctypes.windll.advapi32
             kernel = ctypes.windll.kernel32
 
-            h_token = wintypes.HANDLE()
-            if not wts.WTSQueryUserToken(session_id, ctypes.byref(h_token)):
-                err = kernel.GetLastError()
-                log(f"[REMOTE-DESKTOP] WTSQueryUserToken({session_id}) failed err={err}")
+            h_token, token_src = self._open_session_token(int(session_id))
+            if not h_token:
                 return False
 
             class STARTUPINFO(ctypes.Structure):
@@ -2544,9 +2665,10 @@ class RemoteDesktopStreamer:
                     ("dwThreadId", wintypes.DWORD),
                 ]
 
+            desk = (desktop or r"winsta0\default").strip() or r"winsta0\default"
             si = STARTUPINFO()
             si.cb = ctypes.sizeof(STARTUPINFO)
-            si.lpDesktop = "winsta0\\default"
+            si.lpDesktop = desk
             pi = PROCESS_INFORMATION()
             CREATE_NO_WINDOW = 0x08000000
             cmd_buf = ctypes.create_unicode_buffer(command)
@@ -2566,8 +2688,15 @@ class RemoteDesktopStreamer:
             )
             kernel.CloseHandle(h_token)
             if not ok:
-                log(f"[REMOTE-DESKTOP] CreateProcessAsUser failed err={kernel.GetLastError()}")
+                log(
+                    f"[REMOTE-DESKTOP] CreateProcessAsUser failed "
+                    f"err={kernel.GetLastError()} desktop={desk} token={token_src}"
+                )
                 return False
+            log(
+                f"[REMOTE-DESKTOP] CreateProcessAsUser ok session={session_id} "
+                f"desktop={desk} token={token_src} pid={pi.dwProcessId}"
+            )
             if wait:
                 # Legacy one-shot helper must finish before its JPEG is read.
                 kernel.WaitForSingleObject(pi.hProcess, int((PROBE_TIMEOUT_SEC + 2) * 1000))
@@ -3386,12 +3515,19 @@ class RemoteDesktopStreamer:
         return 0, 0, int(width), int(height)
 
 
-def capture_once_to_file(path: str, max_width: int = DEFAULT_MAX_WIDTH, quality: int = DEFAULT_QUALITY) -> bool:
+def capture_once_to_file(
+    path: str,
+    max_width: int = DEFAULT_MAX_WIDTH,
+    quality: int = DEFAULT_QUALITY,
+    *,
+    winlogon: bool = False,
+) -> bool:
     """CLI helper: grab desktop JPEG to path (runs in interactive session)."""
     import os
     rd = RemoteDesktopStreamer()
     rd._max_width = max_width
     rd._quality = quality
+    rd._winlogon_mode = bool(winlogon)
     jpeg, w, h = rd._grab_jpeg()
     if not jpeg or w <= 0 or h <= 0 or len(jpeg) < MIN_JPEG_BYTES:
         log(f"[REMOTE-DESKTOP] capture_once failed — {w}x{h} bytes={0 if not jpeg else len(jpeg)}")
@@ -3402,5 +3538,8 @@ def capture_once_to_file(path: str, max_width: int = DEFAULT_MAX_WIDTH, quality:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "wb") as fh:
         fh.write(jpeg)
-    log(f"[REMOTE-DESKTOP] capture_once wrote {path} ({w}x{h} {len(jpeg)}B)")
+    log(
+        f"[REMOTE-DESKTOP] capture_once wrote {path} ({w}x{h} {len(jpeg)}B "
+        f"method={rd._capture_method} winlogon={winlogon})"
+    )
     return True

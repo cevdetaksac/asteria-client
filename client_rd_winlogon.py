@@ -179,7 +179,12 @@ def attach_console_desktop(
 
 
 def probe_winlogon_capture(max_width: int = 1280) -> dict:
-    """One-shot BitBlt of the console desktop (Winlogon or Default)."""
+    """One-shot BitBlt of the console desktop (Winlogon or Default).
+
+    Session-0 agents that OpenWindowStation(WinSta0) see *Session 0's* Winlogon
+    (often solid black). Attach success with deferred capture still means stream
+    start can launch a helper into the console session on ``winsta0\\Winlogon``.
+    """
     ok, name, hdesk = attach_console_desktop(
         prefer_winlogon=True, strict_winlogon=True
     )
@@ -203,7 +208,32 @@ def probe_winlogon_capture(max_width: int = 1280) -> dict:
         rd._input_desktop = hdesk
         rd._winlogon_mode = True
         img = rd._grab_gdi()
+        pid_sid = 0
+        try:
+            import ctypes
+            sid = ctypes.c_ulong()
+            if ctypes.windll.kernel32.ProcessIdToSessionId(
+                ctypes.windll.kernel32.GetCurrentProcessId(), ctypes.byref(sid)
+            ):
+                pid_sid = int(sid.value)
+        except Exception:
+            pid_sid = 0
+
         if img is None:
+            if pid_sid == 0:
+                # Attach named Winlogon OK; pixels require in-session helper at stream.
+                return {
+                    "ok": True,
+                    "error": "",
+                    "message": "winlogon_attach_ok_capture_deferred",
+                    "desktop": name,
+                    "session_id": console_session_id(),
+                    "width": 0,
+                    "height": 0,
+                    "jpeg_bytes": 0,
+                    "method": "winlogon_deferred",
+                    "deferred_capture": True,
+                }
             return {
                 "ok": False,
                 "error": "CAPTURE_NO_DESKTOP",
@@ -212,6 +242,25 @@ def probe_winlogon_capture(max_width: int = 1280) -> dict:
                 "session_id": console_session_id(),
                 "width": 0,
                 "height": 0,
+            }
+        black = False
+        try:
+            black = bool(rd._is_mostly_black(img))
+        except Exception:
+            black = False
+        if black and pid_sid == 0:
+            return {
+                "ok": True,
+                "error": "",
+                "message": "winlogon_attach_ok_capture_deferred",
+                "desktop": name,
+                "session_id": console_session_id(),
+                "width": int(img.size[0]),
+                "height": int(img.size[1]),
+                "jpeg_bytes": 0,
+                "method": "winlogon_deferred",
+                "deferred_capture": True,
+                "black_frame": True,
             }
         w, h = img.size
         if w > max_width and w > 0:
@@ -236,6 +285,7 @@ def probe_winlogon_capture(max_width: int = 1280) -> dict:
             "height": int(h),
             "jpeg_bytes": len(jpeg),
             "method": "winlogon",
+            "black_frame": bool(black),
         }
     except Exception as exc:
         return {

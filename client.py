@@ -4104,6 +4104,8 @@ if __name__ == "__main__":
     parser.add_argument("--rd-helper-port", type=int, default=0, help=argparse.SUPPRESS)
     parser.add_argument("--rd-helper-secret", default="", help=argparse.SUPPRESS)
     parser.add_argument("--rd-helper-session", type=int, default=0, help=argparse.SUPPRESS)
+    parser.add_argument("--rd-helper-winlogon", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--rd-capture-winlogon", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--debug", action="store_true", help="Debug mode: verbose logs, skip consent, optional no admin")
     args = parser.parse_args()
     
@@ -4177,7 +4179,10 @@ if __name__ == "__main__":
     if getattr(args, "rd_capture_once", None):
         try:
             from client_remote_desktop import capture_once_to_file
-            ok = capture_once_to_file(args.rd_capture_once)
+            ok = capture_once_to_file(
+                args.rd_capture_once,
+                winlogon=bool(getattr(args, "rd_capture_winlogon", False)),
+            )
             sys.exit(0 if ok else 1)
         except Exception as e:
             try:
@@ -4194,6 +4199,7 @@ if __name__ == "__main__":
                 args.rd_helper_port,
                 args.rd_helper_secret,
                 args.rd_helper_session,
+                winlogon=bool(getattr(args, "rd_helper_winlogon", False)),
             )
             sys.exit(0 if ok else 1)
         except Exception as e:

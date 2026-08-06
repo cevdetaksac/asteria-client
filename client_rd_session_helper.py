@@ -318,7 +318,14 @@ class PersistentSessionHelper:
             self._condition.notify_all()
 
 
-def run_session_helper(host: str, port: int, secret_hex: str, session_id: int) -> bool:
+def run_session_helper(
+    host: str,
+    port: int,
+    secret_hex: str,
+    session_id: int,
+    *,
+    winlogon: bool = False,
+) -> bool:
     """Interactive-process entry point. Capture stays in memory."""
     secret = bytes.fromhex(secret_hex)
     if host not in ("127.0.0.1", "localhost"):
@@ -335,6 +342,8 @@ def run_session_helper(host: str, port: int, secret_hex: str, session_id: int) -
 
     rd = RemoteDesktopStreamer()
     rd._running = True
+    # Winlogon / lock UI: stay on named Winlogon desktop (C-RD-CON-4).
+    rd._winlogon_mode = bool(winlogon or config.get("winlogon"))
     # JPEG fallback normally stays <=10 fps; WebRTC media mode can request
     # 30-60 fps independently through update_config.
     rd._fps = max(1.0, min(float(config.get("fps", 6.0)), 60.0))

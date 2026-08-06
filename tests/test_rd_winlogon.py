@@ -181,9 +181,9 @@ class TestWinlogonStartContract(unittest.TestCase):
         ), mock.patch.object(
             rd, "_session_ids", return_value=(0, 3)
         ), mock.patch.object(
-            rd, "_attach_input_desktop", return_value=False
+            rd, "_start_persistent_helper", return_value=False
         ), mock.patch.object(
-            rd, "_grab_jpeg", return_value=(None, 0, 0)
+            rd, "_stop_persistent_helper"
         ), mock.patch.object(
             rd, "_grab_via_user_helper", return_value=(None, 0, 0)
         ), mock.patch.object(
@@ -223,9 +223,9 @@ class TestWinlogonStartContract(unittest.TestCase):
         ), mock.patch.object(
             rd, "_session_ids", return_value=(0, 2)
         ), mock.patch.object(
-            rd, "_attach_input_desktop", return_value=False
+            rd, "_start_persistent_helper", return_value=False
         ), mock.patch.object(
-            rd, "_grab_jpeg", return_value=(None, 0, 0)
+            rd, "_stop_persistent_helper"
         ), mock.patch.object(
             rd, "_grab_via_user_helper", return_value=(None, 0, 0)
         ), mock.patch.object(
@@ -240,6 +240,13 @@ class TestWinlogonStartContract(unittest.TestCase):
         self.assertEqual(rd._target_session_id, 2)
         self.assertEqual(rd._target_username, "")
         self.assertTrue(rd._winlogon_mode)
+
+    def test_winlogon_session0_uses_helper_desktop(self):
+        rd = self._make_rd()
+        rd._winlogon_mode = True
+        self.assertEqual(rd._helper_desktop().lower(), r"winsta0\winlogon")
+        rd._winlogon_mode = False
+        self.assertEqual(rd._helper_desktop().lower(), r"winsta0\default")
 
 
 class TestAttachStrictWinlogon(unittest.TestCase):
