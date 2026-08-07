@@ -506,39 +506,56 @@ class RemoteDesktopStreamer:
                         or str(match.get("username") or "")
                     )
             else:
-                # C-RD-CON-2: omit session_id → WTSGetActiveConsoleSessionId (never SID=1).
+                # C-RD-S0-1 / C-RD-CON-2: omit session_id → console only.
+                # Never invent SID 1 via pick_default when console resolve fails.
                 if want_winlogon:
                     try:
                         from client_rd_winlogon import console_session_id
                         csid = int(console_session_id() or 0)
                     except Exception:
                         csid = 0
-                    if csid > 0:
+                    if csid <= 0:
+                        err = "NO_CONSOLE_SESSION"
+                        msg = (
+                            "WTSGetActiveConsoleSessionId returned 0 — "
+                            "refusing to invent session_id (C-RD-S0-1)"
+                        )
+                        log(f"[REMOTE-DESKTOP] ✖ {err}: {msg}")
+                        self._running = False
+                        self._transport = "idle"
+                        self._target_session_id = None
+                        self.emit_stream_progress("failed", msg, error=err, force=True)
+                        return {
+                            "success": False,
+                            "error": err,
+                            "message": msg,
+                            "data": self.get_status(),
+                        }
+                    same_sid = [
+                        s for s in interactive
+                        if int(s.get("session_id") or 0) == csid
+                    ]
+                    if not same_sid:
                         same_sid = [
-                            s for s in interactive
-                            if int(s.get("session_id") or 0) == csid
+                            s for s in interactive if s.get("pre_logon")
                         ]
-                        if not same_sid:
-                            same_sid = [
-                                s for s in interactive if s.get("pre_logon")
-                            ] or interactive
+                    picked = None
+                    if same_sid:
                         picked = self._select_session_row(
                             same_sid, want_winlogon=True, username=None
                         ) or same_sid[0]
-                        self._target_session_id = csid
-                        self._target_username = ""
-                        match = picked
-                        log(
-                            f"[REMOTE-DESKTOP] winlogon omit-sid → console "
-                            f"WTSGetActiveConsoleSessionId={csid}"
-                        )
-                    else:
-                        pre_rows = [s for s in interactive if s.get("pre_logon")]
-                        pool = pre_rows or interactive
-                        picked = self._pick_default_session(pool)
-                        self._target_session_id = int(picked["session_id"])
-                        self._target_username = ""
-                        match = picked
+                    self._target_session_id = csid
+                    self._target_username = ""
+                    match = picked or {
+                        "session_id": csid,
+                        "pre_logon": True,
+                        "desktop": "winlogon",
+                        "username": "",
+                    }
+                    log(
+                        f"[REMOTE-DESKTOP] winlogon omit-sid → console "
+                        f"WTSGetActiveConsoleSessionId={csid}"
+                    )
                 else:
                     picked = self._pick_default_session(interactive)
                     self._target_session_id = int(picked["session_id"])
@@ -619,27 +636,56 @@ class RemoteDesktopStreamer:
             if need_helper:
                 t_helper = time.time()
                 persistent_started = self._start_persistent_helper()
+                # C-RD-S0-6: wait for first real frame ≥1500B (or ≥2s black → retry).
+                probe_deadline = t_helper + max(2.5, min(PROBE_TIMEOUT_SEC, 8.0))
+                blackish = False
                 if persistent_started:
-                    jpeg, w, h = self._grab_via_persistent_helper(PROBE_TIMEOUT_SEC)
-                    if (
-                        (not jpeg or len(jpeg) < MIN_JPEG_BYTES)
-                        and self._last_helper_raw
-                    ):
-                        jpeg, w, h = self._encode_helper_raw_jpeg()
+                    while time.time() < probe_deadline:
+                        jpeg, w, h = self._grab_via_persistent_helper(0.45)
+                        if (
+                            (not jpeg or len(jpeg) < MIN_JPEG_BYTES)
+                            and self._last_helper_raw
+                        ):
+                            jpeg, w, h = self._encode_helper_raw_jpeg()
+                        blackish = "+black" in (self._capture_method or "")
+                        if (
+                            jpeg
+                            and w > 0
+                            and h > 0
+                            and len(jpeg) >= MIN_JPEG_BYTES
+                            and not blackish
+                        ):
+                            break
+                        time.sleep(0.12)
+                took = time.time() - t_helper
                 if (
                     not persistent_started
                     or not jpeg
                     or w <= 0
                     or h <= 0
                     or len(jpeg) < MIN_JPEG_BYTES
+                    or blackish
                 ):
                     self._stop_persistent_helper()
                     log(
                         "[REMOTE-DESKTOP] persistent helper failed start/probe; "
                         "falling back to legacy one-shot capture"
                     )
+                    oneshot_t0 = time.time()
                     jpeg, w, h = self._grab_via_user_helper()
-                took = time.time() - t_helper
+                    if (
+                        (not jpeg or len(jpeg) < MIN_JPEG_BYTES)
+                        and self._last_helper_raw
+                    ):
+                        jpeg, w, h = self._encode_helper_raw_jpeg()
+                    took = time.time() - t_helper
+                    # Instant empty = CreateProcessAsUser never produced a helper (C-RD-S0-5).
+                    if (
+                        (not jpeg or len(jpeg) < MIN_JPEG_BYTES)
+                        and (time.time() - oneshot_t0) < 0.35
+                        and took < 0.85
+                    ):
+                        persistent_started = False
                 log(f"[REMOTE-DESKTOP] helper probe took {took:.1f}s "
                     f"jpeg={0 if not jpeg else len(jpeg)}B {w}x{h}")
                 if not jpeg or w <= 0 or h <= 0 or len(jpeg) < MIN_JPEG_BYTES:
@@ -647,23 +693,34 @@ class RemoteDesktopStreamer:
                         f"user-helper failed for session={self._target_session_id} "
                         f"(jpeg={0 if not jpeg else len(jpeg)}B, {took:.1f}s). "
                         "Agent is Session 0 — capture requires WTSQueryUserToken/"
-                        "CreateProcessAsUser into the selected RDP/console session."
+                        "CreateProcessAsUser (or Winlogon/LogonUI token) into the "
+                        "console session on winsta0\\Winlogon."
                     )
-                    # Do NOT fall back to Session-0 BitBlt (always black for other sessions)
-                    err = (
-                        "winlogon_capture_black"
-                        if self._winlogon_mode
-                        else "CAPTURE_NO_DESKTOP"
+                    # C-RD-S0-5: jpeg≈0B in ~0s is spawn fail, not slow GDI black.
+                    spawn_fail = took < 0.85 and (
+                        not jpeg or len(jpeg) < MIN_JPEG_BYTES
                     )
-                    msg = (
-                        (
+                    if self._winlogon_mode and spawn_fail:
+                        err = "SESSION0_HELPER_SPAWN_FAILED"
+                        msg = (
+                            "Session-0 helper spawn/attach failed "
+                            f"(session={self._target_session_id}, "
+                            f"desktop={self._helper_desktop()}, "
+                            f"jpeg={0 if not jpeg else len(jpeg)}B, {took:.1f}s). "
+                            f"{helper_err}"
+                        )
+                    elif self._winlogon_mode:
+                        err = "winlogon_capture_black"
+                        msg = (
                             "Winlogon helper failed to capture logon UI pixels "
                             f"(session={self._target_session_id}, "
                             f"desktop={self._helper_desktop()}). {helper_err}"
                         )
-                        if self._winlogon_mode
-                        else helper_err
-                    )
+                    else:
+                        err = "CAPTURE_NO_DESKTOP"
+                        msg = helper_err
+                    self._capture_method = "none"
+                    self._stats["capture_method"] = "none"
                     log(f"[REMOTE-DESKTOP] ✖ {err}: {msg}")
                     self._running = False
                     self._transport = "idle"
@@ -674,6 +731,41 @@ class RemoteDesktopStreamer:
                         "message": msg,
                         "data": self.get_status(),
                     }
+                # C-RD-S0-6: one retry if only blackish frames after wait.
+                if blackish and self._winlogon_mode:
+                    self._stop_persistent_helper()
+                    time.sleep(0.25)
+                    if self._start_persistent_helper():
+                        jpeg2, w2, h2 = self._grab_via_persistent_helper(1.5)
+                        if (
+                            (not jpeg2 or len(jpeg2) < MIN_JPEG_BYTES)
+                            and self._last_helper_raw
+                        ):
+                            jpeg2, w2, h2 = self._encode_helper_raw_jpeg()
+                        if (
+                            jpeg2
+                            and len(jpeg2) >= MIN_JPEG_BYTES
+                            and "+black" not in (self._capture_method or "")
+                        ):
+                            jpeg, w, h = jpeg2, w2, h2
+                            blackish = False
+                    if blackish or not jpeg or len(jpeg) < MIN_JPEG_BYTES:
+                        err = "winlogon_capture_black"
+                        msg = (
+                            "Winlogon/GDI capture returned unbroken black after retry "
+                            f"(method={self._capture_method})"
+                        )
+                        self._capture_method = self._capture_method or "none"
+                        log(f"[REMOTE-DESKTOP] ✖ {err}: {msg}")
+                        self._running = False
+                        self._transport = "idle"
+                        self.emit_stream_progress("failed", msg, error=err, force=True)
+                        return {
+                            "success": False,
+                            "error": err,
+                            "message": msg,
+                            "data": self.get_status(),
+                        }
             else:
                 # Capture thread-less probe: attach input desktop first (RDP/elevated)
                 self._attach_input_desktop()
@@ -2654,72 +2746,17 @@ class RemoteDesktopStreamer:
             return None
 
     def _open_session_token(self, session_id: int):
-        """WTSQueryUserToken, or SYSTEM primary with TokenSessionId (pre-logon).
+        """Interactive-session token for CreateProcessAsUser (C-RD-S0-4).
 
-        Returns ``(HANDLE|None, source_tag)``. Caller closes the handle.
+        Chain: WTSQueryUserToken → winlogon/LogonUI process token →
+        SYSTEM+TokenSessionId. Returns ``(HANDLE|None, source_tag)``.
         """
-        import ctypes
-        from ctypes import wintypes
-
-        wts = ctypes.windll.wtsapi32
-        adv = ctypes.windll.advapi32
-        kernel = ctypes.windll.kernel32
-
-        h_token = wintypes.HANDLE()
-        if wts.WTSQueryUserToken(int(session_id), ctypes.byref(h_token)):
-            return h_token, "user"
-
-        user_err = int(kernel.GetLastError() or 0)
-
-        TOKEN_ALL_ACCESS = 0xF01FF
-        TokenPrimary = 1
-        SecurityImpersonation = 2
-        TokenSessionId = 12
-
-        h_proc = wintypes.HANDLE()
-        if not adv.OpenProcessToken(
-            kernel.GetCurrentProcess(), TOKEN_ALL_ACCESS, ctypes.byref(h_proc)
-        ):
-            log(
-                f"[REMOTE-DESKTOP] WTSQueryUserToken({session_id}) err={user_err}; "
-                f"OpenProcessToken err={kernel.GetLastError()}"
-            )
+        try:
+            from client_rd_winlogon import open_session_interactive_token
+            return open_session_interactive_token(int(session_id))
+        except Exception as exc:
+            log(f"[REMOTE-DESKTOP] open_session_token error: {exc}")
             return None, "no_token"
-
-        h_dup = wintypes.HANDLE()
-        ok_dup = adv.DuplicateTokenEx(
-            h_proc,
-            TOKEN_ALL_ACCESS,
-            None,
-            SecurityImpersonation,
-            TokenPrimary,
-            ctypes.byref(h_dup),
-        )
-        kernel.CloseHandle(h_proc)
-        if not ok_dup:
-            log(
-                f"[REMOTE-DESKTOP] WTSQueryUserToken({session_id}) err={user_err}; "
-                f"DuplicateTokenEx err={kernel.GetLastError()}"
-            )
-            return None, "no_token"
-
-        sid = wintypes.DWORD(int(session_id))
-        if not adv.SetTokenInformation(
-            h_dup, TokenSessionId, ctypes.byref(sid), ctypes.sizeof(sid)
-        ):
-            err = int(kernel.GetLastError() or 0)
-            kernel.CloseHandle(h_dup)
-            log(
-                f"[REMOTE-DESKTOP] WTSQueryUserToken({session_id}) err={user_err}; "
-                f"SetTokenInformation(TokenSessionId) err={err}"
-            )
-            return None, "no_token"
-
-        log(
-            f"[REMOTE-DESKTOP] session token via SYSTEM+TokenSessionId "
-            f"session={session_id} (WTS user token err={user_err})"
-        )
-        return h_dup, "system_session"
 
     def _launch_in_session(
         self,
@@ -2737,11 +2774,24 @@ class RemoteDesktopStreamer:
             import ctypes
             from ctypes import wintypes
 
+            from client_rd_winlogon import enable_process_privileges
+
+            enable_process_privileges(
+                "SeDebugPrivilege",
+                "SeTcbPrivilege",
+                "SeAssignPrimaryTokenPrivilege",
+                "SeIncreaseQuotaPrivilege",
+            )
+
             adv = ctypes.windll.advapi32
             kernel = ctypes.windll.kernel32
 
             h_token, token_src = self._open_session_token(int(session_id))
             if not h_token:
+                log(
+                    f"[REMOTE-DESKTOP] no interactive token for session={session_id} "
+                    f"({token_src})"
+                )
                 return False
 
             class STARTUPINFO(ctypes.Structure):
@@ -2775,11 +2825,18 @@ class RemoteDesktopStreamer:
                 ]
 
             desk = (desktop or r"winsta0\default").strip() or r"winsta0\default"
+            winlogon_desk = "winlogon" in desk.lower()
             si = STARTUPINFO()
             si.cb = ctypes.sizeof(STARTUPINFO)
             si.lpDesktop = desk
             pi = PROCESS_INFORMATION()
             CREATE_NO_WINDOW = 0x08000000
+            CREATE_UNICODE_ENVIRONMENT = 0x00000400
+            # Winlogon desktop helpers need a real desktop environment; avoid
+            # CREATE_NO_WINDOW which can prevent attach on secure desktops.
+            flags = CREATE_UNICODE_ENVIRONMENT
+            if not winlogon_desk:
+                flags |= CREATE_NO_WINDOW
             cmd_buf = ctypes.create_unicode_buffer(command)
 
             ok = adv.CreateProcessAsUserW(
@@ -2789,17 +2846,18 @@ class RemoteDesktopStreamer:
                 None,
                 None,
                 False,
-                CREATE_NO_WINDOW,
+                flags,
                 None,
                 None,
                 ctypes.byref(si),
                 ctypes.byref(pi),
             )
+            last_err = int(kernel.GetLastError() or 0)
             kernel.CloseHandle(h_token)
             if not ok:
                 log(
                     f"[REMOTE-DESKTOP] CreateProcessAsUser failed "
-                    f"err={kernel.GetLastError()} desktop={desk} token={token_src}"
+                    f"err={last_err} desktop={desk} token={token_src}"
                 )
                 return False
             log(

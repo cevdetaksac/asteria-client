@@ -199,6 +199,35 @@ class TestWinlogonStartContract(unittest.TestCase):
         self.assertEqual(rd._target_username, "")
         self.assertTrue(rd._winlogon_mode)
         self.assertFalse(result.get("success"))
+        self.assertEqual(result.get("error"), "SESSION0_HELPER_SPAWN_FAILED")
+
+    def test_omit_session_id_refuses_invented_sid_when_no_console(self):
+        rd = self._make_rd()
+        sessions = [
+            {
+                "session_id": 1,
+                "username": "rdpuser",
+                "protocol": "RDP",
+                "status": "Active",
+            },
+        ]
+        with mock.patch.object(
+            rd, "_enumerate_sessions", return_value=sessions
+        ), mock.patch(
+            "client_rd_winlogon.console_session_id", return_value=0
+        ), mock.patch.object(
+            rd, "_session_ids", return_value=(0, 0)
+        ), mock.patch.object(
+            rd, "emit_stream_progress"
+        ):
+            result = rd.start(
+                prefer="winlogon",
+                pre_logon=True,
+                desktop="Winlogon",
+            )
+        self.assertFalse(result.get("success"))
+        self.assertEqual(result.get("error"), "NO_CONSOLE_SESSION")
+        self.assertIsNone(rd._target_session_id)
 
     def test_winlogon_strips_username_even_when_sid_given(self):
         rd = self._make_rd()
@@ -247,6 +276,33 @@ class TestWinlogonStartContract(unittest.TestCase):
         self.assertEqual(rd._helper_desktop().lower(), r"winsta0\winlogon")
         rd._winlogon_mode = False
         self.assertEqual(rd._helper_desktop().lower(), r"winsta0\default")
+
+
+class TestSession0TokenChain(unittest.TestCase):
+    def test_open_session_interactive_token_refuses_session_zero(self):
+        from client_rd_winlogon import open_session_interactive_token
+
+        h, src = open_session_interactive_token(0)
+        self.assertIsNone(h)
+        self.assertEqual(src, "refused_session_zero")
+
+    def test_open_session_tries_winlogon_after_wts_fail(self):
+        from client_rd_winlogon import open_session_interactive_token
+
+        with mock.patch("client_rd_winlogon.enable_process_privileges"), mock.patch(
+            "client_rd_winlogon._wtsapi32.WTSQueryUserToken", return_value=0
+        ), mock.patch(
+            "client_rd_winlogon._kernel32.GetLastError", return_value=1008
+        ), mock.patch(
+            "client_rd_winlogon._pids_named", return_value=[4242]
+        ), mock.patch(
+            "client_rd_winlogon._session_of_pid", return_value=2
+        ), mock.patch(
+            "client_rd_winlogon._duplicate_primary_token", return_value=99
+        ):
+            h, src = open_session_interactive_token(2)
+        self.assertEqual(h, 99)
+        self.assertTrue(src.startswith("process:"))
 
 
 class TestAttachStrictWinlogon(unittest.TestCase):

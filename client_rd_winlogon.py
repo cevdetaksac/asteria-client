@@ -21,6 +21,36 @@ UOI_NAME = 2
 
 _user32 = ctypes.windll.user32
 _kernel32 = ctypes.windll.kernel32
+_advapi32 = ctypes.windll.advapi32
+_wtsapi32 = ctypes.windll.wtsapi32
+
+TOKEN_ALL_ACCESS = 0xF01FF
+TOKEN_ASSIGN_PRIMARY = 0x0001
+TOKEN_DUPLICATE = 0x0002
+TOKEN_QUERY = 0x0008
+TOKEN_ADJUST_DEFAULT = 0x0080
+TOKEN_ADJUST_SESSIONID = 0x0100
+TokenPrimary = 1
+SecurityImpersonation = 2
+TokenSessionId = 12
+PROCESS_QUERY_INFORMATION = 0x0400
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+TH32CS_SNAPPROCESS = 0x00000002
+
+
+class PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", wintypes.DWORD),
+        ("cntUsage", wintypes.DWORD),
+        ("th32ProcessID", wintypes.DWORD),
+        ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+        ("th32ModuleID", wintypes.DWORD),
+        ("cntThreads", wintypes.DWORD),
+        ("th32ParentProcessID", wintypes.DWORD),
+        ("pcPriClassBase", ctypes.c_long),
+        ("dwFlags", wintypes.DWORD),
+        ("szExeFile", wintypes.WCHAR * 260),
+    ]
 
 
 def console_session_id() -> int:
@@ -29,6 +59,210 @@ def console_session_id() -> int:
         return sid if sid > 0 else 0
     except Exception:
         return 0
+
+
+def enable_process_privileges(*names: str) -> None:
+    """Best-effort enable SeDebugPrivilege / SeAssignPrimaryTokenPrivilege etc."""
+    try:
+        h_token = wintypes.HANDLE()
+        if not _advapi32.OpenProcessToken(
+            _kernel32.GetCurrentProcess(),
+            0x0020 | 0x0008,  # TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY
+            ctypes.byref(h_token),
+        ):
+            return
+
+        class LUID(ctypes.Structure):
+            _fields_ = [("LowPart", wintypes.DWORD), ("HighPart", wintypes.LONG)]
+
+        class LUID_AND_ATTRIBUTES(ctypes.Structure):
+            _fields_ = [("Luid", LUID), ("Attributes", wintypes.DWORD)]
+
+        class TOKEN_PRIVILEGES(ctypes.Structure):
+            _fields_ = [
+                ("PrivilegeCount", wintypes.DWORD),
+                ("Privileges", LUID_AND_ATTRIBUTES * 1),
+            ]
+
+        SE_PRIVILEGE_ENABLED = 0x00000002
+        for name in names:
+            if not name:
+                continue
+            luid = LUID()
+            if not _advapi32.LookupPrivilegeValueW(None, name, ctypes.byref(luid)):
+                continue
+            tp = TOKEN_PRIVILEGES()
+            tp.PrivilegeCount = 1
+            tp.Privileges[0].Luid = luid
+            tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED
+            _advapi32.AdjustTokenPrivileges(
+                h_token, False, ctypes.byref(tp), 0, None, None
+            )
+        _kernel32.CloseHandle(h_token)
+    except Exception:
+        pass
+
+
+def _pids_named(image_base: str) -> list:
+    """Return PIDs whose exe basename matches ``image_base`` (case-insensitive)."""
+    want = (image_base or "").strip().lower()
+    if not want:
+        return []
+    out = []
+    try:
+        snap = _kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        if not snap or snap == wintypes.HANDLE(-1).value:
+            return []
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        if not _kernel32.Process32FirstW(snap, ctypes.byref(entry)):
+            _kernel32.CloseHandle(snap)
+            return []
+        while True:
+            name = (entry.szExeFile or "").strip().lower()
+            if name == want or name.endswith("\\" + want):
+                out.append(int(entry.th32ProcessID))
+            if not _kernel32.Process32NextW(snap, ctypes.byref(entry)):
+                break
+        _kernel32.CloseHandle(snap)
+    except Exception:
+        return out
+    return out
+
+
+def _session_of_pid(pid: int) -> int:
+    try:
+        sid = wintypes.DWORD(0)
+        if _kernel32.ProcessIdToSessionId(int(pid), ctypes.byref(sid)):
+            return int(sid.value)
+    except Exception:
+        pass
+    return -1
+
+
+def _duplicate_primary_token(pid: int):
+    """Open ``pid`` and return a duplicated primary token HANDLE, or None."""
+    access = PROCESS_QUERY_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION
+    h_proc = _kernel32.OpenProcess(access, False, int(pid))
+    if not h_proc:
+        h_proc = _kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+    if not h_proc:
+        return None
+    try:
+        h_tok = wintypes.HANDLE()
+        if not _advapi32.OpenProcessToken(
+            h_proc, TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY, ctypes.byref(h_tok)
+        ):
+            return None
+        h_dup = wintypes.HANDLE()
+        ok = _advapi32.DuplicateTokenEx(
+            h_tok,
+            TOKEN_ALL_ACCESS
+            | TOKEN_ASSIGN_PRIMARY
+            | TOKEN_DUPLICATE
+            | TOKEN_QUERY
+            | TOKEN_ADJUST_DEFAULT
+            | TOKEN_ADJUST_SESSIONID,
+            None,
+            SecurityImpersonation,
+            TokenPrimary,
+            ctypes.byref(h_dup),
+        )
+        _kernel32.CloseHandle(h_tok)
+        if not ok:
+            return None
+        return h_dup
+    finally:
+        try:
+            _kernel32.CloseHandle(h_proc)
+        except Exception:
+            pass
+
+
+def open_session_interactive_token(session_id: int):
+    """C-RD-S0-4 token chain for Session-0 → interactive helper spawn.
+
+    Order:
+      1. ``WTSQueryUserToken`` (logged-on / locked user)
+      2. ``winlogon.exe`` / ``LogonUI.exe`` primary token in that session
+      3. SYSTEM primary + ``TokenSessionId`` (last resort)
+
+    Returns ``(HANDLE|None, source_tag)``. Caller must ``CloseHandle`` the token.
+    """
+    sid = int(session_id or 0)
+    if sid <= 0:
+        return None, "refused_session_zero"
+
+    enable_process_privileges(
+        "SeDebugPrivilege",
+        "SeTcbPrivilege",
+        "SeAssignPrimaryTokenPrivilege",
+        "SeIncreaseQuotaPrivilege",
+    )
+
+    h_token = wintypes.HANDLE()
+    if _wtsapi32.WTSQueryUserToken(sid, ctypes.byref(h_token)):
+        return h_token, "user"
+
+    user_err = int(_kernel32.GetLastError() or 0)
+
+    for image in ("winlogon.exe", "LogonUI.exe", "logonui.exe"):
+        for pid in _pids_named(image):
+            if _session_of_pid(pid) != sid:
+                continue
+            h_dup = _duplicate_primary_token(pid)
+            if h_dup:
+                log(
+                    f"[RD-WINLOGON] session token via {image} pid={pid} "
+                    f"session={sid} (WTS user err={user_err})"
+                )
+                return h_dup, f"process:{image}"
+
+    # SYSTEM + TokenSessionId fallback
+    h_proc = wintypes.HANDLE()
+    if not _advapi32.OpenProcessToken(
+        _kernel32.GetCurrentProcess(), TOKEN_ALL_ACCESS, ctypes.byref(h_proc)
+    ):
+        log(
+            f"[RD-WINLOGON] WTSQueryUserToken({sid}) err={user_err}; "
+            f"no winlogon/LogonUI token; OpenProcessToken err={_kernel32.GetLastError()}"
+        )
+        return None, "no_token"
+
+    h_dup = wintypes.HANDLE()
+    ok_dup = _advapi32.DuplicateTokenEx(
+        h_proc,
+        TOKEN_ALL_ACCESS,
+        None,
+        SecurityImpersonation,
+        TokenPrimary,
+        ctypes.byref(h_dup),
+    )
+    _kernel32.CloseHandle(h_proc)
+    if not ok_dup:
+        log(
+            f"[RD-WINLOGON] WTSQueryUserToken({sid}) err={user_err}; "
+            f"DuplicateTokenEx err={_kernel32.GetLastError()}"
+        )
+        return None, "no_token"
+
+    sess = wintypes.DWORD(sid)
+    if not _advapi32.SetTokenInformation(
+        h_dup, TokenSessionId, ctypes.byref(sess), ctypes.sizeof(sess)
+    ):
+        err = int(_kernel32.GetLastError() or 0)
+        _kernel32.CloseHandle(h_dup)
+        log(
+            f"[RD-WINLOGON] WTSQueryUserToken({sid}) err={user_err}; "
+            f"SetTokenInformation(TokenSessionId) err={err}"
+        )
+        return None, "no_token"
+
+    log(
+        f"[RD-WINLOGON] session token via SYSTEM+TokenSessionId "
+        f"session={sid} (WTS user err={user_err})"
+    )
+    return h_dup, "system_session"
 
 
 def desktop_name(hdesk) -> str:

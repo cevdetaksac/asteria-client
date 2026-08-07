@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.83"  # WebRTC-first smooth stream; helper raw RGB; JPEG-WS fallback
+VERSION = "4.9.84"  # C-RD-S0: Winlogon Session-0 capture via Winlogon/LogonUI token
 
 
 
