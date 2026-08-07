@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.85"  # C-RD-CAD: honest SendSAS + console affinity; Winlogon input helper
+VERSION = "4.9.86"  # C-RD-CAD residual: ensure SoftwareSAS + service SendSAS + UI effect
 
 
 

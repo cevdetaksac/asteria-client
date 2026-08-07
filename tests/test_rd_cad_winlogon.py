@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""C-RD-CAD / C-RD-IN-WL unit tests (contract 1.4.52)."""
+"""C-RD-CAD / C-RD-IN-WL unit tests (contract 1.4.53 / ≥4.9.86)."""
 
 import unittest
 from unittest import mock
@@ -16,6 +16,35 @@ class TestSoftwareSasPolicy(unittest.TestCase):
         self.assertFalse(software_sas_allows_services(2))
         self.assertFalse(software_sas_allows_services(None))
 
+    def test_classify_ui_from_titles(self):
+        from client_rd_winlogon import secure_attention_ui_state_from
+
+        self.assertEqual(
+            secure_attention_ui_state_from(
+                ["Press Ctrl+Alt+Delete to unlock"], []
+            ),
+            "cad_tip",
+        )
+        self.assertEqual(
+            secure_attention_ui_state_from(["Windows Security"], []),
+            "sas_ui",
+        )
+        self.assertEqual(
+            secure_attention_ui_state_from([], ["SomeChrome"]),
+            "other",
+        )
+        self.assertEqual(secure_attention_ui_state_from([], []), "unknown")
+
+    def test_classify_sas_transition(self):
+        from client_rd_winlogon import classify_sas_transition
+
+        ok, _ = classify_sas_transition("cad_tip", "sas_ui")
+        self.assertTrue(ok)
+        ok, _ = classify_sas_transition("cad_tip", "other")
+        self.assertTrue(ok)
+        ok, _ = classify_sas_transition("cad_tip", "cad_tip")
+        self.assertFalse(ok)
+
 
 class TestRemoteSendSasHonesty(unittest.TestCase):
     def _executor(self):
@@ -24,7 +53,7 @@ class TestRemoteSendSasHonesty(unittest.TestCase):
         ex = RemoteCommandExecutor.__new__(RemoteCommandExecutor)
         return ex
 
-    def test_software_sas_disabled_when_policy_blocks(self):
+    def test_software_sas_disabled_when_ensure_fails(self):
         ex = self._executor()
         rd = mock.MagicMock()
         rd._target_session_id = 2
@@ -32,7 +61,8 @@ class TestRemoteSendSasHonesty(unittest.TestCase):
         rd._persistent_helper_connected.return_value = False
         rd._desktop_name = "Winlogon"
         with mock.patch.object(ex, "_get_remote_desktop", return_value=rd), mock.patch(
-            "client_rd_winlogon.software_sas_generation", return_value=0
+            "client_rd_winlogon.ensure_software_sas_generation",
+            return_value=(0, "enable_failed"),
         ), mock.patch(
             "client_rd_winlogon.software_sas_allows_services", return_value=False
         ), mock.patch(
@@ -41,7 +71,9 @@ class TestRemoteSendSasHonesty(unittest.TestCase):
             out = ex._cmd_remote_send_sas({"prefer": "winlogon", "pre_logon": True})
         self.assertFalse(out.get("success"))
         self.assertEqual(out.get("error"), "SOFTWARE_SAS_DISABLED")
-        self.assertIn("software_sas_generation", out.get("data") or {})
+        data = out.get("data") or {}
+        self.assertEqual(data.get("software_sas_generation"), 0)
+        self.assertIsInstance(data.get("software_sas_generation"), int)
 
     def test_sas_no_effect_when_void_call_unchanged(self):
         ex = self._executor()
@@ -51,13 +83,16 @@ class TestRemoteSendSasHonesty(unittest.TestCase):
         rd._persistent_helper_connected.return_value = False
         rd._desktop_name = "Winlogon"
         with mock.patch.object(ex, "_get_remote_desktop", return_value=rd), mock.patch(
-            "client_rd_winlogon.software_sas_generation", return_value=1
+            "client_rd_winlogon.ensure_software_sas_generation",
+            return_value=(1, "policy_ok"),
         ), mock.patch(
             "client_rd_winlogon.software_sas_allows_services", return_value=True
         ), mock.patch(
-            "client_rd_winlogon.secure_attention_ui_state", return_value="cad_tip"
+            "client_rd_winlogon.invoke_send_sas",
+            return_value=(True, "SendSAS(FALSE) invoked"),
         ), mock.patch(
-            "client_rd_winlogon.desktop_surface_fingerprint", return_value="abc"
+            "client_rd_winlogon.watch_sas_effect",
+            return_value=(False, "no_sas_effect state=cad_tip", "cad_tip"),
         ), mock.patch(
             "client_rd_winlogon.send_sas_with_console_affinity",
             return_value=(True, "SendSAS(FALSE) invoked", {
@@ -65,25 +100,55 @@ class TestRemoteSendSasHonesty(unittest.TestCase):
                 "impersonated": True,
                 "desktop": "Winlogon",
             }),
-        ), mock.patch(
-            "client_rd_winlogon.watch_sas_effect",
-            return_value=(False, "no_sas_effect state=cad_tip"),
         ):
             out = ex._cmd_remote_send_sas({"prefer": "winlogon"})
         self.assertFalse(out.get("success"))
         self.assertEqual(out.get("error"), "SAS_NO_EFFECT")
         data = out.get("data") or {}
         self.assertEqual(data.get("session_id"), 2)
-        self.assertFalse(data.get("as_user"))
         self.assertEqual(data.get("software_sas_generation"), 1)
+        self.assertNotEqual(data.get("ui_after"), None)
+
+    def test_service_path_success_when_effect_observed(self):
+        ex = self._executor()
+        rd = mock.MagicMock()
+        rd._target_session_id = 2
+        rd._winlogon_mode = True
+        rd._persistent_helper_connected.return_value = False
+        rd._desktop_name = "Winlogon"
+        with mock.patch.object(ex, "_get_remote_desktop", return_value=rd), mock.patch(
+            "client_rd_winlogon.ensure_software_sas_generation",
+            return_value=(1, "enabled"),
+        ), mock.patch(
+            "client_rd_winlogon.software_sas_allows_services", return_value=True
+        ), mock.patch(
+            "client_rd_winlogon.invoke_send_sas",
+            return_value=(True, "SendSAS(FALSE) invoked"),
+        ), mock.patch(
+            "client_rd_winlogon.watch_sas_effect",
+            return_value=(True, "secure_attention_ui=sas_ui", "sas_ui"),
+        ):
+            out = ex._cmd_remote_send_sas({"prefer": "winlogon"})
+        self.assertTrue(out.get("success"))
+        self.assertEqual((out.get("data") or {}).get("path"), "service")
+        self.assertEqual((out.get("data") or {}).get("software_sas_generation"), 1)
 
     def test_helper_path_success_when_effect_observed(self):
         ex = self._executor()
         helper = mock.MagicMock()
         helper.send_sas.return_value = {
             "ok": True,
-            "detail": "SendSAS(FALSE) invoked",
+            "effect": True,
+            "detail": "SendSAS(FALSE) invoked; secure_attention_ui=sas_ui",
+            "ui_before": "cad_tip",
+            "ui_after": "sas_ui",
+            "as_user": False,
             "path": "helper",
+        }
+        helper.query_ui_state.return_value = {
+            "ok": True,
+            "ui": "cad_tip",
+            "fp": "abc",
         }
         rd = mock.MagicMock()
         rd._target_session_id = 2
@@ -91,19 +156,24 @@ class TestRemoteSendSasHonesty(unittest.TestCase):
         rd._persistent_helper_connected.return_value = True
         rd._session_helper = helper
         with mock.patch.object(ex, "_get_remote_desktop", return_value=rd), mock.patch(
-            "client_rd_winlogon.software_sas_generation", return_value=1
+            "client_rd_winlogon.ensure_software_sas_generation",
+            return_value=(1, "policy_ok"),
         ), mock.patch(
-            "client_rd_winlogon.secure_attention_ui_state",
-            side_effect=["cad_tip", "sas_ui"],
+            "client_rd_winlogon.software_sas_allows_services", return_value=True
         ), mock.patch(
-            "client_rd_winlogon.desktop_surface_fingerprint", return_value="abc"
-        ), mock.patch(
-            "client_rd_winlogon.watch_sas_effect",
-            return_value=(True, "secure_attention_ui=sas_ui"),
+            "client_rd_winlogon.invoke_send_sas",
+            return_value=(True, "SendSAS(FALSE) invoked"),
         ):
+            # Service path polls helper UI and stays on tip → then helper path wins.
+            helper.query_ui_state.return_value = {
+                "ok": True,
+                "ui": "cad_tip",
+                "fp": "abc",
+            }
             out = ex._cmd_remote_send_sas({"prefer": "winlogon"})
         self.assertTrue(out.get("success"))
         self.assertEqual((out.get("data") or {}).get("path"), "helper")
+        self.assertEqual((out.get("data") or {}).get("ui_after"), "sas_ui")
 
 
 class TestCadKeyIgnored(unittest.TestCase):

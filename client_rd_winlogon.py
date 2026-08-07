@@ -270,15 +270,18 @@ def software_sas_generation() -> Optional[int]:
     """Read SoftwareSASGeneration policy (C-RD-CAD-3).
 
     0=None, 1=Services, 2=Ease of Access, 3=Both.
-    ``None`` = key missing.
+    ``None`` = key missing / unreadable.
     """
     try:
         import winreg
+        access = winreg.KEY_READ
+        if hasattr(winreg, "KEY_WOW64_64KEY"):
+            access |= winreg.KEY_WOW64_64KEY
         key = winreg.OpenKey(
             winreg.HKEY_LOCAL_MACHINE,
             r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System",
             0,
-            winreg.KEY_READ,
+            access,
         )
         try:
             val, _ = winreg.QueryValueEx(key, "SoftwareSASGeneration")
@@ -291,6 +294,57 @@ def software_sas_generation() -> Optional[int]:
         return None
     except Exception:
         return None
+
+
+def set_software_sas_generation(value: int) -> Tuple[bool, str]:
+    """Write SoftwareSASGeneration DWORD (requires SYSTEM / admin)."""
+    try:
+        import winreg
+        access = winreg.KEY_SET_VALUE | winreg.KEY_READ
+        if hasattr(winreg, "KEY_WOW64_64KEY"):
+            access |= winreg.KEY_WOW64_64KEY
+        key = winreg.CreateKeyEx(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System",
+            0,
+            access,
+        )
+        try:
+            winreg.SetValueEx(
+                key, "SoftwareSASGeneration", 0, winreg.REG_DWORD, int(value)
+            )
+        finally:
+            winreg.CloseKey(key)
+        return True, f"SoftwareSASGeneration={int(value)}"
+    except Exception as exc:
+        return False, f"set_software_sas_generation failed: {exc}"
+
+
+def ensure_software_sas_generation(
+    *, enable_services: bool = True
+) -> Tuple[int, str]:
+    """Return concrete policy int 0..3 and a note (C-RD-CAD-3 residual 1.4.53).
+
+    Never returns ``None`` in the result slot used for JSON — missing reads as
+    ``0``. When ``enable_services`` and policy ∉ {1,3}, SYSTEM writes ``1``
+    (Services) so Session-0 ``SendSAS(FALSE)`` can route to the console.
+    """
+    current = software_sas_generation()
+    if current in (1, 3):
+        return int(current), "policy_ok"
+    if not enable_services:
+        return int(current) if current is not None else 0, "disabled"
+    # Auto-enable Services so CAD can actually raise the secure UI.
+    target = 1 if current in (None, 0, 2) else int(current)
+    if current == 2:
+        target = 3  # Ease of Access → Both
+    ok, note = set_software_sas_generation(target)
+    after = software_sas_generation()
+    if ok and after in (1, 3):
+        log(f"[RD-WINLOGON] SoftwareSASGeneration {current!r} → {after} ({note})")
+        return int(after), f"enabled:{note}"
+    final = int(after) if after is not None else (int(current) if current is not None else 0)
+    return final, f"enable_failed:{note}"
 
 
 def software_sas_allows_services(policy: Optional[int]) -> bool:
@@ -309,6 +363,9 @@ def invoke_send_sas(*, as_user: bool = False) -> Tuple[bool, str]:
 
     SendSAS is VOID — a True here only means the export was called without
     raising; it does **not** prove the secure desktop changed (C-RD-CAD-4).
+
+    When policy allows Services and this runs in the **Session-0 service**,
+    ``SendSAS(FALSE)`` is routed by Windows to the **active console session**.
     """
     try:
         sas = ctypes.WinDLL("sas.dll")
@@ -339,58 +396,123 @@ _SAS_UI_HINTS = (
     "switch user",
     "kullanıcı değiştir",
     "credential",
+    "other user",
+    "başka kullanıcı",
+    "password",
+    "parola",
+    "şifre",
 )
 _CAD_TIP_HINTS = (
     "ctrl+alt+delete",
     "ctrl + alt + delete",
     "ctrl+alt+del",
+    "ctrl + alt + del",
     "kilidi açmak için",
     "press ctrl",
     "ctrl+alt+delete tuşlarına",
+    "press ctrl+alt+delete",
 )
 
 
-def _enum_visible_window_titles() -> list:
-    titles = []
+_SAS_CLASS_HINTS = (
+    "authui",
+    "credential",
+    "logonui",
+    "securityoptions",
+    "lockappframedynamic",
+)
+_CAD_TIP_CLASS_HINTS = (
+    # Rare; tip text usually comes from window titles / static labels.
+)
+
+
+def _enum_hwnd_meta() -> Tuple[list, list]:
+    """Return (titles, class_names) for visible top-level windows on this desktop."""
+    titles: list = []
+    classes: list = []
 
     @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     def _cb(hwnd, _lp):
         try:
             if not _user32.IsWindowVisible(hwnd):
                 return True
+            cbuf = ctypes.create_unicode_buffer(256)
+            if _user32.GetClassNameW(hwnd, cbuf, 256):
+                cname = (cbuf.value or "").strip()
+                if cname:
+                    classes.append(cname)
             length = int(_user32.GetWindowTextLengthW(hwnd) or 0)
-            if length <= 0:
-                return True
-            buf = ctypes.create_unicode_buffer(length + 1)
-            _user32.GetWindowTextW(hwnd, buf, length + 1)
-            title = (buf.value or "").strip()
-            if title:
-                titles.append(title)
+            if length > 0:
+                tbuf = ctypes.create_unicode_buffer(length + 1)
+                _user32.GetWindowTextW(hwnd, tbuf, length + 1)
+                title = (tbuf.value or "").strip()
+                if title:
+                    titles.append(title)
         except Exception:
             pass
         return True
 
     try:
-        _user32.EnumWindows(_cb, 0)
+        # Prefer current-thread desktop (Winlogon after attach) over global EnumWindows.
+        EnumDesktopWindows = getattr(_user32, "EnumDesktopWindows", None)
+        hdesk = _user32.GetThreadDesktop(_kernel32.GetCurrentThreadId())
+        if EnumDesktopWindows and hdesk:
+            EnumDesktopWindows(hdesk, _cb, 0)
+        else:
+            _user32.EnumWindows(_cb, 0)
     except Exception:
-        pass
+        try:
+            _user32.EnumWindows(_cb, 0)
+        except Exception:
+            pass
+    return titles, classes
+
+
+def _enum_visible_window_titles() -> list:
+    titles, _classes = _enum_hwnd_meta()
     return titles
 
 
-def secure_attention_ui_state() -> str:
-    """Heuristic UI state on the current thread desktop.
+def visible_surface_signature() -> Tuple[str, frozenset, int]:
+    """(ui_state, title+class tokens, visible_hwnd_count) for effect compare."""
+    titles, classes = _enum_hwnd_meta()
+    tokens = frozenset(t.lower() for t in titles) | frozenset(c.lower() for c in classes)
+    return secure_attention_ui_state_from(titles, classes), tokens, len(classes)
 
-    Returns ``sas_ui`` | ``cad_tip`` | ``unknown``.
+
+def secure_attention_ui_state_from(titles: list, classes: list) -> str:
+    """Classify lock/CAD chrome from titles + class names.
+
+    Returns ``sas_ui`` | ``cad_tip`` | ``other`` | ``unknown``.
+    ``unknown`` only when the desktop yields no enumerable chrome at all
+    (Session-0 empty view). Prefer ``other`` over ``unknown`` when windows exist.
     """
-    titles = _enum_visible_window_titles()
+    if not titles and not classes:
+        return "unknown"
     joined = " | ".join(t.lower() for t in titles)
+    class_joined = " | ".join(c.lower() for c in classes)
     for hint in _SAS_UI_HINTS:
         if hint in joined:
+            return "sas_ui"
+    for hint in _SAS_CLASS_HINTS:
+        if hint in class_joined:
+            # Class alone is weak for tip vs options — still better than unknown.
+            if any(h in joined for h in _CAD_TIP_HINTS):
+                return "cad_tip"
             return "sas_ui"
     for hint in _CAD_TIP_HINTS:
         if hint in joined:
             return "cad_tip"
-    return "unknown"
+    for hint in _CAD_TIP_CLASS_HINTS:
+        if hint in class_joined:
+            return "cad_tip"
+    return "other"
+
+
+def secure_attention_ui_state() -> str:
+    """Heuristic UI state on the current thread desktop."""
+    titles, classes = _enum_hwnd_meta()
+    return secure_attention_ui_state_from(titles, classes)
 
 
 def desktop_surface_fingerprint(max_side: int = 64) -> str:
@@ -450,23 +572,156 @@ def desktop_surface_fingerprint(max_side: int = 64) -> str:
         return ""
 
 
-def watch_sas_effect(*, timeout_sec: float = 2.0, before_fp: str = "") -> Tuple[bool, str]:
-    """Poll ≤timeout for SAS UI or desktop surface change (C-RD-CAD-4)."""
+def classify_sas_transition(
+    before_state: str,
+    after_state: str,
+    *,
+    before_tokens: Optional[frozenset] = None,
+    after_tokens: Optional[frozenset] = None,
+    before_fp: str = "",
+    after_fp: str = "",
+) -> Tuple[bool, str]:
+    """Decide if a Secure Attention UI transition occurred (C-RD-CAD-1/4)."""
+    if after_state == "sas_ui":
+        return True, f"secure_attention_ui={after_state}"
+    if before_state == "cad_tip" and after_state in ("sas_ui", "other"):
+        return True, f"left_cad_tip {before_state}->{after_state}"
+    if (
+        before_state
+        and after_state
+        and before_state != after_state
+        and after_state not in ("unknown",)
+        and before_state == "cad_tip"
+    ):
+        return True, f"ui_state {before_state}->{after_state}"
+    if before_tokens is not None and after_tokens is not None:
+        if before_tokens and after_tokens and before_tokens != after_tokens:
+            if after_state != "cad_tip" or before_state == "cad_tip":
+                # Title/class set changed — tip sticky alone stays False below.
+                if not (before_state == "cad_tip" and after_state == "cad_tip"):
+                    return True, "window_chrome_changed"
+    if before_fp and after_fp and before_fp != after_fp:
+        if after_state == "sas_ui":
+            return True, f"desktop_changed state={after_state}"
+        if before_state == "cad_tip" and after_state != "cad_tip":
+            return True, f"desktop_changed state={after_state}"
+    return False, f"no_sas_effect state={after_state or before_state or 'unknown'}"
+
+
+def watch_sas_effect(
+    *,
+    timeout_sec: float = 2.0,
+    before_fp: str = "",
+    before_state: str = "",
+    before_tokens: Optional[frozenset] = None,
+) -> Tuple[bool, str, str]:
+    """Poll ≤timeout for SAS UI or desktop surface change (C-RD-CAD-4).
+
+    Returns ``(effect, detail, last_ui_state)``.
+    """
+    if not before_state:
+        before_state, before_tokens, _n = visible_surface_signature()
+        if not before_fp:
+            before_fp = desktop_surface_fingerprint()
     deadline = time.time() + max(0.4, float(timeout_sec))
-    last_state = secure_attention_ui_state()
+    last_state = before_state or secure_attention_ui_state()
+    last_tokens = before_tokens or frozenset()
     while time.time() < deadline:
-        state = secure_attention_ui_state()
-        if state == "sas_ui":
-            return True, f"secure_attention_ui={state}"
-        if before_fp:
-            now_fp = desktop_surface_fingerprint()
-            if now_fp and now_fp != before_fp:
-                # Tip → options usually changes composition a lot
-                if state != "cad_tip":
-                    return True, f"desktop_changed state={state}"
+        state, tokens, _n = visible_surface_signature()
+        now_fp = desktop_surface_fingerprint() if before_fp else ""
+        ok, detail = classify_sas_transition(
+            before_state,
+            state,
+            before_tokens=before_tokens if before_tokens is not None else last_tokens,
+            after_tokens=tokens,
+            before_fp=before_fp,
+            after_fp=now_fp,
+        )
         last_state = state
-        time.sleep(0.2)
-    return False, f"no_sas_effect state={last_state}"
+        last_tokens = tokens
+        if ok:
+            return True, detail, state
+        time.sleep(0.15)
+    return False, f"no_sas_effect state={last_state}", last_state
+
+
+def run_send_sas_on_attached_desktop(
+    *,
+    prefer_winlogon: bool = True,
+    timeout_sec: float = 2.0,
+    try_as_user: bool = True,
+) -> dict:
+    """Attach desktop, snapshot UI, call SendSAS, poll effect (helper / affinity).
+
+    Prefer ``SendSAS(FALSE)`` first; optionally retry ``SendSAS(TRUE)`` when the
+    caller already holds an interactive token (impersonation / in-session helper).
+    """
+    before_state, before_tokens, before_n = visible_surface_signature()
+    before_fp = desktop_surface_fingerprint()
+    ok_desk, desk, hdesk = attach_console_desktop(
+        prefer_winlogon=prefer_winlogon,
+        strict_winlogon=bool(prefer_winlogon),
+    )
+    if ok_desk:
+        # Re-sample after attach — Session-0 / Default → Winlogon changes chrome.
+        before_state, before_tokens, before_n = visible_surface_signature()
+        before_fp = desktop_surface_fingerprint() or before_fp
+
+    details = []
+    invoked_any = False
+    for as_user in (False, True) if try_as_user else (False,):
+        invoked, detail = invoke_send_sas(as_user=as_user)
+        details.append(detail)
+        invoked_any = invoked_any or invoked
+        if not invoked:
+            continue
+        effect, effect_detail, after_state = watch_sas_effect(
+            timeout_sec=timeout_sec,
+            before_fp=before_fp,
+            before_state=before_state,
+            before_tokens=before_tokens,
+        )
+        after_fp = desktop_surface_fingerprint()
+        _, after_tokens, after_n = visible_surface_signature()
+        if hdesk:
+            try:
+                _user32.CloseDesktop(hdesk)
+            except Exception:
+                pass
+            hdesk = None
+        return {
+            "invoked": True,
+            "effect": bool(effect),
+            "detail": "; ".join(details + [effect_detail]),
+            "ui_before": before_state,
+            "ui_after": after_state,
+            "desktop": desk if ok_desk else "",
+            "as_user": bool(as_user),
+            "fp_changed": bool(before_fp and after_fp and before_fp != after_fp),
+            "chrome_before": before_n,
+            "chrome_after": after_n,
+            "tokens_changed": bool(before_tokens != after_tokens),
+        }
+
+    if hdesk:
+        try:
+            _user32.CloseDesktop(hdesk)
+        except Exception:
+            pass
+    after_state, _tok, after_n = visible_surface_signature()
+    return {
+        "invoked": invoked_any,
+        "effect": False,
+        "detail": "; ".join(details) or "SendSAS not invoked",
+        "ui_before": before_state,
+        "ui_after": after_state,
+        "desktop": desk if ok_desk else "",
+        "as_user": False,
+        "fp_changed": False,
+        "chrome_before": before_n,
+        "chrome_after": after_n,
+        "tokens_changed": False,
+    }
 
 
 def send_sas_with_console_affinity(

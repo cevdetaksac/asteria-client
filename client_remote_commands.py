@@ -1374,9 +1374,11 @@ class RemoteCommandExecutor:
     def _cmd_remote_send_sas(self, params: dict) -> dict:
         """Ctrl+Alt+Del Secure Attention Sequence via SendSAS (C-RD-CAD-*).
 
-        Session-0 must not claim success from a VOID SendSAS alone. Resolve
-        console session, require SoftwareSASGeneration for service path,
-        prefer in-session helper, then impersonate+SendSAS; verify UI effect ≤2s.
+        Residual 1.4.53 / ≥4.9.86:
+        1) Ensure SoftwareSASGeneration ∈ {1,3} (write Services=1 when missing/0/2)
+        2) Prefer Session-0 service ``SendSAS(FALSE)`` (Windows routes to console)
+        3) Helper / impersonate fallbacks with Winlogon-side UI effect ≤2s
+        4) Always report concrete ``software_sas_generation`` 0..3 (never null)
         """
         params = params or {}
         prefer_l = str(params.get("prefer") or "").strip().lower()
@@ -1416,26 +1418,27 @@ class RemoteCommandExecutor:
                 session_id = None
 
         from client_rd_winlogon import (
-            desktop_surface_fingerprint,
-            secure_attention_ui_state,
+            ensure_software_sas_generation,
+            invoke_send_sas,
             send_sas_with_console_affinity,
             software_sas_allows_services,
-            software_sas_generation,
             watch_sas_effect,
         )
 
-        sas_gen = software_sas_generation()
+        # C-RD-CAD-3 residual: ensure policy, always report concrete int 0..3.
+        sas_gen, policy_note = ensure_software_sas_generation(enable_services=True)
         as_user = False
         path = "none"
         detail = ""
         meta = {
             "session_id": session_id,
             "as_user": as_user,
-            "software_sas_generation": sas_gen,
+            "software_sas_generation": int(sas_gen),
+            "policy_note": policy_note,
             "path": path,
             "detail": "",
-            "ui_before": "",
-            "ui_after": "",
+            "ui_before": "unknown",
+            "ui_after": "unknown",
             "effect": False,
         }
 
@@ -1447,56 +1450,11 @@ class RemoteCommandExecutor:
                 "data": meta,
             }
 
-        # Prefer helper already living on winsta0\\Winlogon (C-RD-CAD-2).
-        helper_ok = False
-        if getattr(rd, "_persistent_helper_connected", lambda: False)():
-            try:
-                before_fp = ""
-                ui_before = ""
-                try:
-                    # Best-effort fingerprints from motor (may be Session-0 empty).
-                    ui_before = secure_attention_ui_state()
-                    before_fp = desktop_surface_fingerprint()
-                except Exception:
-                    pass
-                meta["ui_before"] = ui_before
-                hr = rd._session_helper.send_sas(timeout=2.5)
-                helper_ok = bool(hr.get("ok"))
-                detail = str(hr.get("detail") or "")
-                path = "helper"
-                meta["path"] = path
-                meta["detail"] = detail
-                if helper_ok:
-                    effect, effect_detail = watch_sas_effect(
-                        timeout_sec=2.0, before_fp=before_fp
-                    )
-                    meta["effect"] = effect
-                    meta["ui_after"] = secure_attention_ui_state()
-                    meta["detail"] = f"{detail}; {effect_detail}"
-                    if effect:
-                        return {
-                            "success": True,
-                            "message": "SendSAS effect observed",
-                            "data": meta,
-                        }
-                    return {
-                        "success": False,
-                        "error": "SAS_NO_EFFECT",
-                        "message": (
-                            "SendSAS invoked via helper but lock/CAD tip "
-                            "unchanged within 2s"
-                        ),
-                        "data": meta,
-                    }
-            except Exception as exc:
-                log(f"[REMOTE-CMD] helper SendSAS path failed: {exc}")
-                detail = str(exc)
-
-        # Service-path policy gate (C-RD-CAD-3) when we must call from Session 0.
         if not software_sas_allows_services(sas_gen):
             meta["path"] = "blocked_policy"
             meta["detail"] = (
-                f"SoftwareSASGeneration={sas_gen!r} — need 1 (Services) or 3 (Both)"
+                f"SoftwareSASGeneration={sas_gen} — need 1 (Services) or 3 (Both) "
+                f"({policy_note})"
             )
             return {
                 "success": False,
@@ -1510,53 +1468,185 @@ class RemoteCommandExecutor:
             or getattr(rd, "_winlogon_mode", False)
             or str(getattr(rd, "_desktop_name", "") or "").lower() == "winlogon"
         )
-        ui_before = secure_attention_ui_state()
-        before_fp = desktop_surface_fingerprint()
-        meta["ui_before"] = ui_before
-
-        invoked, detail, aff = send_sas_with_console_affinity(
-            int(session_id),
-            as_user=as_user,
-            prefer_winlogon=prefer_wl,
+        helper_live = bool(
+            getattr(rd, "_persistent_helper_connected", lambda: False)()
         )
-        path = "impersonate"
-        meta.update({
-            "path": path,
-            "detail": detail,
-            "as_user": as_user,
-            "token_source": aff.get("token_source"),
-            "impersonated": aff.get("impersonated"),
-            "desktop": aff.get("desktop"),
-        })
-        if not invoked:
-            return {
-                "success": False,
-                "error": "SEND_SAS_FAILED",
-                "message": detail or "SendSAS failed",
+
+        def _helper_ui_sample() -> tuple:
+            if not helper_live:
+                return "unknown", ""
+            try:
+                q = rd._session_helper.query_ui_state(timeout=1.5)
+                if q.get("ok"):
+                    return str(q.get("ui") or "unknown"), str(q.get("fp") or "")
+            except Exception:
+                pass
+            return "unknown", ""
+
+        def _finish(success: bool, error: str, message: str) -> dict:
+            out = {
+                "success": bool(success),
+                "message": message,
                 "data": meta,
             }
+            if error:
+                out["error"] = error
+            return out
 
-        effect, effect_detail = watch_sas_effect(
-            timeout_sec=2.0, before_fp=before_fp
-        )
-        meta["effect"] = effect
-        meta["ui_after"] = secure_attention_ui_state()
-        meta["detail"] = f"{detail}; {effect_detail}"
-        if effect:
-            return {
-                "success": True,
-                "message": "SendSAS effect observed",
-                "data": meta,
-            }
-        return {
-            "success": False,
-            "error": "SAS_NO_EFFECT",
-            "message": (
-                "SendSAS invoked with console affinity but no secure-attention "
-                "UI change within 2s"
+        # --- Path A: Session-0 service SendSAS(FALSE) — OS routes to console ---
+        ui_before, before_fp = _helper_ui_sample()
+        meta["ui_before"] = ui_before or "unknown"
+        invoked, detail = invoke_send_sas(as_user=False)
+        path = "service"
+        meta["path"] = path
+        meta["detail"] = detail
+        meta["as_user"] = False
+        if invoked:
+            # Prefer helper-side poll (sees Winlogon); fall back to local watch.
+            effect = False
+            effect_detail = ""
+            ui_after = "unknown"
+            if helper_live:
+                deadline = time.time() + 2.0
+                while time.time() < deadline:
+                    ui_after, after_fp = _helper_ui_sample()
+                    if ui_after == "sas_ui":
+                        effect, effect_detail = True, f"secure_attention_ui={ui_after}"
+                        break
+                    if ui_before == "cad_tip" and ui_after in ("sas_ui", "other"):
+                        effect, effect_detail = True, f"left_cad_tip {ui_before}->{ui_after}"
+                        break
+                    if (
+                        before_fp
+                        and after_fp
+                        and before_fp != after_fp
+                        and ui_after not in ("", "unknown")
+                        and ui_after != "cad_tip"
+                    ):
+                        effect, effect_detail = True, f"desktop_changed state={ui_after}"
+                        break
+                    if ui_before and ui_after and ui_before != ui_after and ui_after != "unknown":
+                        if not (ui_before == "cad_tip" and ui_after == "cad_tip"):
+                            effect, effect_detail = True, f"ui_state {ui_before}->{ui_after}"
+                            break
+                    time.sleep(0.15)
+                if not effect:
+                    effect_detail = f"no_sas_effect state={ui_after}"
+            else:
+                effect, effect_detail, ui_after = watch_sas_effect(
+                    timeout_sec=2.0,
+                    before_fp=before_fp,
+                    before_state=ui_before if ui_before != "unknown" else "",
+                )
+            meta["effect"] = effect
+            meta["ui_after"] = ui_after or "unknown"
+            meta["detail"] = f"{detail}; {effect_detail}"
+            if effect:
+                return _finish(True, "", "SendSAS effect observed")
+
+        # --- Path B: in-session helper (Winlogon-attached) ---
+        if helper_live:
+            try:
+                hr = rd._session_helper.send_sas(timeout=4.0)
+                path = "helper"
+                meta["path"] = path
+                meta["detail"] = str(hr.get("detail") or "")
+                meta["as_user"] = bool(hr.get("as_user"))
+                if hr.get("ui_before"):
+                    meta["ui_before"] = str(hr.get("ui_before"))
+                if hr.get("ui_after"):
+                    meta["ui_after"] = str(hr.get("ui_after"))
+                effect = bool(hr.get("effect"))
+                meta["effect"] = effect
+                if effect:
+                    return _finish(True, "", "SendSAS effect observed")
+                if hr.get("ok") and not effect:
+                    # Helper invoked SendSAS but tip unchanged — honest.
+                    return _finish(
+                        False,
+                        "SAS_NO_EFFECT",
+                        (
+                            "SendSAS invoked via helper but lock/CAD tip "
+                            "unchanged within 2s"
+                        ),
+                    )
+            except Exception as exc:
+                log(f"[REMOTE-CMD] helper SendSAS path failed: {exc}")
+                detail = str(exc)
+                meta["detail"] = detail
+
+        # --- Path C: impersonate console token + SendSAS ---
+        ui_before2, before_fp2 = _helper_ui_sample()
+        if meta.get("ui_before") in ("", "unknown"):
+            meta["ui_before"] = ui_before2 or meta.get("ui_before") or "unknown"
+
+        for try_user in (False, True):
+            invoked, detail, aff = send_sas_with_console_affinity(
+                int(session_id),
+                as_user=try_user,
+                prefer_winlogon=prefer_wl,
+            )
+            path = "impersonate"
+            as_user = try_user
+            meta.update({
+                "path": path,
+                "detail": detail,
+                "as_user": as_user,
+                "token_source": aff.get("token_source"),
+                "impersonated": aff.get("impersonated"),
+                "desktop": aff.get("desktop"),
+            })
+            if not invoked:
+                continue
+            if helper_live:
+                effect = False
+                ui_after = "unknown"
+                effect_detail = ""
+                deadline = time.time() + 2.0
+                while time.time() < deadline:
+                    ui_after, after_fp = _helper_ui_sample()
+                    if ui_after == "sas_ui" or (
+                        ui_before2 == "cad_tip" and ui_after in ("sas_ui", "other")
+                    ):
+                        effect, effect_detail = True, f"ui {ui_before2}->{ui_after}"
+                        break
+                    if (
+                        before_fp2
+                        and after_fp
+                        and before_fp2 != after_fp
+                        and ui_after not in ("", "cad_tip", "unknown")
+                    ):
+                        effect, effect_detail = True, f"desktop_changed state={ui_after}"
+                        break
+                    time.sleep(0.15)
+                if not effect:
+                    effect_detail = f"no_sas_effect state={ui_after}"
+            else:
+                effect, effect_detail, ui_after = watch_sas_effect(
+                    timeout_sec=2.0,
+                    before_fp=before_fp2,
+                    before_state=ui_before2 if ui_before2 != "unknown" else "",
+                )
+            meta["effect"] = effect
+            meta["ui_after"] = ui_after or "unknown"
+            meta["detail"] = f"{detail}; {effect_detail}"
+            if effect:
+                return _finish(True, "", "SendSAS effect observed")
+
+        if path == "none" or not meta.get("detail"):
+            meta["path"] = path if path != "none" else "failed"
+            return _finish(False, "SEND_SAS_FAILED", detail or "SendSAS failed")
+
+        meta["path"] = path
+        if meta.get("ui_after") in ("", None):
+            meta["ui_after"] = "unknown"
+        return _finish(
+            False,
+            "SAS_NO_EFFECT",
+            (
+                "SendSAS invoked but no secure-attention UI change within 2s"
             ),
-            "data": meta,
-        }
+        )
 
     def _cmd_list_local_users(self, params: dict) -> dict:
         from client_remote_session import list_local_users
