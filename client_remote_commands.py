@@ -1372,12 +1372,20 @@ class RemoteCommandExecutor:
         return rd.apply_input(params or {})
 
     def _cmd_remote_send_sas(self, params: dict) -> dict:
-        """Ctrl+Alt+Del Secure Attention Sequence via SendSAS (sas.dll).
+        """Ctrl+Alt+Del Secure Attention Sequence via SendSAS (C-RD-CAD-*).
 
-        C-RD-CON-7: target the same console/session as the live stream; omit
-        username on Winlogon CAD. Attach Winlogon before SendSAS when streaming
-        the logon surface.
+        Session-0 must not claim success from a VOID SendSAS alone. Resolve
+        console session, require SoftwareSASGeneration for service path,
+        prefer in-session helper, then impersonate+SendSAS; verify UI effect ≤2s.
         """
+        params = params or {}
+        prefer_l = str(params.get("prefer") or "").strip().lower()
+        want_winlogon = bool(
+            prefer_l in ("winlogon", "console", "pre_logon", "pre-logon")
+            or params.get("pre_logon")
+            or str(params.get("desktop") or "").lower() == "winlogon"
+        )
+
         session_id = params.get("session_id")
         try:
             session_id = (
@@ -1389,6 +1397,10 @@ class RemoteCommandExecutor:
             session_id = None
 
         rd = self._get_remote_desktop()
+        if want_winlogon or getattr(rd, "_winlogon_mode", False):
+            # C-RD-CON-7 / CL-RD-CAD-2: never bind username; omit forced SID preference.
+            pass
+
         if session_id is None:
             try:
                 sid = getattr(rd, "_target_session_id", None)
@@ -1403,33 +1415,148 @@ class RemoteCommandExecutor:
             except Exception:
                 session_id = None
 
-        # Bind calling thread to the stream desktop so SAS lands on Winlogon/Default.
-        try:
-            if getattr(rd, "_winlogon_mode", False):
-                from client_rd_winlogon import attach_console_desktop
-                attach_console_desktop(prefer_winlogon=True, strict_winlogon=True)
-            elif getattr(rd, "_running", False):
-                rd._attach_input_desktop()
-        except Exception as exc:
-            log(f"[REMOTE-CMD] remote_send_sas desktop attach: {exc}")
+        from client_rd_winlogon import (
+            desktop_surface_fingerprint,
+            secure_attention_ui_state,
+            send_sas_with_console_affinity,
+            software_sas_allows_services,
+            software_sas_generation,
+            watch_sas_effect,
+        )
 
-        try:
-            ok, detail = self._send_sas(session_id=session_id)
-            if ok:
-                return {
-                    "success": True,
-                    "message": "SendSAS ok",
-                    "data": {"session_id": session_id, "detail": detail},
-                }
+        sas_gen = software_sas_generation()
+        as_user = False
+        path = "none"
+        detail = ""
+        meta = {
+            "session_id": session_id,
+            "as_user": as_user,
+            "software_sas_generation": sas_gen,
+            "path": path,
+            "detail": "",
+            "ui_before": "",
+            "ui_after": "",
+            "effect": False,
+        }
+
+        if session_id is None or int(session_id) <= 0:
+            return {
+                "success": False,
+                "error": "NO_CONSOLE_SESSION",
+                "message": "No console session for SendSAS (C-RD-CAD-2)",
+                "data": meta,
+            }
+
+        # Prefer helper already living on winsta0\\Winlogon (C-RD-CAD-2).
+        helper_ok = False
+        if getattr(rd, "_persistent_helper_connected", lambda: False)():
+            try:
+                before_fp = ""
+                ui_before = ""
+                try:
+                    # Best-effort fingerprints from motor (may be Session-0 empty).
+                    ui_before = secure_attention_ui_state()
+                    before_fp = desktop_surface_fingerprint()
+                except Exception:
+                    pass
+                meta["ui_before"] = ui_before
+                hr = rd._session_helper.send_sas(timeout=2.5)
+                helper_ok = bool(hr.get("ok"))
+                detail = str(hr.get("detail") or "")
+                path = "helper"
+                meta["path"] = path
+                meta["detail"] = detail
+                if helper_ok:
+                    effect, effect_detail = watch_sas_effect(
+                        timeout_sec=2.0, before_fp=before_fp
+                    )
+                    meta["effect"] = effect
+                    meta["ui_after"] = secure_attention_ui_state()
+                    meta["detail"] = f"{detail}; {effect_detail}"
+                    if effect:
+                        return {
+                            "success": True,
+                            "message": "SendSAS effect observed",
+                            "data": meta,
+                        }
+                    return {
+                        "success": False,
+                        "error": "SAS_NO_EFFECT",
+                        "message": (
+                            "SendSAS invoked via helper but lock/CAD tip "
+                            "unchanged within 2s"
+                        ),
+                        "data": meta,
+                    }
+            except Exception as exc:
+                log(f"[REMOTE-CMD] helper SendSAS path failed: {exc}")
+                detail = str(exc)
+
+        # Service-path policy gate (C-RD-CAD-3) when we must call from Session 0.
+        if not software_sas_allows_services(sas_gen):
+            meta["path"] = "blocked_policy"
+            meta["detail"] = (
+                f"SoftwareSASGeneration={sas_gen!r} — need 1 (Services) or 3 (Both)"
+            )
+            return {
+                "success": False,
+                "error": "SOFTWARE_SAS_DISABLED",
+                "message": meta["detail"],
+                "data": meta,
+            }
+
+        prefer_wl = bool(
+            want_winlogon
+            or getattr(rd, "_winlogon_mode", False)
+            or str(getattr(rd, "_desktop_name", "") or "").lower() == "winlogon"
+        )
+        ui_before = secure_attention_ui_state()
+        before_fp = desktop_surface_fingerprint()
+        meta["ui_before"] = ui_before
+
+        invoked, detail, aff = send_sas_with_console_affinity(
+            int(session_id),
+            as_user=as_user,
+            prefer_winlogon=prefer_wl,
+        )
+        path = "impersonate"
+        meta.update({
+            "path": path,
+            "detail": detail,
+            "as_user": as_user,
+            "token_source": aff.get("token_source"),
+            "impersonated": aff.get("impersonated"),
+            "desktop": aff.get("desktop"),
+        })
+        if not invoked:
             return {
                 "success": False,
                 "error": "SEND_SAS_FAILED",
                 "message": detail or "SendSAS failed",
-                "data": {"session_id": session_id},
+                "data": meta,
             }
-        except Exception as e:
-            log(f"[REMOTE-CMD] remote_send_sas error: {e}")
-            return {"success": False, "error": str(e), "message": str(e)}
+
+        effect, effect_detail = watch_sas_effect(
+            timeout_sec=2.0, before_fp=before_fp
+        )
+        meta["effect"] = effect
+        meta["ui_after"] = secure_attention_ui_state()
+        meta["detail"] = f"{detail}; {effect_detail}"
+        if effect:
+            return {
+                "success": True,
+                "message": "SendSAS effect observed",
+                "data": meta,
+            }
+        return {
+            "success": False,
+            "error": "SAS_NO_EFFECT",
+            "message": (
+                "SendSAS invoked with console affinity but no secure-attention "
+                "UI change within 2s"
+            ),
+            "data": meta,
+        }
 
     def _cmd_list_local_users(self, params: dict) -> dict:
         from client_remote_session import list_local_users
@@ -1554,34 +1681,14 @@ class RemoteCommandExecutor:
 
     @staticmethod
     def _send_sas(session_id=None) -> tuple:
-        """Call SendSAS(FALSE) from sas.dll. Requires elevated / SYSTEM often.
+        """Legacy wrapper — prefer ``_cmd_remote_send_sas`` honesty path."""
+        from client_rd_winlogon import invoke_send_sas, send_sas_with_console_affinity
 
-        Returns (ok, detail_message).
-        """
-        import ctypes
-        from ctypes import wintypes
-
-        # Prefer documented API: BOOL SendSAS(BOOL AsUser);
-        # AsUser=FALSE → simulate CAD for current session context
-        try:
-            sas = ctypes.WinDLL("sas.dll")
-        except OSError as e:
-            return False, f"sas.dll not loadable: {e}"
-
-        try:
-            SendSAS = sas.SendSAS
-            SendSAS.argtypes = [wintypes.BOOL]
-            SendSAS.restype = None  # void
-        except AttributeError:
-            return False, "sas.dll has no SendSAS export"
-
-        try:
-            # FALSE = not AsUser — standard remote CAD path for services
-            SendSAS(0)
-            log(f"[REMOTE-CMD] SendSAS(0) invoked session_id={session_id}")
-            return True, "SendSAS(0) called"
-        except Exception as e:
-            return False, f"SendSAS raised: {e}"
+        sid = int(session_id or 0)
+        if sid > 0:
+            ok, detail, _meta = send_sas_with_console_affinity(sid, as_user=False)
+            return ok, detail
+        return invoke_send_sas(as_user=False)
 
     # ── Command Handlers ──────────────────────────────────────────
 

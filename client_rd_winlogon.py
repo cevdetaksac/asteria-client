@@ -10,6 +10,7 @@ can see that surface.
 from __future__ import annotations
 
 import ctypes
+import time
 from ctypes import wintypes
 from typing import Optional, Tuple
 
@@ -263,6 +264,278 @@ def open_session_interactive_token(session_id: int):
         f"session={sid} (WTS user err={user_err})"
     )
     return h_dup, "system_session"
+
+
+def software_sas_generation() -> Optional[int]:
+    """Read SoftwareSASGeneration policy (C-RD-CAD-3).
+
+    0=None, 1=Services, 2=Ease of Access, 3=Both.
+    ``None`` = key missing.
+    """
+    try:
+        import winreg
+        key = winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System",
+            0,
+            winreg.KEY_READ,
+        )
+        try:
+            val, _ = winreg.QueryValueEx(key, "SoftwareSASGeneration")
+            return int(val)
+        finally:
+            winreg.CloseKey(key)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return None
+    except Exception:
+        return None
+
+
+def software_sas_allows_services(policy: Optional[int]) -> bool:
+    """True when services may call SendSAS (policy ∈ {1,3}).
+
+    ``None`` (missing key) is treated as disabled for the service path (C-RD-CAD-3).
+    """
+    try:
+        return int(policy) in (1, 3)
+    except (TypeError, ValueError):
+        return False
+
+
+def invoke_send_sas(*, as_user: bool = False) -> Tuple[bool, str]:
+    """Load sas.dll and call SendSAS. Returns (invoked, detail).
+
+    SendSAS is VOID — a True here only means the export was called without
+    raising; it does **not** prove the secure desktop changed (C-RD-CAD-4).
+    """
+    try:
+        sas = ctypes.WinDLL("sas.dll")
+    except OSError as exc:
+        return False, f"sas.dll not loadable: {exc}"
+    try:
+        send = sas.SendSAS
+        send.argtypes = [wintypes.BOOL]
+        send.restype = None
+    except AttributeError:
+        return False, "sas.dll has no SendSAS export"
+    try:
+        send(1 if as_user else 0)
+        return True, f"SendSAS({'TRUE' if as_user else 'FALSE'}) invoked"
+    except Exception as exc:
+        return False, f"SendSAS raised: {exc}"
+
+
+_SAS_UI_HINTS = (
+    "windows security",
+    "windows güvenliği",
+    "security options",
+    "güvenlik seçenekleri",
+    "sign in",
+    "oturum aç",
+    "task manager",
+    "görev yöneticisi",
+    "switch user",
+    "kullanıcı değiştir",
+    "credential",
+)
+_CAD_TIP_HINTS = (
+    "ctrl+alt+delete",
+    "ctrl + alt + delete",
+    "ctrl+alt+del",
+    "kilidi açmak için",
+    "press ctrl",
+    "ctrl+alt+delete tuşlarına",
+)
+
+
+def _enum_visible_window_titles() -> list:
+    titles = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def _cb(hwnd, _lp):
+        try:
+            if not _user32.IsWindowVisible(hwnd):
+                return True
+            length = int(_user32.GetWindowTextLengthW(hwnd) or 0)
+            if length <= 0:
+                return True
+            buf = ctypes.create_unicode_buffer(length + 1)
+            _user32.GetWindowTextW(hwnd, buf, length + 1)
+            title = (buf.value or "").strip()
+            if title:
+                titles.append(title)
+        except Exception:
+            pass
+        return True
+
+    try:
+        _user32.EnumWindows(_cb, 0)
+    except Exception:
+        pass
+    return titles
+
+
+def secure_attention_ui_state() -> str:
+    """Heuristic UI state on the current thread desktop.
+
+    Returns ``sas_ui`` | ``cad_tip`` | ``unknown``.
+    """
+    titles = _enum_visible_window_titles()
+    joined = " | ".join(t.lower() for t in titles)
+    for hint in _SAS_UI_HINTS:
+        if hint in joined:
+            return "sas_ui"
+    for hint in _CAD_TIP_HINTS:
+        if hint in joined:
+            return "cad_tip"
+    return "unknown"
+
+
+def desktop_surface_fingerprint(max_side: int = 64) -> str:
+    """Tiny desktop hash for SAS post-condition (best-effort)."""
+    try:
+        import hashlib
+        from PIL import Image
+
+        hdc = _user32.GetDC(0)
+        if not hdc:
+            return ""
+        try:
+            gdi32 = ctypes.windll.gdi32
+            width = int(_user32.GetSystemMetrics(0) or 0)
+            height = int(_user32.GetSystemMetrics(1) or 0)
+            if width <= 0 or height <= 0:
+                return ""
+            scale = max(1, max(width, height) // max(8, int(max_side)))
+            tw, th = max(8, width // scale), max(8, height // scale)
+            memdc = gdi32.CreateCompatibleDC(hdc)
+            bmp = gdi32.CreateCompatibleBitmap(hdc, tw, th)
+            old = gdi32.SelectObject(memdc, bmp)
+            # SRCCOPY|CAPTUREBLT
+            gdi32.StretchBlt(memdc, 0, 0, tw, th, hdc, 0, 0, width, height, 0x40CC0020)
+
+            class BITMAPINFOHEADER(ctypes.Structure):
+                _fields_ = [
+                    ("biSize", wintypes.DWORD),
+                    ("biWidth", wintypes.LONG),
+                    ("biHeight", wintypes.LONG),
+                    ("biPlanes", wintypes.WORD),
+                    ("biBitCount", wintypes.WORD),
+                    ("biCompression", wintypes.DWORD),
+                    ("biSizeImage", wintypes.DWORD),
+                    ("biXPelsPerMeter", wintypes.LONG),
+                    ("biYPelsPerMeter", wintypes.LONG),
+                    ("biClrUsed", wintypes.DWORD),
+                    ("biClrImportant", wintypes.DWORD),
+                ]
+
+            bi = BITMAPINFOHEADER()
+            bi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+            bi.biWidth = tw
+            bi.biHeight = -th
+            bi.biPlanes = 1
+            bi.biBitCount = 32
+            buf = (ctypes.c_char * (tw * th * 4))()
+            gdi32.GetDIBits(memdc, bmp, 0, th, buf, ctypes.byref(bi), 0)
+            gdi32.SelectObject(memdc, old)
+            gdi32.DeleteObject(bmp)
+            gdi32.DeleteDC(memdc)
+            img = Image.frombuffer("RGB", (tw, th), bytes(buf), "raw", "BGRX", 0, 1)
+            return hashlib.md5(img.tobytes()).hexdigest()
+        finally:
+            _user32.ReleaseDC(0, hdc)
+    except Exception:
+        return ""
+
+
+def watch_sas_effect(*, timeout_sec: float = 2.0, before_fp: str = "") -> Tuple[bool, str]:
+    """Poll ≤timeout for SAS UI or desktop surface change (C-RD-CAD-4)."""
+    deadline = time.time() + max(0.4, float(timeout_sec))
+    last_state = secure_attention_ui_state()
+    while time.time() < deadline:
+        state = secure_attention_ui_state()
+        if state == "sas_ui":
+            return True, f"secure_attention_ui={state}"
+        if before_fp:
+            now_fp = desktop_surface_fingerprint()
+            if now_fp and now_fp != before_fp:
+                # Tip → options usually changes composition a lot
+                if state != "cad_tip":
+                    return True, f"desktop_changed state={state}"
+        last_state = state
+        time.sleep(0.2)
+    return False, f"no_sas_effect state={last_state}"
+
+
+def send_sas_with_console_affinity(
+    session_id: int,
+    *,
+    as_user: bool = False,
+    prefer_winlogon: bool = True,
+) -> Tuple[bool, str, dict]:
+    """Impersonate console session token, attach desktop, call SendSAS.
+
+    Returns ``(api_invoked, detail, meta)``. Does **not** assert UI effect.
+    """
+    import time as _time  # noqa: F401 — used by watch_sas_effect import side
+
+    meta = {
+        "session_id": int(session_id or 0),
+        "as_user": bool(as_user),
+        "token_source": "",
+        "impersonated": False,
+        "desktop": "",
+    }
+    sid = int(session_id or 0)
+    if sid <= 0:
+        return False, "no_console_session", meta
+
+    enable_process_privileges(
+        "SeDebugPrivilege",
+        "SeTcbPrivilege",
+        "SeAssignPrimaryTokenPrivilege",
+        "SeIncreaseQuotaPrivilege",
+        "SeImpersonatePrivilege",
+    )
+    h_token, src = open_session_interactive_token(sid)
+    meta["token_source"] = src
+    if not h_token:
+        return False, f"no_interactive_token ({src})", meta
+
+    impersonated = False
+    try:
+        if not _advapi32.ImpersonateLoggedOnUser(h_token):
+            err = int(_kernel32.GetLastError() or 0)
+            return False, f"ImpersonateLoggedOnUser failed err={err}", meta
+        impersonated = True
+        meta["impersonated"] = True
+        ok_desk, desk, hdesk = attach_console_desktop(
+            prefer_winlogon=prefer_winlogon,
+            strict_winlogon=bool(prefer_winlogon),
+        )
+        meta["desktop"] = desk if ok_desk else ""
+        if not ok_desk and prefer_winlogon:
+            # Still attempt SendSAS after impersonation — some hosts keep Default.
+            attach_console_desktop(prefer_winlogon=False)
+        invoked, detail = invoke_send_sas(as_user=as_user)
+        if hdesk:
+            try:
+                _user32.CloseDesktop(hdesk)
+            except Exception:
+                pass
+        return invoked, detail, meta
+    finally:
+        if impersonated:
+            try:
+                _advapi32.RevertToSelf()
+            except Exception:
+                pass
+        try:
+            _kernel32.CloseHandle(h_token)
+        except Exception:
+            pass
 
 
 def desktop_name(hdesk) -> str:

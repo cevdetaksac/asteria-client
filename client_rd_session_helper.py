@@ -248,7 +248,43 @@ class PersistentSessionHelper:
                     break
                 self._condition.wait(remaining)
             acked = self._pending.pop(request_id, None)
-        return True if acked is None else bool(acked)
+        if acked is None:
+            return True  # timeout — assume queued on live pipe
+        if isinstance(acked, dict):
+            return bool(acked.get("ok"))
+        return bool(acked)
+
+    def send_sas(self, timeout: float = 2.5) -> dict:
+        """Ask the in-session helper to call SendSAS (C-RD-CAD-2)."""
+        channel = self._channel
+        if channel is None:
+            return {"ok": False, "detail": "helper_not_connected"}
+        with self._condition:
+            self._request_id += 1
+            request_id = self._request_id
+            self._pending[request_id] = None
+        try:
+            channel.send("D", {"id": request_id, "action": "sas"})
+        except Exception as exc:
+            self._error = str(exc)
+            with self._condition:
+                self._pending.pop(request_id, None)
+            return {"ok": False, "detail": str(exc)}
+        deadline = time.monotonic() + max(0.5, float(timeout))
+        with self._condition:
+            while self._pending.get(request_id) is None and self.connected:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._condition.wait(remaining)
+            acked = self._pending.pop(request_id, None)
+        if not isinstance(acked, dict):
+            return {"ok": False, "detail": "sas_ack_timeout"}
+        return {
+            "ok": bool(acked.get("ok")),
+            "detail": str(acked.get("detail") or ""),
+            "path": "helper",
+        }
 
     def update_config(self, config: dict) -> bool:
         channel = self._channel
@@ -276,7 +312,11 @@ class PersistentSessionHelper:
                             header.setdefault("format", "rgb")
                         self._latest = (payload, header)
                     elif kind == "A":
-                        self._pending[int(header.get("id", 0))] = bool(header.get("ok"))
+                        rid = int(header.get("id", 0))
+                        # Store full ACK header (ok/detail) for SAS + input.
+                        self._pending[rid] = header if isinstance(header, dict) else {
+                            "ok": bool(header)
+                        }
                     elif kind == "E":
                         self._error = str(header.get("error") or "helper error")
                     self._condition.notify_all()
@@ -445,6 +485,40 @@ def run_session_helper(
                 event = header.get("event") or {}
                 result = rd.apply_input(event) if isinstance(event, dict) else {"success": False}
                 channel.send("A", {"id": request_id, "ok": bool(result.get("success"))})
+                continue
+            if kind == "D":
+                request_id = int(header.get("id", 0))
+                try:
+                    from client_rd_winlogon import (
+                        attach_console_desktop,
+                        invoke_send_sas,
+                    )
+                    prefer_wl = bool(rd._winlogon_mode)
+                    attach_console_desktop(
+                        prefer_winlogon=prefer_wl,
+                        strict_winlogon=prefer_wl,
+                    )
+                    invoked, detail = invoke_send_sas(as_user=False)
+                    channel.send(
+                        "A",
+                        {
+                            "id": request_id,
+                            "ok": bool(invoked),
+                            "detail": detail,
+                            "action": "sas",
+                        },
+                    )
+                except Exception as exc:
+                    channel.send(
+                        "A",
+                        {
+                            "id": request_id,
+                            "ok": False,
+                            "detail": str(exc),
+                            "action": "sas",
+                        },
+                    )
+                continue
     except (EOFError, OSError, ProtocolError):
         pass
     finally:

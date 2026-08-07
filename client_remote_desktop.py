@@ -220,6 +220,7 @@ class RemoteDesktopStreamer:
         self._drag_mode = "direct"
         self._last_px = 0
         self._last_py = 0
+        self._last_input_event = ""
         self._stats = {
             "frames_sent": 0,            # actual transmissions (WS send or HTTP upload)
             "frames_failed": 0,
@@ -1008,6 +1009,8 @@ class RemoteDesktopStreamer:
             ),
             "desktop": self._desktop_name or "",
             "winlogon_mode": bool(self._winlogon_mode),
+            "inputs_applied": int(self._stats.get("inputs_applied") or 0),
+            "last_input_event": getattr(self, "_last_input_event", "") or "",
             "last_error": self._last_stream_error or "",
             "screen": {
                 "x": self._screen_x,
@@ -1057,14 +1060,22 @@ class RemoteDesktopStreamer:
         self._touch_activity()
 
         try:
+            event_name = event or "?"
             if not move_like:
                 # Self-check log (AGENT_REMOTE_KEYBOARD_PROMPT); moves stay quiet.
                 log(
-                    f"[remote-input] t=input event={event or '?'} "
+                    f"[remote-input] t=input event={event_name} "
                     f"key_present={bool(params.get('key'))} "
                     f"text_len={len(str(params.get('text') or ''))} "
                     f"session={self._target_session_id}"
                 )
+            # C-RD-IN-WL-1: Winlogon stream inject must use the same helper as capture.
+            if self._winlogon_mode and not self._persistent_helper_connected():
+                if not self._start_persistent_helper():
+                    return result({
+                        "success": False,
+                        "error": "winlogon helper unavailable for input",
+                    })
             if self._persistent_helper_connected():
                 # Forward over the full-duplex helper channel. Moves are async
                 # (fire-and-forget); critical edges use a very short ACK only.
@@ -1077,6 +1088,7 @@ class RemoteDesktopStreamer:
                 )
                 if ok:
                     self._stats["inputs_applied"] += 1
+                    self._last_input_event = event_name
                     return result({"success": True, "message": f"input {event} forwarded"})
                 return result({"success": False, "error": f"input {event} not forwarded"})
             if self._use_user_helper:
@@ -1087,7 +1099,16 @@ class RemoteDesktopStreamer:
             ok = self._inject_local(event, params)
             if ok:
                 self._stats["inputs_applied"] += 1
+                self._last_input_event = event_name
                 return result({"success": True, "message": f"input {event} applied"})
+            # C-RD-CAD-6: synthetic CAD keys are ignored — not a silent success.
+            key_l = str(params.get("key") or "").strip().lower()
+            if key_l in ("ctrl+alt+del", "ctrl-alt-del", "ctrl+alt+delete", "cad"):
+                return result({
+                    "success": False,
+                    "error": "cad_key_ignored",
+                    "message": "use remote_send_sas for Secure Attention Sequence",
+                })
             return result({"success": False, "error": f"input {event} failed"})
         except Exception as e:
             log(f"[REMOTE-DESKTOP] Input error: {e}")
