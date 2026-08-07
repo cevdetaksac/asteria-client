@@ -1472,18 +1472,40 @@ class RemoteCommandExecutor:
             getattr(rd, "_persistent_helper_connected", lambda: False)()
         )
 
-        def _helper_ui_sample() -> tuple:
+        def _helper_ui_sample() -> dict:
             if not helper_live:
-                return "unknown", ""
+                return {
+                    "ui": "unknown",
+                    "fp": "",
+                    "flat": False,
+                    "chrome_detected": False,
+                }
             try:
                 q = rd._session_helper.query_ui_state(timeout=1.5)
                 if q.get("ok"):
-                    return str(q.get("ui") or "unknown"), str(q.get("fp") or "")
+                    return {
+                        "ui": str(q.get("ui") or "unknown"),
+                        "fp": str(q.get("fp") or ""),
+                        "flat": bool(q.get("flat")),
+                        "chrome_detected": bool(q.get("chrome_detected")),
+                        "frame_variance": float(q.get("frame_variance") or 0.0),
+                    }
             except Exception:
                 pass
-            return "unknown", ""
+            return {
+                "ui": "unknown",
+                "fp": "",
+                "flat": False,
+                "chrome_detected": False,
+            }
 
         def _finish(success: bool, error: str, message: str) -> dict:
+            # C-RD-CHROME-4: always kick helper to recapture after CAD attempt.
+            try:
+                if hasattr(rd, "force_winlogon_recapture"):
+                    rd.force_winlogon_recapture()
+            except Exception:
+                pass
             out = {
                 "success": bool(success),
                 "message": message,
@@ -1493,8 +1515,39 @@ class RemoteCommandExecutor:
                 out["error"] = error
             return out
 
+        def _effect_from_sample(before_ui: str, sample: dict) -> tuple:
+            """Return (effect, detail, ui_after) gated by non-flat chrome."""
+            ui_after = str(sample.get("ui") or "unknown")
+            flat = bool(sample.get("flat"))
+            chrome = bool(sample.get("chrome_detected"))
+            if flat:
+                if ui_after == "sas_ui":
+                    ui_after = "other"
+                meta["flat_frame"] = True
+                meta["chrome_detected"] = False
+                return False, f"no_sas_effect flat_frame state={ui_after}", ui_after
+            meta["flat_frame"] = False
+            meta["chrome_detected"] = chrome
+            if "frame_variance" in sample:
+                meta["frame_variance"] = sample.get("frame_variance")
+            if ui_after == "sas_ui" and (chrome or not flat):
+                return True, f"secure_attention_ui={ui_after}", ui_after
+            if before_ui == "cad_tip" and ui_after in ("sas_ui", "other") and chrome:
+                return True, f"left_cad_tip {before_ui}->{ui_after}", ui_after
+            if (
+                before_ui
+                and ui_after
+                and before_ui != ui_after
+                and ui_after not in ("", "unknown", "cad_tip")
+                and chrome
+            ):
+                return True, f"ui_state {before_ui}->{ui_after}", ui_after
+            return False, f"no_sas_effect state={ui_after}", ui_after
+
         # --- Path A: Session-0 service SendSAS(FALSE) — OS routes to console ---
-        ui_before, before_fp = _helper_ui_sample()
+        sample0 = _helper_ui_sample()
+        ui_before = sample0.get("ui") or "unknown"
+        before_fp = sample0.get("fp") or ""
         meta["ui_before"] = ui_before or "unknown"
         invoked, detail = invoke_send_sas(as_user=False)
         path = "service"
@@ -1509,28 +1562,24 @@ class RemoteCommandExecutor:
             if helper_live:
                 deadline = time.time() + 2.0
                 while time.time() < deadline:
-                    ui_after, after_fp = _helper_ui_sample()
-                    if ui_after == "sas_ui":
-                        effect, effect_detail = True, f"secure_attention_ui={ui_after}"
+                    sample = _helper_ui_sample()
+                    effect, effect_detail, ui_after = _effect_from_sample(
+                        ui_before, sample
+                    )
+                    if effect:
                         break
-                    if ui_before == "cad_tip" and ui_after in ("sas_ui", "other"):
-                        effect, effect_detail = True, f"left_cad_tip {ui_before}->{ui_after}"
-                        break
-                    if (
-                        before_fp
-                        and after_fp
-                        and before_fp != after_fp
-                        and ui_after not in ("", "unknown")
-                        and ui_after != "cad_tip"
-                    ):
-                        effect, effect_detail = True, f"desktop_changed state={ui_after}"
-                        break
-                    if ui_before and ui_after and ui_before != ui_after and ui_after != "unknown":
-                        if not (ui_before == "cad_tip" and ui_after == "cad_tip"):
-                            effect, effect_detail = True, f"ui_state {ui_before}->{ui_after}"
-                            break
                     time.sleep(0.15)
+                # C-RD-CHROME-4: force reattach once if still flat/no effect
                 if not effect:
+                    try:
+                        rd.force_winlogon_recapture()
+                        sample = _helper_ui_sample()
+                        effect, effect_detail, ui_after = _effect_from_sample(
+                            ui_before, sample
+                        )
+                    except Exception:
+                        pass
+                if not effect and not effect_detail:
                     effect_detail = f"no_sas_effect state={ui_after}"
             else:
                 effect, effect_detail, ui_after = watch_sas_effect(
@@ -1554,20 +1603,37 @@ class RemoteCommandExecutor:
                 meta["as_user"] = bool(hr.get("as_user"))
                 if hr.get("ui_before"):
                     meta["ui_before"] = str(hr.get("ui_before"))
-                if hr.get("ui_after"):
-                    meta["ui_after"] = str(hr.get("ui_after"))
-                effect = bool(hr.get("effect"))
+                ui_after = str(hr.get("ui_after") or "unknown")
+                flat = bool(hr.get("flat"))
+                chrome = bool(hr.get("chrome_detected"))
+                if flat and ui_after == "sas_ui":
+                    ui_after = "other"
+                meta["ui_after"] = ui_after
+                meta["flat_frame"] = flat
+                meta["chrome_detected"] = chrome and not flat
+                if "frame_variance" in hr:
+                    meta["frame_variance"] = hr.get("frame_variance")
+                effect = bool(hr.get("effect")) and not flat and ui_after == "sas_ui"
+                if not effect and bool(hr.get("effect")) and not flat and chrome:
+                    # left tip with chrome is also success
+                    if meta.get("ui_before") == "cad_tip" and ui_after in (
+                        "sas_ui",
+                        "other",
+                    ):
+                        effect = True
                 meta["effect"] = effect
                 if effect:
                     return _finish(True, "", "SendSAS effect observed")
                 if hr.get("ok") and not effect:
-                    # Helper invoked SendSAS but tip unchanged — honest.
+                    # Helper invoked SendSAS but tip unchanged / flat — honest.
                     return _finish(
                         False,
                         "SAS_NO_EFFECT",
                         (
                             "SendSAS invoked via helper but lock/CAD tip "
                             "unchanged within 2s"
+                            if not flat
+                            else "SendSAS invoked but capture stayed flat/blue"
                         ),
                     )
             except Exception as exc:
@@ -1576,7 +1642,9 @@ class RemoteCommandExecutor:
                 meta["detail"] = detail
 
         # --- Path C: impersonate console token + SendSAS ---
-        ui_before2, before_fp2 = _helper_ui_sample()
+        sample2 = _helper_ui_sample()
+        ui_before2 = sample2.get("ui") or "unknown"
+        before_fp2 = sample2.get("fp") or ""
         if meta.get("ui_before") in ("", "unknown"):
             meta["ui_before"] = ui_before2 or meta.get("ui_before") or "unknown"
 
@@ -1604,23 +1672,24 @@ class RemoteCommandExecutor:
                 effect_detail = ""
                 deadline = time.time() + 2.0
                 while time.time() < deadline:
-                    ui_after, after_fp = _helper_ui_sample()
-                    if ui_after == "sas_ui" or (
-                        ui_before2 == "cad_tip" and ui_after in ("sas_ui", "other")
-                    ):
-                        effect, effect_detail = True, f"ui {ui_before2}->{ui_after}"
-                        break
-                    if (
-                        before_fp2
-                        and after_fp
-                        and before_fp2 != after_fp
-                        and ui_after not in ("", "cad_tip", "unknown")
-                    ):
-                        effect, effect_detail = True, f"desktop_changed state={ui_after}"
+                    sample = _helper_ui_sample()
+                    effect, effect_detail, ui_after = _effect_from_sample(
+                        ui_before2, sample
+                    )
+                    if effect:
                         break
                     time.sleep(0.15)
                 if not effect:
-                    effect_detail = f"no_sas_effect state={ui_after}"
+                    try:
+                        rd.force_winlogon_recapture()
+                        sample = _helper_ui_sample()
+                        effect, effect_detail, ui_after = _effect_from_sample(
+                            ui_before2, sample
+                        )
+                    except Exception:
+                        pass
+                if not effect:
+                    effect_detail = effect_detail or f"no_sas_effect state={ui_after}"
             else:
                 effect, effect_detail, ui_after = watch_sas_effect(
                     timeout_sec=2.0,

@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.86"  # C-RD-CAD residual: ensure SoftwareSAS + service SendSAS + UI effect
+VERSION = "4.9.87"  # C-RD-CHROME: Logon/SAS pixels not solid blue; flat_frame honesty
 
 
 

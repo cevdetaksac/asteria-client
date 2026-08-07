@@ -55,11 +55,15 @@ OUT_TEXT_MAXLEN = 32                  # retained control/meta frames (latest-fra
 WS_RECONNECT_SEC = 3.0
 META_EVERY_N_FRAMES = 5
 BLACK_MEAN_THRESHOLD = 6.0            # nearly-black capture → skip send
+# C-RD-CHROME-2: near-zero luma variance + no bright glyphs → solid fill (blue/grey)
+FLAT_VARIANCE_THRESHOLD = 12.0
+FLAT_BRIGHT_RATIO_MAX = 0.005         # <0.5% bright pixels → no clock/text glyphs
 HTTP_KEYFRAME_EVERY = 6               # also POST HTTP every N frames (dashboard cache)
 MIN_JPEG_BYTES = 1500                 # API rejects tinier frames ("Frame too small")
 MIN_GOOD_JPEG_BYTES = 5 * 1024        # healthy 1280q35 frame is usually ≥5KB
 CAPTURE_FAIL_SECONDS = 10.0           # no frames in this window → fail stream
 WINLOGON_BLACK_FAIL_SECONDS = 2.0     # C-RD-P0-WL-4: unbroken black → fail
+WINLOGON_FLAT_FAIL_SECONDS = 3.0      # C-RD-CHROME-2: unbroken flat → fail
 PROBE_TIMEOUT_SEC = 12.0              # SYSTEM→user CreateProcessAsUser needs cold-start room
 
 # Absolute pointer moves (normalized 0..1). Subject to the move budget only.
@@ -190,6 +194,12 @@ class RemoteDesktopStreamer:
         self._black_warn_ts = 0.0
         self._black_streak_started = 0.0
         self._winlogon_black_retried = False
+        self._flat_warn_ts = 0.0
+        self._flat_streak_started = 0.0
+        self._winlogon_flat_retried = False
+        self._last_frame_variance = 0.0
+        self._last_frame_bright_ratio = 0.0
+        self._chrome_detected = False
         self._last_stream_error = ""
         self._capture_method = "none"
         self._stream_started_at = 0.0
@@ -233,7 +243,11 @@ class RemoteDesktopStreamer:
             "ws_reconnects": 0,
             "http_fallbacks": 0,
             "black_frames": 0,
+            "flat_frames": 0,
             "capture_method": "none",
+            "frame_variance": 0.0,
+            "bright_ratio": 0.0,
+            "chrome_detected": False,
         }
 
         if media_transport is None:
@@ -275,8 +289,11 @@ class RemoteDesktopStreamer:
         phase_l = str(phase or "").strip().lower()
         if not phase_l:
             return False
-        # C-RD-PROG-4: never advertise live for black-fill-only capture
-        if phase_l in ("live", "connected") and "+black" in (self._capture_method or ""):
+        # C-RD-PROG-4 / C-RD-CHROME-2: never advertise live for black/flat-only capture
+        method = self._capture_method or ""
+        if phase_l in ("live", "connected") and (
+            "+black" in method or "+flat" in method
+        ):
             return False
         if phase_l in ("live", "connected") and self._progress_live_emitted and not force:
             return False
@@ -422,12 +439,21 @@ class RemoteDesktopStreamer:
             self._stats["bytes_sent"] = 0
             self._stats["frames_failed"] = 0
             self._stats["black_frames"] = 0
+            self._stats["flat_frames"] = 0
+            self._stats["frame_variance"] = 0.0
+            self._stats["bright_ratio"] = 0.0
+            self._stats["chrome_detected"] = False
             self._desktop_attached = False
             self._desktop_name = ""
             self._winlogon_mode = False
             self._tscon_attempted = False
             self._black_streak_started = 0.0
             self._winlogon_black_retried = False
+            self._flat_streak_started = 0.0
+            self._winlogon_flat_retried = False
+            self._last_frame_variance = 0.0
+            self._last_frame_bright_ratio = 0.0
+            self._chrome_detected = False
             self._last_stream_error = ""
             self._last_good_jpeg = None
             self._last_good_wh = (0, 0)
@@ -640,6 +666,7 @@ class RemoteDesktopStreamer:
                 # C-RD-S0-6: wait for first real frame ≥1500B (or ≥2s black → retry).
                 probe_deadline = t_helper + max(2.5, min(PROBE_TIMEOUT_SEC, 8.0))
                 blackish = False
+                flattish = False
                 if persistent_started:
                     while time.time() < probe_deadline:
                         jpeg, w, h = self._grab_via_persistent_helper(0.45)
@@ -649,12 +676,14 @@ class RemoteDesktopStreamer:
                         ):
                             jpeg, w, h = self._encode_helper_raw_jpeg()
                         blackish = "+black" in (self._capture_method or "")
+                        flattish = "+flat" in (self._capture_method or "")
                         if (
                             jpeg
                             and w > 0
                             and h > 0
                             and len(jpeg) >= MIN_JPEG_BYTES
                             and not blackish
+                            and not flattish
                         ):
                             break
                         time.sleep(0.12)
@@ -666,6 +695,7 @@ class RemoteDesktopStreamer:
                     or h <= 0
                     or len(jpeg) < MIN_JPEG_BYTES
                     or blackish
+                    or flattish
                 ):
                     self._stop_persistent_helper()
                     log(
@@ -732,8 +762,8 @@ class RemoteDesktopStreamer:
                         "message": msg,
                         "data": self.get_status(),
                     }
-                # C-RD-S0-6: one retry if only blackish frames after wait.
-                if blackish and self._winlogon_mode:
+                # C-RD-S0-6 / C-RD-CHROME-2: one retry if only black/flat frames.
+                if (blackish or flattish) and self._winlogon_mode:
                     self._stop_persistent_helper()
                     time.sleep(0.25)
                     if self._start_persistent_helper():
@@ -743,18 +773,26 @@ class RemoteDesktopStreamer:
                             and self._last_helper_raw
                         ):
                             jpeg2, w2, h2 = self._encode_helper_raw_jpeg()
+                        method2 = self._capture_method or ""
                         if (
                             jpeg2
                             and len(jpeg2) >= MIN_JPEG_BYTES
-                            and "+black" not in (self._capture_method or "")
+                            and "+black" not in method2
+                            and "+flat" not in method2
                         ):
                             jpeg, w, h = jpeg2, w2, h2
                             blackish = False
-                    if blackish or not jpeg or len(jpeg) < MIN_JPEG_BYTES:
-                        err = "winlogon_capture_black"
+                            flattish = False
+                    if blackish or flattish or not jpeg or len(jpeg) < MIN_JPEG_BYTES:
+                        err = (
+                            "winlogon_capture_flat"
+                            if flattish and not blackish
+                            else "winlogon_capture_black"
+                        )
                         msg = (
-                            "Winlogon/GDI capture returned unbroken black after retry "
-                            f"(method={self._capture_method})"
+                            "Winlogon/GDI capture returned unbroken "
+                            f"{'flat/blue' if err.endswith('flat') else 'black'} "
+                            f"after retry (method={self._capture_method})"
                         )
                         self._capture_method = self._capture_method or "none"
                         log(f"[REMOTE-DESKTOP] ✖ {err}: {msg}")
@@ -777,7 +815,8 @@ class RemoteDesktopStreamer:
                 # Probe BEFORE advertising streaming=true
                 jpeg, w, h = self._grab_jpeg()
                 blackish = "+black" in (self._capture_method or "")
-                if blackish or not jpeg:
+                flattish = "+flat" in (self._capture_method or "")
+                if blackish or flattish or not jpeg:
                     # One more attempt after forced console reconnect
                     if not self._tscon_attempted:
                         self._try_reconnect_session_to_console(self._target_session_id)
@@ -786,24 +825,32 @@ class RemoteDesktopStreamer:
                         self._attach_input_desktop()
                         jpeg, w, h = self._grab_jpeg()
                         blackish = "+black" in (self._capture_method or "")
+                        flattish = "+flat" in (self._capture_method or "")
                 if self._winlogon_mode and (
-                    blackish or not jpeg or w <= 0 or h <= 0
+                    blackish or flattish or not jpeg or w <= 0 or h <= 0
                     or (jpeg and len(jpeg) < MIN_JPEG_BYTES)
                 ):
                     self._desktop_attached = False
                     self._attach_input_desktop()
                     jpeg, w, h = self._grab_jpeg()
                     blackish = "+black" in (self._capture_method or "")
+                    flattish = "+flat" in (self._capture_method or "")
                     if (
                         blackish
+                        or flattish
                         or not jpeg
                         or w <= 0
                         or h <= 0
                         or len(jpeg) < MIN_JPEG_BYTES
                     ):
-                        err = "winlogon_capture_black"
+                        err = (
+                            "winlogon_capture_flat"
+                            if flattish and not blackish
+                            else "winlogon_capture_black"
+                        )
                         msg = (
-                            "Winlogon/GDI capture returned unbroken black "
+                            "Winlogon/GDI capture returned unbroken "
+                            f"{'flat/blue' if err.endswith('flat') else 'black'} "
                             f"(method={self._capture_method})"
                         )
                         log(f"[REMOTE-DESKTOP] ✖ {err}: {msg}")
@@ -906,7 +953,9 @@ class RemoteDesktopStreamer:
                         self._stats["frames_sent"] = 1
                         self._stats["bytes_sent"] = len(jpeg)
                         self._last_activity = time.time()
-                    if "+black" not in (self._capture_method or ""):
+                    if "+black" not in (self._capture_method or "") and "+flat" not in (
+                        self._capture_method or ""
+                    ):
                         self.emit_stream_progress(
                             "live",
                             "First real frame on the wire",
@@ -1007,6 +1056,13 @@ class RemoteDesktopStreamer:
                 "+black" in (self._capture_method or "")
                 or self._black_streak_started > 0
             ),
+            "flat_frame": bool(
+                "+flat" in (self._capture_method or "")
+                or self._flat_streak_started > 0
+            ),
+            "frame_variance": float(self._last_frame_variance or 0.0),
+            "bright_ratio": float(self._last_frame_bright_ratio or 0.0),
+            "chrome_detected": bool(self._chrome_detected),
             "desktop": self._desktop_name or "",
             "winlogon_mode": bool(self._winlogon_mode),
             "inputs_applied": int(self._stats.get("inputs_applied") or 0),
@@ -1459,7 +1515,13 @@ class RemoteDesktopStreamer:
         self._adaptive_tick()
 
         # Helper raw RGB → WebRTC mailbox (no JPEG decode/re-encode).
-        if self._media_ready() and self._last_helper_raw:
+        method_now = self._capture_method or ""
+        if (
+            self._media_ready()
+            and self._last_helper_raw
+            and "+black" not in method_now
+            and "+flat" not in method_now
+        ):
             rgb, rw, rh = self._last_helper_raw
             self._last_helper_raw = None
             if rgb and rw > 0 and rh > 0:
@@ -1489,11 +1551,17 @@ class RemoteDesktopStreamer:
             self._stats["frames_failed"] += 1
             log("[REMOTE-DESKTOP] Invalid JPEG magic — skip frame")
             return
-        if "+black" in (self._capture_method or ""):
-            # Disconnected RDP / wrong desktop → re-attach + optional tscon
+        if "+black" in (self._capture_method or "") or "+flat" in (self._capture_method or ""):
+            # Disconnected RDP / wrong desktop / flat accent fill → re-attach
+            bad_flat = "+flat" in (self._capture_method or "")
             now = time.time()
-            if self._black_streak_started <= 0:
-                self._black_streak_started = now
+            if bad_flat:
+                if self._flat_streak_started <= 0:
+                    self._flat_streak_started = now
+                self._stats["flat_frames"] = int(self._stats.get("flat_frames") or 0) + 1
+            else:
+                if self._black_streak_started <= 0:
+                    self._black_streak_started = now
             self._desktop_attached = False
             self._attach_input_desktop()
             sid = self._target_session_id
@@ -1503,26 +1571,42 @@ class RemoteDesktopStreamer:
                     self._desktop_attached = False
                     self._attach_input_desktop()
                     jpeg2, w2, h2 = self._grab_jpeg()
-                    if jpeg2 and "+black" not in (self._capture_method or ""):
+                    method2 = self._capture_method or ""
+                    if (
+                        jpeg2
+                        and "+black" not in method2
+                        and "+flat" not in method2
+                    ):
                         jpeg, w, h = jpeg2, w2, h2
                         self._black_streak_started = 0.0
+                        self._flat_streak_started = 0.0
                     else:
                         self._stats["frames_failed"] += 1
-                        self._stats["black_frames"] += 1
-                        self._maybe_fail_winlogon_black()
+                        if bad_flat:
+                            self._maybe_fail_winlogon_flat()
+                        else:
+                            self._stats["black_frames"] += 1
+                            self._maybe_fail_winlogon_black()
                         return
                 else:
                     self._stats["frames_failed"] += 1
-                    self._stats["black_frames"] += 1
-                    self._maybe_fail_winlogon_black()
+                    if bad_flat:
+                        self._maybe_fail_winlogon_flat()
+                    else:
+                        self._stats["black_frames"] += 1
+                        self._maybe_fail_winlogon_black()
                     return
             else:
                 self._stats["frames_failed"] += 1
-                self._stats["black_frames"] += 1
-                self._maybe_fail_winlogon_black()
+                if bad_flat:
+                    self._maybe_fail_winlogon_flat()
+                else:
+                    self._stats["black_frames"] += 1
+                    self._maybe_fail_winlogon_black()
                 return
         else:
             self._black_streak_started = 0.0
+            self._flat_streak_started = 0.0
 
         # Helper JPEG while WebRTC live: decode once → raw mailbox (no double encode).
         if self._media_ready() and self._use_user_helper:
@@ -1564,7 +1648,14 @@ class RemoteDesktopStreamer:
             self._desktop_attached = False
             self._attach_input_desktop()
             jpeg, w, h = self._grab_jpeg()
-            if jpeg and w > 0 and h > 0 and "+black" not in (self._capture_method or ""):
+            method = self._capture_method or ""
+            if (
+                jpeg
+                and w > 0
+                and h > 0
+                and "+black" not in method
+                and "+flat" not in method
+            ):
                 self._black_streak_started = 0.0
                 return
             # Reset streak clock after the one allowed retry.
@@ -1583,6 +1674,61 @@ class RemoteDesktopStreamer:
             force=True,
         )
         self.stop(reason="winlogon_capture_black")
+
+    def _maybe_fail_winlogon_flat(self) -> None:
+        """C-RD-CHROME-2: sustained flat solid fill in winlogon → retry, then fail."""
+        if not self._winlogon_mode or self._flat_streak_started <= 0:
+            return
+        elapsed = time.time() - self._flat_streak_started
+        if elapsed < WINLOGON_FLAT_FAIL_SECONDS:
+            return
+        if not self._winlogon_flat_retried:
+            self._winlogon_flat_retried = True
+            self._desktop_attached = False
+            self._attach_input_desktop()
+            try:
+                alt = self._grab_printwindow_chrome()
+                if alt is not None and not self._is_mostly_flat(alt):
+                    self._flat_streak_started = 0.0
+                    return
+            except Exception:
+                pass
+            jpeg, w, h = self._grab_jpeg()
+            method = self._capture_method or ""
+            if (
+                jpeg
+                and w > 0
+                and h > 0
+                and "+black" not in method
+                and "+flat" not in method
+            ):
+                self._flat_streak_started = 0.0
+                return
+            self._flat_streak_started = time.time()
+            return
+        self._last_stream_error = "winlogon_capture_flat"
+        log(
+            "[REMOTE-DESKTOP] ✖ winlogon_capture_flat — "
+            f"unbroken solid fill for ≥{WINLOGON_FLAT_FAIL_SECONDS:.0f}s "
+            f"(var={self._last_frame_variance:.1f} method={self._capture_method})"
+        )
+        self.emit_stream_progress(
+            "failed",
+            f"Unbroken flat/blue for ≥{WINLOGON_FLAT_FAIL_SECONDS:.0f}s",
+            error="winlogon_capture_flat",
+            force=True,
+        )
+        self.stop(reason="winlogon_capture_flat")
+
+    def force_winlogon_recapture(self) -> None:
+        """C-RD-CHROME-4: drop desktop bind so next grab reattaches after CAD."""
+        self._desktop_attached = False
+        self._flat_streak_started = 0.0
+        try:
+            if self._persistent_helper_connected():
+                self._session_helper.force_desktop_reattach(timeout=2.5)
+        except Exception as exc:
+            log(f"[REMOTE-DESKTOP] helper force reattach after CAD: {exc}")
 
     def _dispatch_raw_frame(self, rgb, w: int, h: int, seq: int) -> bool:
         """Publish raw RGB into WebRTC mailbox. True if media accepted it."""
@@ -1980,7 +2126,36 @@ class RemoteDesktopStreamer:
                     f"(mean={self._mean_brightness(img):.1f}) "
                     f"session={sid}/{csid} state={state} method={method}")
             method = method + "+black"
+        elif self._is_mostly_flat(img):
+            # C-RD-CHROME-1/2: PrintWindow LogonUI before declaring solid fill.
+            recovered = False
+            if self._winlogon_mode:
+                try:
+                    alt = self._grab_printwindow_chrome()
+                    if (
+                        alt is not None
+                        and not self._is_mostly_flat(alt)
+                        and not self._is_mostly_black(alt)
+                    ):
+                        img = alt
+                        method = "printwindow-logonui"
+                        recovered = True
+                except Exception as exc:
+                    log(f"[REMOTE-DESKTOP] PrintWindow chrome fallback failed: {exc}")
+            if not recovered:
+                self._stats["flat_frames"] = int(self._stats.get("flat_frames") or 0) + 1
+                now = time.time()
+                if now - getattr(self, "_flat_warn_ts", 0) > 10:
+                    self._flat_warn_ts = now
+                    _m, var, bright = self._frame_luma_stats(img)
+                    log(
+                        f"[REMOTE-DESKTOP] ⚠ Flat Winlogon frame "
+                        f"(var={var:.1f} bright={bright:.4f}) method={method}"
+                    )
+                method = method + "+flat"
+                self._desktop_attached = False
 
+        self._remember_frame_chrome(img, method)
         self._capture_method = method
         self._stats["capture_method"] = method
         # Keep the selected monitor's native rectangle separate from encoded size.
@@ -2007,7 +2182,7 @@ class RemoteDesktopStreamer:
     def _grab_raw_rgb(self):
         """Capture → resized RGB bytes for WebRTC (no JPEG). Returns (bytes,w,h) or None."""
         img, method = self._capture_screen_image()
-        if img is None or "+black" in (method or ""):
+        if img is None or "+black" in (method or "") or "+flat" in (method or ""):
             return None
         return img.tobytes(), img.width, img.height
 
@@ -2158,8 +2333,202 @@ class RemoteDesktopStreamer:
         except Exception:
             return 255.0
 
+    @staticmethod
+    def _frame_luma_stats(img) -> tuple:
+        """Return (mean, variance, bright_ratio) on a tiny L luma grid."""
+        try:
+            small = img.resize((64, 36)).convert("L")
+            data = list(small.getdata())
+            n = max(1, len(data))
+            mean = float(sum(data)) / n
+            var = float(sum((x - mean) ** 2 for x in data)) / n
+            bright = float(sum(1 for x in data if x >= 200)) / n
+            return mean, var, bright
+        except Exception:
+            return 255.0, 999.0, 1.0
+
     def _is_mostly_black(self, img) -> bool:
         return self._mean_brightness(img) < BLACK_MEAN_THRESHOLD
+
+    def _is_mostly_flat(self, img) -> bool:
+        """C-RD-CHROME-2: solid blue/grey fill without glyphs/wallpaper texture."""
+        if img is None:
+            return True
+        if self._is_mostly_black(img):
+            return False  # black path owns near-black
+        _mean, var, bright = self._frame_luma_stats(img)
+        return bool(var < FLAT_VARIANCE_THRESHOLD and bright < FLAT_BRIGHT_RATIO_MAX)
+
+    def _remember_frame_chrome(self, img, method: str = "") -> None:
+        """Update variance / chrome telemetry for hello/meta (C-RD-CHROME-5)."""
+        if img is None:
+            self._last_frame_variance = 0.0
+            self._last_frame_bright_ratio = 0.0
+            self._chrome_detected = False
+            self._stats["frame_variance"] = 0.0
+            self._stats["bright_ratio"] = 0.0
+            self._stats["chrome_detected"] = False
+            return
+        _mean, var, bright = self._frame_luma_stats(img)
+        self._last_frame_variance = float(var)
+        self._last_frame_bright_ratio = float(bright)
+        chrome = bool(
+            "+black" not in (method or "")
+            and "+flat" not in (method or "")
+            and var >= FLAT_VARIANCE_THRESHOLD
+        ) or bool(bright >= FLAT_BRIGHT_RATIO_MAX and "+black" not in (method or ""))
+        self._chrome_detected = chrome
+        self._stats["frame_variance"] = float(var)
+        self._stats["bright_ratio"] = float(bright)
+        self._stats["chrome_detected"] = bool(chrome)
+
+    def _grab_printwindow_chrome(self):
+        """PrintWindow visible top-level HWNDs (PW_RENDERFULLCONTENT) for LogonUI.
+
+        BitBlt of the desktop DC often yields a solid accent fill while LogonUI /
+        LockApp still paint real chrome. PrintWindow can recover those pixels.
+        """
+        import ctypes
+        from ctypes import wintypes
+        try:
+            from PIL import Image
+        except ImportError:
+            return None
+
+        user32 = ctypes.windll.user32
+        gdi32 = ctypes.windll.gdi32
+        PW_RENDERFULLCONTENT = 0x00000002
+        left, top, width, height = self._get_capture_rect()
+        if width <= 0 or height <= 0:
+            return None
+
+        candidates = []
+
+        @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        def _cb(hwnd, _lp):
+            try:
+                if not user32.IsWindowVisible(hwnd):
+                    return True
+                rect = wintypes.RECT()
+                if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                    return True
+                ww = int(rect.right - rect.left)
+                hh = int(rect.bottom - rect.top)
+                if ww < 200 or hh < 200:
+                    return True
+                area = ww * hh
+                cbuf = ctypes.create_unicode_buffer(256)
+                user32.GetClassNameW(hwnd, cbuf, 256)
+                cname = (cbuf.value or "").lower()
+                boost = 0
+                for hint in (
+                    "logonui", "lockapp", "immersive", "authui", "credential",
+                    "windows.ui", "applicationframe",
+                ):
+                    if hint in cname:
+                        boost = 10_000_000
+                        break
+                candidates.append((area + boost, hwnd, ww, hh, int(rect.left), int(rect.top)))
+            except Exception:
+                pass
+            return True
+
+        try:
+            EnumDesktopWindows = getattr(user32, "EnumDesktopWindows", None)
+            hdesk = user32.GetThreadDesktop(ctypes.windll.kernel32.GetCurrentThreadId())
+            if EnumDesktopWindows and hdesk:
+                EnumDesktopWindows(hdesk, _cb, 0)
+            else:
+                user32.EnumWindows(_cb, 0)
+        except Exception:
+            try:
+                user32.EnumWindows(_cb, 0)
+            except Exception:
+                return None
+
+        if not candidates:
+            return None
+        candidates.sort(key=lambda x: x[0], reverse=True)
+
+        # Compose into capture rect from largest / LogonUI-like windows.
+        canvas = Image.new("RGB", (width, height), (0, 0, 0))
+        painted = False
+        for _score, hwnd, ww, hh, wx, wy in candidates[:6]:
+            hdc = memdc = bmp = old = None
+            try:
+                hdc = user32.GetWindowDC(hwnd)
+                if not hdc:
+                    continue
+                memdc = gdi32.CreateCompatibleDC(hdc)
+                bmp = gdi32.CreateCompatibleBitmap(hdc, ww, hh)
+                old = gdi32.SelectObject(memdc, bmp)
+                ok = user32.PrintWindow(hwnd, memdc, PW_RENDERFULLCONTENT)
+                if not ok:
+                    ok = user32.PrintWindow(hwnd, memdc, 0)
+                if not ok:
+                    continue
+
+                class BITMAPINFOHEADER(ctypes.Structure):
+                    _fields_ = [
+                        ("biSize", wintypes.DWORD),
+                        ("biWidth", wintypes.LONG),
+                        ("biHeight", wintypes.LONG),
+                        ("biPlanes", wintypes.WORD),
+                        ("biBitCount", wintypes.WORD),
+                        ("biCompression", wintypes.DWORD),
+                        ("biSizeImage", wintypes.DWORD),
+                        ("biXPelsPerMeter", wintypes.LONG),
+                        ("biYPelsPerMeter", wintypes.LONG),
+                        ("biClrUsed", wintypes.DWORD),
+                        ("biClrImportant", wintypes.DWORD),
+                    ]
+
+                bi = BITMAPINFOHEADER()
+                bi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+                bi.biWidth = ww
+                bi.biHeight = -hh
+                bi.biPlanes = 1
+                bi.biBitCount = 32
+                buf = (ctypes.c_char * (ww * hh * 4))()
+                gdi32.GetDIBits(memdc, bmp, 0, hh, buf, ctypes.byref(bi), 0)
+                piece = Image.frombuffer("RGB", (ww, hh), bytes(buf), "raw", "BGRX", 0, 1).copy()
+                if self._is_mostly_black(piece) or self._is_mostly_flat(piece):
+                    continue
+                dx = int(wx - left)
+                dy = int(wy - top)
+                canvas.paste(piece, (dx, dy))
+                painted = True
+                # One good LockApp / LogonUI surface is enough.
+                if _score >= 10_000_000:
+                    break
+            except Exception:
+                continue
+            finally:
+                try:
+                    if old is not None and memdc:
+                        gdi32.SelectObject(memdc, old)
+                except Exception:
+                    pass
+                try:
+                    if bmp:
+                        gdi32.DeleteObject(bmp)
+                except Exception:
+                    pass
+                try:
+                    if memdc:
+                        gdi32.DeleteDC(memdc)
+                except Exception:
+                    pass
+                try:
+                    if hdc:
+                        user32.ReleaseDC(hwnd, hdc)
+                except Exception:
+                    pass
+        if not painted:
+            return None
+        if self._is_mostly_black(canvas) or self._is_mostly_flat(canvas):
+            return None
+        return canvas
 
     def _attach_input_desktop(self) -> bool:
         """Bind capture/input thread to the interactive (or Winlogon) desktop.
@@ -2623,6 +2992,11 @@ class RemoteDesktopStreamer:
         self._screen_w, self._screen_h = native_width, native_height
         self._capture_w, self._capture_h = width, height
         method = str(meta.get("method") or "capture")
+        bad_tag = ""
+        if "+black" in method:
+            bad_tag = "+black"
+        elif "+flat" in method:
+            bad_tag = "+flat"
         prefix = (
             "persistent-winlogon-helper"
             if self._winlogon_mode
@@ -2633,12 +3007,26 @@ class RemoteDesktopStreamer:
             if len(payload) < width * height * 3:
                 self._stats["frames_failed"] += 1
                 return None, 0, 0
+            # Detect flat/black from raw bytes when helper omitted tags.
+            if not bad_tag and self._winlogon_mode:
+                try:
+                    from PIL import Image
+                    img = Image.frombytes("RGB", (width, height), bytes(payload))
+                    if self._is_mostly_black(img):
+                        bad_tag = "+black"
+                    elif self._is_mostly_flat(img):
+                        bad_tag = "+flat"
+                    self._remember_frame_chrome(img, f"{prefix}:raw{bad_tag}")
+                except Exception:
+                    pass
             self._last_helper_raw = (bytes(payload), width, height)
-            self._capture_method = f"{prefix}:raw"
+            self._capture_method = f"{prefix}:raw{bad_tag}"
             self._stats["capture_method"] = self._capture_method
             # No JPEG when feeding WebRTC; callers encode on demand for WS fallback.
             return None, width, height
         self._capture_method = f"{prefix}:{method}"
+        if bad_tag and bad_tag not in self._capture_method:
+            self._capture_method = f"{self._capture_method}{bad_tag}"
         self._stats["capture_method"] = self._capture_method
         return payload, width, height
 
@@ -3722,8 +4110,12 @@ def capture_once_to_file(
     if not jpeg or w <= 0 or h <= 0 or len(jpeg) < MIN_JPEG_BYTES:
         log(f"[REMOTE-DESKTOP] capture_once failed — {w}x{h} bytes={0 if not jpeg else len(jpeg)}")
         return False
-    if "+black" in (rd._capture_method or ""):
-        log("[REMOTE-DESKTOP] capture_once nearly-black — refuse write")
+    if "+black" in (rd._capture_method or "") or "+flat" in (rd._capture_method or ""):
+        log(
+            f"[REMOTE-DESKTOP] capture_once "
+            f"{'flat' if '+flat' in (rd._capture_method or '') else 'nearly-black'} "
+            "— refuse write"
+        )
         return False
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "wb") as fh:

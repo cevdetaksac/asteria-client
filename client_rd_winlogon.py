@@ -486,6 +486,10 @@ def secure_attention_ui_state_from(titles: list, classes: list) -> str:
     Returns ``sas_ui`` | ``cad_tip`` | ``other`` | ``unknown``.
     ``unknown`` only when the desktop yields no enumerable chrome at all
     (Session-0 empty view). Prefer ``other`` over ``unknown`` when windows exist.
+
+    C-RD-CHROME-3: class-alone (LogonUI/AuthUI) is NOT enough for ``sas_ui`` —
+    that requires title/text matching SAS option/password hints. Class-only →
+    ``other`` (or ``cad_tip`` when tip text is present).
     """
     if not titles and not classes:
         return "unknown"
@@ -494,18 +498,16 @@ def secure_attention_ui_state_from(titles: list, classes: list) -> str:
     for hint in _SAS_UI_HINTS:
         if hint in joined:
             return "sas_ui"
-    for hint in _SAS_CLASS_HINTS:
-        if hint in class_joined:
-            # Class alone is weak for tip vs options — still better than unknown.
-            if any(h in joined for h in _CAD_TIP_HINTS):
-                return "cad_tip"
-            return "sas_ui"
     for hint in _CAD_TIP_HINTS:
         if hint in joined:
             return "cad_tip"
     for hint in _CAD_TIP_CLASS_HINTS:
         if hint in class_joined:
             return "cad_tip"
+    for hint in _SAS_CLASS_HINTS:
+        if hint in class_joined:
+            # LogonUI chrome present but no tip/options title → other, not sas_ui.
+            return "other"
     return "other"
 
 
@@ -513,6 +515,81 @@ def secure_attention_ui_state() -> str:
     """Heuristic UI state on the current thread desktop."""
     titles, classes = _enum_hwnd_meta()
     return secure_attention_ui_state_from(titles, classes)
+
+
+def desktop_surface_luma_stats(max_side: int = 64) -> dict:
+    """Luma mean/variance/bright_ratio of current desktop (C-RD-CHROME-2/5)."""
+    try:
+        from PIL import Image
+
+        hdc = _user32.GetDC(0)
+        if not hdc:
+            return {"mean": 0.0, "variance": 0.0, "bright_ratio": 0.0, "flat": True}
+        try:
+            gdi32 = ctypes.windll.gdi32
+            width = int(_user32.GetSystemMetrics(0) or 0)
+            height = int(_user32.GetSystemMetrics(1) or 0)
+            if width <= 0 or height <= 0:
+                return {"mean": 0.0, "variance": 0.0, "bright_ratio": 0.0, "flat": True}
+            scale = max(1, max(width, height) // max(8, int(max_side)))
+            tw, th = max(8, width // scale), max(8, height // scale)
+            memdc = gdi32.CreateCompatibleDC(hdc)
+            bmp = gdi32.CreateCompatibleBitmap(hdc, tw, th)
+            old = gdi32.SelectObject(memdc, bmp)
+            gdi32.StretchBlt(memdc, 0, 0, tw, th, hdc, 0, 0, width, height, 0x40CC0020)
+
+            class BITMAPINFOHEADER(ctypes.Structure):
+                _fields_ = [
+                    ("biSize", wintypes.DWORD),
+                    ("biWidth", wintypes.LONG),
+                    ("biHeight", wintypes.LONG),
+                    ("biPlanes", wintypes.WORD),
+                    ("biBitCount", wintypes.WORD),
+                    ("biCompression", wintypes.DWORD),
+                    ("biSizeImage", wintypes.DWORD),
+                    ("biXPelsPerMeter", wintypes.LONG),
+                    ("biYPelsPerMeter", wintypes.LONG),
+                    ("biClrUsed", wintypes.DWORD),
+                    ("biClrImportant", wintypes.DWORD),
+                ]
+
+            bi = BITMAPINFOHEADER()
+            bi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+            bi.biWidth = tw
+            bi.biHeight = -th
+            bi.biPlanes = 1
+            bi.biBitCount = 32
+            buf = (ctypes.c_char * (tw * th * 4))()
+            gdi32.GetDIBits(memdc, bmp, 0, th, buf, ctypes.byref(bi), 0)
+            gdi32.SelectObject(memdc, old)
+            gdi32.DeleteObject(bmp)
+            gdi32.DeleteDC(memdc)
+            img = Image.frombuffer("RGB", (tw, th), bytes(buf), "raw", "BGRX", 0, 1)
+            small = img.convert("L")
+            data = list(small.getdata())
+            n = max(1, len(data))
+            mean = float(sum(data)) / n
+            var = float(sum((x - mean) ** 2 for x in data)) / n
+            bright = float(sum(1 for x in data if x >= 200)) / n
+            flat = bool(var < 12.0 and bright < 0.005 and mean >= 6.0)
+            return {
+                "mean": mean,
+                "variance": var,
+                "bright_ratio": bright,
+                "flat": flat,
+            }
+        finally:
+            _user32.ReleaseDC(0, hdc)
+    except Exception:
+        return {"mean": 0.0, "variance": 0.0, "bright_ratio": 0.0, "flat": True}
+
+
+def desktop_surface_is_flat() -> bool:
+    """True when BitBlt of the current desktop is a solid fill (no glyphs)."""
+    try:
+        return bool(desktop_surface_luma_stats().get("flat"))
+    except Exception:
+        return True
 
 
 def desktop_surface_fingerprint(max_side: int = 64) -> str:
@@ -580,8 +657,21 @@ def classify_sas_transition(
     after_tokens: Optional[frozenset] = None,
     before_fp: str = "",
     after_fp: str = "",
+    after_flat: Optional[bool] = None,
 ) -> Tuple[bool, str]:
-    """Decide if a Secure Attention UI transition occurred (C-RD-CAD-1/4)."""
+    """Decide if a Secure Attention UI transition occurred (C-RD-CAD-1/4).
+
+    C-RD-CHROME-3: flat pixel fill must not count as ``sas_ui`` success.
+    """
+    if after_flat is None:
+        try:
+            after_flat = desktop_surface_is_flat()
+        except Exception:
+            after_flat = False
+    if after_flat:
+        if after_state == "sas_ui":
+            after_state = "other"
+        return False, f"no_sas_effect flat_frame state={after_state}"
     if after_state == "sas_ui":
         return True, f"secure_attention_ui={after_state}"
     if before_state == "cad_tip" and after_state in ("sas_ui", "other"):
@@ -597,7 +687,6 @@ def classify_sas_transition(
     if before_tokens is not None and after_tokens is not None:
         if before_tokens and after_tokens and before_tokens != after_tokens:
             if after_state != "cad_tip" or before_state == "cad_tip":
-                # Title/class set changed — tip sticky alone stays False below.
                 if not (before_state == "cad_tip" and after_state == "cad_tip"):
                     return True, "window_chrome_changed"
     if before_fp and after_fp and before_fp != after_fp:
@@ -629,6 +718,9 @@ def watch_sas_effect(
     while time.time() < deadline:
         state, tokens, _n = visible_surface_signature()
         now_fp = desktop_surface_fingerprint() if before_fp else ""
+        flat = desktop_surface_is_flat()
+        if flat and state == "sas_ui":
+            state = "other"
         ok, detail = classify_sas_transition(
             before_state,
             state,
@@ -636,6 +728,7 @@ def watch_sas_effect(
             after_tokens=tokens,
             before_fp=before_fp,
             after_fp=now_fp,
+            after_flat=flat,
         )
         last_state = state
         last_tokens = tokens

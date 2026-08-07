@@ -33,17 +33,43 @@ class TestSoftwareSasPolicy(unittest.TestCase):
             secure_attention_ui_state_from([], ["SomeChrome"]),
             "other",
         )
+        self.assertEqual(
+            secure_attention_ui_state_from([], ["LogonUI"]),
+            "other",
+        )
         self.assertEqual(secure_attention_ui_state_from([], []), "unknown")
+
+    def test_flat_frame_detection(self):
+        from PIL import Image
+        from client_remote_desktop import RemoteDesktopStreamer
+
+        rd = RemoteDesktopStreamer(api_client=None, token_getter=lambda: "")
+        solid = Image.new("RGB", (320, 240), (0, 90, 156))
+        self.assertTrue(rd._is_mostly_flat(solid))
+        self.assertFalse(rd._is_mostly_black(solid))
+        # Wallpaper-like textured image (checker + bright glyphs)
+        noisy = Image.new("RGB", (320, 240), (40, 40, 40))
+        px = noisy.load()
+        for y in range(240):
+            for x in range(320):
+                if (x // 8 + y // 8) % 2:
+                    px[x, y] = (180, 120, 90)
+                if x % 40 == 0 and y % 30 == 0:
+                    px[x, y] = (255, 255, 255)
+        self.assertFalse(rd._is_mostly_flat(noisy))
 
     def test_classify_sas_transition(self):
         from client_rd_winlogon import classify_sas_transition
 
-        ok, _ = classify_sas_transition("cad_tip", "sas_ui")
+        ok, _ = classify_sas_transition("cad_tip", "sas_ui", after_flat=False)
         self.assertTrue(ok)
-        ok, _ = classify_sas_transition("cad_tip", "other")
+        ok, _ = classify_sas_transition("cad_tip", "other", after_flat=False)
         self.assertTrue(ok)
-        ok, _ = classify_sas_transition("cad_tip", "cad_tip")
+        ok, _ = classify_sas_transition("cad_tip", "cad_tip", after_flat=False)
         self.assertFalse(ok)
+        ok, detail = classify_sas_transition("cad_tip", "sas_ui", after_flat=True)
+        self.assertFalse(ok)
+        self.assertIn("flat", detail)
 
 
 class TestRemoteSendSasHonesty(unittest.TestCase):
@@ -143,18 +169,24 @@ class TestRemoteSendSasHonesty(unittest.TestCase):
             "ui_before": "cad_tip",
             "ui_after": "sas_ui",
             "as_user": False,
+            "flat": False,
+            "chrome_detected": True,
+            "frame_variance": 80.0,
             "path": "helper",
         }
         helper.query_ui_state.return_value = {
             "ok": True,
             "ui": "cad_tip",
             "fp": "abc",
+            "flat": False,
+            "chrome_detected": True,
         }
         rd = mock.MagicMock()
         rd._target_session_id = 2
         rd._winlogon_mode = True
         rd._persistent_helper_connected.return_value = True
         rd._session_helper = helper
+        rd.force_winlogon_recapture = mock.MagicMock()
         with mock.patch.object(ex, "_get_remote_desktop", return_value=rd), mock.patch(
             "client_rd_winlogon.ensure_software_sas_generation",
             return_value=(1, "policy_ok"),
@@ -169,6 +201,8 @@ class TestRemoteSendSasHonesty(unittest.TestCase):
                 "ok": True,
                 "ui": "cad_tip",
                 "fp": "abc",
+                "flat": False,
+                "chrome_detected": True,
             }
             out = ex._cmd_remote_send_sas({"prefer": "winlogon"})
         self.assertTrue(out.get("success"))

@@ -287,6 +287,9 @@ class PersistentSessionHelper:
             "ui_before": str(acked.get("ui_before") or ""),
             "ui_after": str(acked.get("ui_after") or ""),
             "as_user": bool(acked.get("as_user")),
+            "flat": bool(acked.get("flat")),
+            "chrome_detected": bool(acked.get("chrome_detected")),
+            "frame_variance": float(acked.get("frame_variance") or 0.0),
             "path": "helper",
         }
 
@@ -320,6 +323,44 @@ class PersistentSessionHelper:
             "ok": bool(acked.get("ok")),
             "ui": str(acked.get("ui") or acked.get("ui_after") or "unknown"),
             "fp": str(acked.get("fp") or ""),
+            "flat": bool(acked.get("flat")),
+            "chrome_detected": bool(acked.get("chrome_detected")),
+            "frame_variance": float(acked.get("frame_variance") or 0.0),
+            "detail": str(acked.get("detail") or ""),
+        }
+
+    def force_desktop_reattach(self, timeout: float = 2.5) -> dict:
+        """C-RD-CHROME-4: ask helper to rebind Winlogon and sample chrome."""
+        channel = self._channel
+        if channel is None:
+            return {"ok": False, "detail": "helper_not_connected"}
+        with self._condition:
+            self._request_id += 1
+            request_id = self._request_id
+            self._pending[request_id] = None
+        try:
+            channel.send("D", {"id": request_id, "action": "reattach"})
+        except Exception as exc:
+            self._error = str(exc)
+            with self._condition:
+                self._pending.pop(request_id, None)
+            return {"ok": False, "detail": str(exc)}
+        deadline = time.monotonic() + max(0.5, float(timeout))
+        with self._condition:
+            while self._pending.get(request_id) is None and self.connected:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._condition.wait(remaining)
+            acked = self._pending.pop(request_id, None)
+        if not isinstance(acked, dict):
+            return {"ok": False, "detail": "reattach_ack_timeout"}
+        return {
+            "ok": bool(acked.get("ok")),
+            "ui": str(acked.get("ui") or acked.get("ui_after") or "unknown"),
+            "flat": bool(acked.get("flat")),
+            "chrome_detected": bool(acked.get("chrome_detected")),
+            "frame_variance": float(acked.get("frame_variance") or 0.0),
             "detail": str(acked.get("detail") or ""),
         }
 
@@ -446,6 +487,7 @@ def run_session_helper(
                     if (
                         img is not None
                         and "+black" not in (method or "")
+                        and "+flat" not in (method or "")
                         and img.width > 0
                         and img.height > 0
                     ):
@@ -463,7 +505,39 @@ def run_session_helper(
                                 "capture_ms": round((captured_mono - started) * 1000.0, 3),
                                 "capture_mono_ms": int(captured_mono * 1000),
                                 "method": method or "gdi",
+                                "flat_frame": False,
+                                "frame_variance": float(
+                                    getattr(rd, "_last_frame_variance", 0.0) or 0.0
+                                ),
+                                "chrome_detected": bool(
+                                    getattr(rd, "_chrome_detected", False)
+                                ),
                             }, rgb)
+                            sent = True
+                    elif img is not None and (
+                        "+flat" in (method or "") or "+black" in (method or "")
+                    ):
+                        # Still emit a tagged JPEG so parent can fail honesty.
+                        jpeg, width, height = rd._grab_jpeg()
+                        if jpeg and width > 0 and height > 0:
+                            captured_mono = time.monotonic()
+                            channel.send("F", {
+                                "format": "jpeg",
+                                "width": width,
+                                "height": height,
+                                "native_width": int(rd._screen_w or width),
+                                "native_height": int(rd._screen_h or height),
+                                "origin_x": int(rd._screen_x),
+                                "origin_y": int(rd._screen_y),
+                                "capture_ms": round((captured_mono - started) * 1000.0, 3),
+                                "capture_mono_ms": int(captured_mono * 1000),
+                                "method": method or rd._capture_method,
+                                "flat_frame": "+flat" in (method or ""),
+                                "frame_variance": float(
+                                    getattr(rd, "_last_frame_variance", 0.0) or 0.0
+                                ),
+                                "chrome_detected": False,
+                            }, jpeg)
                             sent = True
                 if not sent:
                     jpeg, width, height = rd._grab_jpeg()
@@ -480,6 +554,13 @@ def run_session_helper(
                             "capture_ms": round((captured_mono - started) * 1000.0, 3),
                             "capture_mono_ms": int(captured_mono * 1000),
                             "method": rd._capture_method,
+                            "flat_frame": "+flat" in (rd._capture_method or ""),
+                            "frame_variance": float(
+                                getattr(rd, "_last_frame_variance", 0.0) or 0.0
+                            ),
+                            "chrome_detected": bool(
+                                getattr(rd, "_chrome_detected", False)
+                            ),
                         }, jpeg)
             except Exception as exc:
                 try:
@@ -530,26 +611,79 @@ def run_session_helper(
                     from client_rd_winlogon import (
                         attach_console_desktop,
                         desktop_surface_fingerprint,
+                        desktop_surface_is_flat,
                         run_send_sas_on_attached_desktop,
                         visible_surface_signature,
                     )
                     prefer_wl = bool(rd._winlogon_mode)
-                    if action == "ui":
+
+                    def _sample_chrome() -> dict:
+                        rd._desktop_attached = False
                         attach_console_desktop(
                             prefer_winlogon=prefer_wl,
                             strict_winlogon=prefer_wl,
                         )
                         state, _tok, n = visible_surface_signature()
+                        img, method = rd._capture_screen_image()
+                        flat = bool(
+                            "+flat" in (method or "")
+                            or desktop_surface_is_flat()
+                        )
+                        if state == "sas_ui" and flat:
+                            state = "other"
+                        return {
+                            "ui": state,
+                            "flat": flat,
+                            "chrome_detected": bool(
+                                getattr(rd, "_chrome_detected", False) and not flat
+                            ),
+                            "frame_variance": float(
+                                getattr(rd, "_last_frame_variance", 0.0) or 0.0
+                            ),
+                            "method": method or "",
+                            "fp": desktop_surface_fingerprint(),
+                            "detail": f"chrome={n} method={method}",
+                        }
+
+                    if action == "ui":
+                        sample = _sample_chrome()
                         channel.send(
                             "A",
                             {
                                 "id": request_id,
                                 "ok": True,
                                 "action": "ui",
-                                "ui": state,
-                                "ui_after": state,
-                                "fp": desktop_surface_fingerprint(),
-                                "detail": f"chrome={n}",
+                                "ui": sample["ui"],
+                                "ui_after": sample["ui"],
+                                "fp": sample["fp"],
+                                "flat": sample["flat"],
+                                "chrome_detected": sample["chrome_detected"],
+                                "frame_variance": sample["frame_variance"],
+                                "detail": sample["detail"],
+                            },
+                        )
+                    elif action == "reattach":
+                        # C-RD-CHROME-4: rebind + wait briefly for non-flat chrome.
+                        sample = {"ui": "unknown", "flat": True}
+                        for _attempt in range(8):
+                            sample = _sample_chrome()
+                            if not sample["flat"] and sample["ui"] != "unknown":
+                                break
+                            time.sleep(0.15)
+                        channel.send(
+                            "A",
+                            {
+                                "id": request_id,
+                                "ok": not bool(sample.get("flat")),
+                                "action": "reattach",
+                                "ui": sample.get("ui"),
+                                "ui_after": sample.get("ui"),
+                                "flat": bool(sample.get("flat")),
+                                "chrome_detected": bool(sample.get("chrome_detected")),
+                                "frame_variance": float(
+                                    sample.get("frame_variance") or 0.0
+                                ),
+                                "detail": sample.get("detail") or "",
                             },
                         )
                     else:
@@ -558,16 +692,36 @@ def run_session_helper(
                             timeout_sec=2.0,
                             try_as_user=True,
                         )
+                        # C-RD-CHROME-4: after SAS, recapture secure desktop pixels.
+                        sample = {"flat": True, "ui": result.get("ui_after"), "chrome_detected": False}
+                        for _attempt in range(8):
+                            sample = _sample_chrome()
+                            if not sample["flat"]:
+                                break
+                            time.sleep(0.12)
+                        ui_after = str(sample.get("ui") or result.get("ui_after") or "unknown")
+                        flat = bool(sample.get("flat"))
+                        effect = bool(result.get("effect")) and not flat
+                        if flat and ui_after == "sas_ui":
+                            ui_after = "other"
+                            effect = False
+                        if flat:
+                            effect = False
                         channel.send(
                             "A",
                             {
                                 "id": request_id,
                                 "ok": bool(result.get("invoked")),
-                                "effect": bool(result.get("effect")),
+                                "effect": effect,
                                 "detail": str(result.get("detail") or ""),
                                 "ui_before": str(result.get("ui_before") or ""),
-                                "ui_after": str(result.get("ui_after") or ""),
+                                "ui_after": ui_after,
                                 "as_user": bool(result.get("as_user")),
+                                "flat": flat,
+                                "chrome_detected": bool(sample.get("chrome_detected")),
+                                "frame_variance": float(
+                                    sample.get("frame_variance") or 0.0
+                                ),
                                 "action": "sas",
                             },
                         )
@@ -581,6 +735,7 @@ def run_session_helper(
                             "detail": str(exc),
                             "ui_before": "unknown",
                             "ui_after": "unknown",
+                            "flat": True,
                             "action": action or "sas",
                         },
                     )
