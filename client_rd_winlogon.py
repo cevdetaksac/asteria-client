@@ -487,26 +487,25 @@ def secure_attention_ui_state_from(titles: list, classes: list) -> str:
     ``unknown`` only when the desktop yields no enumerable chrome at all
     (Session-0 empty view). Prefer ``other`` over ``unknown`` when windows exist.
 
-    C-RD-CHROME-3: class-alone (LogonUI/AuthUI) is NOT enough for ``sas_ui`` —
-    that requires title/text matching SAS option/password hints. Class-only →
-    ``other`` (or ``cad_tip`` when tip text is present).
+    C-RD-CHROME-3: class-alone (LogonUI/AuthUI) is NOT enough for ``sas_ui``.
+    Tip text wins over SAS title hints when both appear (lock tip still up).
     """
     if not titles and not classes:
         return "unknown"
     joined = " | ".join(t.lower() for t in titles)
     class_joined = " | ".join(c.lower() for c in classes)
-    for hint in _SAS_UI_HINTS:
-        if hint in joined:
-            return "sas_ui"
+    # Tip first — Derin-Web lab: ui_before=sas_ui while tip still visible.
     for hint in _CAD_TIP_HINTS:
         if hint in joined:
             return "cad_tip"
     for hint in _CAD_TIP_CLASS_HINTS:
         if hint in class_joined:
             return "cad_tip"
+    for hint in _SAS_UI_HINTS:
+        if hint in joined:
+            return "sas_ui"
     for hint in _SAS_CLASS_HINTS:
         if hint in class_joined:
-            # LogonUI chrome present but no tip/options title → other, not sas_ui.
             return "other"
     return "other"
 

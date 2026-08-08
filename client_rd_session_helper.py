@@ -160,16 +160,19 @@ class PersistentSessionHelper:
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
         listener.bind(("127.0.0.1", 0))
         listener.listen(1)
-        listener.settimeout(max(0.2, float(timeout)))
+        accept_timeout = max(0.2, float(timeout))
+        listener.settimeout(accept_timeout)
         self._listener = listener
         port = int(listener.getsockname()[1])
         command = self._command_builder(secret.hex(), port, json.dumps(config, separators=(",", ":")))
+        launch_t0 = time.monotonic()
         if not self._launch(self.session_id, command):
             self._error = "CreateProcessAsUser failed"
             self.stop()
             return False
         try:
             raw, address = listener.accept()
+            accept_ms = int((time.monotonic() - launch_t0) * 1000)
             if address[0] not in ("127.0.0.1", "::1"):
                 raw.close()
                 raise ProtocolError("non-loopback helper peer")
@@ -186,7 +189,18 @@ class PersistentSessionHelper:
                 target=self._read_loop, name=f"RDHelperReader-{self.session_id}", daemon=True
             )
             self._reader.start()
+            self._log(
+                f"[REMOTE-DESKTOP] helper hello ok session={self.session_id} "
+                f"accept_ms={accept_ms}"
+            )
             return True
+        except socket.timeout:
+            self._error = (
+                f"helper_accept_timeout after {accept_timeout:.1f}s "
+                f"(spawn→connect never completed)"
+            )
+            self.stop()
+            return False
         except Exception as exc:
             self._error = str(exc)
             self.stop()
@@ -465,6 +479,9 @@ def run_session_helper(
 
     rd = RemoteDesktopStreamer()
     rd._running = True
+    # Already inside the target session process — never spawn nested helpers.
+    rd._in_session_helper = True
+    rd._target_session_id = int(session_id or 0) or None
     # Winlogon / lock UI: stay on named Winlogon desktop (C-RD-CON-4).
     rd._winlogon_mode = bool(winlogon or config.get("winlogon"))
     # WebRTC-first: parent may request raw RGB over loopback (prefer_raw).
@@ -601,8 +618,49 @@ def run_session_helper(
             if kind == "I":
                 request_id = int(header.get("id", 0))
                 event = header.get("event") or {}
-                result = rd.apply_input(event) if isinstance(event, dict) else {"success": False}
-                channel.send("A", {"id": request_id, "ok": bool(result.get("success"))})
+                ok = False
+                detail = ""
+                try:
+                    if isinstance(event, dict):
+                        # C-RD-IN-WL-1: inject on this Winlogon desktop — never
+                        # recurse into apply_input (that tries to spawn another
+                        # helper and never reaches SendInput).
+                        params = rd._normalize_input_envelope(event)
+                        ev = (params.get("event") or "").strip().lower()
+                        if not ev:
+                            detail = "empty_event"
+                        else:
+                            ok = bool(rd._inject_local(ev, params))
+                            if ok:
+                                rd._stats["inputs_applied"] = (
+                                    int(rd._stats.get("inputs_applied") or 0) + 1
+                                )
+                                rd._last_input_event = ev
+                            else:
+                                key_l = str(params.get("key") or "").strip().lower()
+                                if key_l in (
+                                    "ctrl+alt+del",
+                                    "ctrl-alt-del",
+                                    "ctrl+alt+delete",
+                                    "cad",
+                                ):
+                                    detail = "cad_key_ignored"
+                                else:
+                                    detail = f"inject_failed event={ev}"
+                    else:
+                        detail = "event_not_dict"
+                except Exception as exc:
+                    detail = str(exc)
+                    ok = False
+                channel.send(
+                    "A",
+                    {
+                        "id": request_id,
+                        "ok": bool(ok),
+                        "detail": detail,
+                        "action": "input",
+                    },
+                )
                 continue
             if kind == "D":
                 request_id = int(header.get("id", 0))

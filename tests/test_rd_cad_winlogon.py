@@ -21,7 +21,7 @@ class TestSoftwareSasPolicy(unittest.TestCase):
 
         self.assertEqual(
             secure_attention_ui_state_from(
-                ["Press Ctrl+Alt+Delete to unlock"], []
+                ["Press Ctrl+Alt+Delete to unlock", "Sign in"], []
             ),
             "cad_tip",
         )

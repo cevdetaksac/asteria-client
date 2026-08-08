@@ -64,7 +64,12 @@ MIN_GOOD_JPEG_BYTES = 5 * 1024        # healthy 1280q35 frame is usually ≥5KB
 CAPTURE_FAIL_SECONDS = 10.0           # no frames in this window → fail stream
 WINLOGON_BLACK_FAIL_SECONDS = 2.0     # C-RD-P0-WL-4: unbroken black → fail
 WINLOGON_FLAT_FAIL_SECONDS = 3.0      # C-RD-CHROME-2: unbroken flat → fail
-PROBE_TIMEOUT_SEC = 12.0              # SYSTEM→user CreateProcessAsUser needs cold-start room
+PROBE_TIMEOUT_SEC = 12.0              # legacy one-shot cold-start room
+# Logon/Winlogon start budgets (lab: 23s jpeg=0B was accept 8–12s + oneshot 14s).
+WINLOGON_HELPER_ACCEPT_SEC = 4.0      # fail-fast if helper never connects
+WINLOGON_HELPER_FRAME_SEC = 3.0       # first non-flat chrome frame
+WINLOGON_HELPER_RETRY = 1             # one re-spawn only
+WINLOGON_ONESHOT_WAIT_SEC = 3.0       # legacy oneshot file wait (was 14s)
 
 # Absolute pointer moves (normalized 0..1). Subject to the move budget only.
 ABS_MOVE_EVENTS = frozenset({"move", "mousemove"})
@@ -200,10 +205,14 @@ class RemoteDesktopStreamer:
         self._last_frame_variance = 0.0
         self._last_frame_bright_ratio = 0.0
         self._chrome_detected = False
+        self._last_helper_token_source = ""
+        self._last_helper_fail_phase = ""
+        self._last_helper_fail_detail = ""
         self._last_stream_error = ""
         self._capture_method = "none"
         self._stream_started_at = 0.0
         self._use_user_helper = False  # Session 0 / other session → CreateProcessAsUser helper
+        self._in_session_helper = False  # True inside --rd-session-helper process
         self._session_helper = None     # persistent authenticated loopback bridge
         self._helper_frame_id = 0
         self._helper_frame_misses = 0
@@ -454,10 +463,14 @@ class RemoteDesktopStreamer:
             self._last_frame_variance = 0.0
             self._last_frame_bright_ratio = 0.0
             self._chrome_detected = False
+            self._last_helper_token_source = ""
+            self._last_helper_fail_phase = ""
+            self._last_helper_fail_detail = ""
             self._last_stream_error = ""
             self._last_good_jpeg = None
             self._last_good_wh = (0, 0)
             self._use_user_helper = False
+            self._in_session_helper = False
             self._helper_frame_id = 0
             self._helper_frame_misses = 0
             self._media_mode_applied = False
@@ -662,90 +675,178 @@ class RemoteDesktopStreamer:
             helper_err = ""
             if need_helper:
                 t_helper = time.time()
-                persistent_started = self._start_persistent_helper()
-                # C-RD-S0-6: wait for first real frame ≥1500B (or ≥2s black → retry).
-                probe_deadline = t_helper + max(2.5, min(PROBE_TIMEOUT_SEC, 8.0))
+                self._last_helper_fail_phase = ""
+                self._last_helper_fail_detail = ""
                 blackish = False
                 flattish = False
-                if persistent_started:
-                    while time.time() < probe_deadline:
-                        jpeg, w, h = self._grab_via_persistent_helper(0.45)
+                persistent_started = False
+                accept_timeout = (
+                    WINLOGON_HELPER_ACCEPT_SEC
+                    if self._winlogon_mode
+                    else PROBE_TIMEOUT_SEC
+                )
+                frame_budget = (
+                    WINLOGON_HELPER_FRAME_SEC
+                    if self._winlogon_mode
+                    else max(2.5, min(PROBE_TIMEOUT_SEC, 8.0))
+                )
+                retries = WINLOGON_HELPER_RETRY if self._winlogon_mode else 0
+
+                def _probe_persistent_frames(deadline: float) -> tuple:
+                    nonlocal blackish, flattish
+                    local_jpeg, local_w, local_h = None, 0, 0
+                    while time.time() < deadline:
+                        local_jpeg, local_w, local_h = self._grab_via_persistent_helper(
+                            0.35
+                        )
                         if (
-                            (not jpeg or len(jpeg) < MIN_JPEG_BYTES)
+                            (not local_jpeg or len(local_jpeg) < MIN_JPEG_BYTES)
                             and self._last_helper_raw
                         ):
-                            jpeg, w, h = self._encode_helper_raw_jpeg()
+                            local_jpeg, local_w, local_h = self._encode_helper_raw_jpeg()
                         blackish = "+black" in (self._capture_method or "")
                         flattish = "+flat" in (self._capture_method or "")
                         if (
-                            jpeg
-                            and w > 0
-                            and h > 0
-                            and len(jpeg) >= MIN_JPEG_BYTES
+                            local_jpeg
+                            and local_w > 0
+                            and local_h > 0
+                            and len(local_jpeg) >= MIN_JPEG_BYTES
                             and not blackish
                             and not flattish
                         ):
-                            break
-                        time.sleep(0.12)
-                took = time.time() - t_helper
-                if (
-                    not persistent_started
-                    or not jpeg
-                    or w <= 0
-                    or h <= 0
-                    or len(jpeg) < MIN_JPEG_BYTES
-                    or blackish
-                    or flattish
-                ):
-                    self._stop_persistent_helper()
-                    log(
-                        "[REMOTE-DESKTOP] persistent helper failed start/probe; "
-                        "falling back to legacy one-shot capture"
+                            return local_jpeg, local_w, local_h
+                        time.sleep(0.08)
+                    return local_jpeg, local_w, local_h
+
+                for attempt in range(retries + 1):
+                    if attempt:
+                        self._stop_persistent_helper()
+                        time.sleep(0.35)
+                        log(
+                            f"[REMOTE-DESKTOP] winlogon helper retry "
+                            f"{attempt}/{retries} token={self._last_helper_token_source}"
+                        )
+                    persistent_started = self._start_persistent_helper(
+                        accept_timeout=accept_timeout
                     )
-                    oneshot_t0 = time.time()
-                    jpeg, w, h = self._grab_via_user_helper()
+                    if not persistent_started:
+                        phase = self._last_helper_fail_phase or "spawn"
+                        log(
+                            f"[REMOTE-DESKTOP] persistent helper start failed "
+                            f"phase={phase} token={self._last_helper_token_source} "
+                            f"detail={self._last_helper_fail_detail}"
+                        )
+                        continue
+                    jpeg, w, h = _probe_persistent_frames(time.time() + frame_budget)
                     if (
-                        (not jpeg or len(jpeg) < MIN_JPEG_BYTES)
-                        and self._last_helper_raw
+                        jpeg
+                        and w > 0
+                        and h > 0
+                        and len(jpeg) >= MIN_JPEG_BYTES
+                        and not blackish
+                        and not flattish
                     ):
-                        jpeg, w, h = self._encode_helper_raw_jpeg()
-                    took = time.time() - t_helper
-                    # Instant empty = CreateProcessAsUser never produced a helper (C-RD-S0-5).
-                    if (
-                        (not jpeg or len(jpeg) < MIN_JPEG_BYTES)
-                        and (time.time() - oneshot_t0) < 0.35
-                        and took < 0.85
-                    ):
-                        persistent_started = False
-                log(f"[REMOTE-DESKTOP] helper probe took {took:.1f}s "
-                    f"jpeg={0 if not jpeg else len(jpeg)}B {w}x{h}")
+                        break
+                    self._last_helper_fail_phase = (
+                        self._last_helper_fail_phase
+                        or ("flat" if flattish else "no_frame")
+                    )
+                    self._last_helper_fail_detail = (
+                        f"method={self._capture_method} "
+                        f"jpeg={0 if not jpeg else len(jpeg)}B "
+                        f"black={blackish} flat={flattish}"
+                    )
+
+                took = time.time() - t_helper
+                good = bool(
+                    jpeg
+                    and w > 0
+                    and h > 0
+                    and len(jpeg) >= MIN_JPEG_BYTES
+                    and not blackish
+                    and not flattish
+                )
+                if not good:
+                    # Short legacy oneshot only when persistent never connected —
+                    # avoid stacking another 14s wait after accept_timeout.
+                    if not persistent_started and self._winlogon_mode:
+                        log(
+                            "[REMOTE-DESKTOP] persistent helper never connected; "
+                            f"short oneshot ≤{WINLOGON_ONESHOT_WAIT_SEC:.0f}s "
+                            f"(token={self._last_helper_token_source})"
+                        )
+                        oneshot_t0 = time.time()
+                        jpeg, w, h = self._grab_via_user_helper(
+                            wait_sec=WINLOGON_ONESHOT_WAIT_SEC
+                        )
+                        took = time.time() - t_helper
+                        if (
+                            (not jpeg or len(jpeg) < MIN_JPEG_BYTES)
+                            and (time.time() - oneshot_t0) < 0.35
+                        ):
+                            self._last_helper_fail_phase = (
+                                self._last_helper_fail_phase or "spawn"
+                            )
+                    elif not self._winlogon_mode:
+                        self._stop_persistent_helper()
+                        log(
+                            "[REMOTE-DESKTOP] persistent helper failed start/probe; "
+                            "falling back to legacy one-shot capture"
+                        )
+                        jpeg, w, h = self._grab_via_user_helper()
+                        took = time.time() - t_helper
+                    else:
+                        self._stop_persistent_helper()
+
+                took = time.time() - t_helper
+                log(
+                    f"[REMOTE-DESKTOP] helper probe took {took:.1f}s "
+                    f"jpeg={0 if not jpeg else len(jpeg)}B {w}x{h} "
+                    f"token={self._last_helper_token_source or '?'} "
+                    f"phase={self._last_helper_fail_phase or 'ok'} "
+                    f"method={self._capture_method}"
+                )
                 if not jpeg or w <= 0 or h <= 0 or len(jpeg) < MIN_JPEG_BYTES:
                     helper_err = (
                         f"user-helper failed for session={self._target_session_id} "
-                        f"(jpeg={0 if not jpeg else len(jpeg)}B, {took:.1f}s). "
+                        f"(jpeg={0 if not jpeg else len(jpeg)}B, {took:.1f}s, "
+                        f"token={self._last_helper_token_source or 'none'}, "
+                        f"phase={self._last_helper_fail_phase or 'unknown'}). "
                         "Agent is Session 0 — capture requires WTSQueryUserToken/"
                         "CreateProcessAsUser (or Winlogon/LogonUI token) into the "
                         "console session on winsta0\\Winlogon."
                     )
-                    # C-RD-S0-5: jpeg≈0B in ~0s is spawn fail, not slow GDI black.
-                    spawn_fail = took < 0.85 and (
-                        not jpeg or len(jpeg) < MIN_JPEG_BYTES
-                    )
-                    if self._winlogon_mode and spawn_fail:
+                    phase = (self._last_helper_fail_phase or "").lower()
+                    # Fail-fast reason codes (lab 4.9.87 mislabeled 23s as black).
+                    if phase in ("spawn", "accept", "token", "create"):
                         err = "SESSION0_HELPER_SPAWN_FAILED"
                         msg = (
-                            "Session-0 helper spawn/attach failed "
+                            "Session-0 helper spawn/accept failed "
                             f"(session={self._target_session_id}, "
                             f"desktop={self._helper_desktop()}, "
+                            f"token={self._last_helper_token_source or 'none'}, "
+                            f"phase={phase}, "
                             f"jpeg={0 if not jpeg else len(jpeg)}B, {took:.1f}s). "
                             f"{helper_err}"
+                        )
+                    elif phase in ("no_frame",) or took >= (
+                        accept_timeout + frame_budget - 0.5
+                    ):
+                        err = "SESSION0_HELPER_NO_FRAME"
+                        msg = (
+                            "Winlogon helper connected but produced no JPEG "
+                            f"(session={self._target_session_id}, "
+                            f"token={self._last_helper_token_source or 'none'}, "
+                            f"{took:.1f}s). {helper_err}"
                         )
                     elif self._winlogon_mode:
                         err = "winlogon_capture_black"
                         msg = (
                             "Winlogon helper failed to capture logon UI pixels "
                             f"(session={self._target_session_id}, "
-                            f"desktop={self._helper_desktop()}). {helper_err}"
+                            f"desktop={self._helper_desktop()}, "
+                            f"token={self._last_helper_token_source or 'none'}). "
+                            f"{helper_err}"
                         )
                     else:
                         err = "CAPTURE_NO_DESKTOP"
@@ -762,49 +863,30 @@ class RemoteDesktopStreamer:
                         "message": msg,
                         "data": self.get_status(),
                     }
-                # C-RD-S0-6 / C-RD-CHROME-2: one retry if only black/flat frames.
+                # Connected but only black/flat after retries.
                 if (blackish or flattish) and self._winlogon_mode:
-                    self._stop_persistent_helper()
-                    time.sleep(0.25)
-                    if self._start_persistent_helper():
-                        jpeg2, w2, h2 = self._grab_via_persistent_helper(1.5)
-                        if (
-                            (not jpeg2 or len(jpeg2) < MIN_JPEG_BYTES)
-                            and self._last_helper_raw
-                        ):
-                            jpeg2, w2, h2 = self._encode_helper_raw_jpeg()
-                        method2 = self._capture_method or ""
-                        if (
-                            jpeg2
-                            and len(jpeg2) >= MIN_JPEG_BYTES
-                            and "+black" not in method2
-                            and "+flat" not in method2
-                        ):
-                            jpeg, w, h = jpeg2, w2, h2
-                            blackish = False
-                            flattish = False
-                    if blackish or flattish or not jpeg or len(jpeg) < MIN_JPEG_BYTES:
-                        err = (
-                            "winlogon_capture_flat"
-                            if flattish and not blackish
-                            else "winlogon_capture_black"
-                        )
-                        msg = (
-                            "Winlogon/GDI capture returned unbroken "
-                            f"{'flat/blue' if err.endswith('flat') else 'black'} "
-                            f"after retry (method={self._capture_method})"
-                        )
-                        self._capture_method = self._capture_method or "none"
-                        log(f"[REMOTE-DESKTOP] ✖ {err}: {msg}")
-                        self._running = False
-                        self._transport = "idle"
-                        self.emit_stream_progress("failed", msg, error=err, force=True)
-                        return {
-                            "success": False,
-                            "error": err,
-                            "message": msg,
-                            "data": self.get_status(),
-                        }
+                    err = (
+                        "winlogon_capture_flat"
+                        if flattish and not blackish
+                        else "winlogon_capture_black"
+                    )
+                    msg = (
+                        "Winlogon/GDI capture returned unbroken "
+                        f"{'flat/blue' if err.endswith('flat') else 'black'} "
+                        f"after retry (method={self._capture_method}, "
+                        f"token={self._last_helper_token_source or 'none'})"
+                    )
+                    self._capture_method = self._capture_method or "none"
+                    log(f"[REMOTE-DESKTOP] ✖ {err}: {msg}")
+                    self._running = False
+                    self._transport = "idle"
+                    self.emit_stream_progress("failed", msg, error=err, force=True)
+                    return {
+                        "success": False,
+                        "error": err,
+                        "message": msg,
+                        "data": self.get_status(),
+                    }
             else:
                 # Capture thread-less probe: attach input desktop first (RDP/elevated)
                 self._attach_input_desktop()
@@ -1063,6 +1145,8 @@ class RemoteDesktopStreamer:
             "frame_variance": float(self._last_frame_variance or 0.0),
             "bright_ratio": float(self._last_frame_bright_ratio or 0.0),
             "chrome_detected": bool(self._chrome_detected),
+            "helper_token": self._last_helper_token_source or "",
+            "helper_fail_phase": self._last_helper_fail_phase or "",
             "desktop": self._desktop_name or "",
             "winlogon_mode": bool(self._winlogon_mode),
             "inputs_applied": int(self._stats.get("inputs_applied") or 0),
@@ -1125,6 +1209,21 @@ class RemoteDesktopStreamer:
                     f"text_len={len(str(params.get('text') or ''))} "
                     f"session={self._target_session_id}"
                 )
+            # C-RD-IN-WL-1: in-session helper process injects locally (never nest).
+            if getattr(self, "_in_session_helper", False):
+                ok = self._inject_local(event, params)
+                if ok:
+                    self._stats["inputs_applied"] += 1
+                    self._last_input_event = event_name
+                    return result({"success": True, "message": f"input {event} applied"})
+                key_l = str(params.get("key") or "").strip().lower()
+                if key_l in ("ctrl+alt+del", "ctrl-alt-del", "ctrl+alt+delete", "cad"):
+                    return result({
+                        "success": False,
+                        "error": "cad_key_ignored",
+                        "message": "use remote_send_sas for Secure Attention Sequence",
+                    })
+                return result({"success": False, "error": f"input {event} failed"})
             # C-RD-IN-WL-1: Winlogon stream inject must use the same helper as capture.
             if self._winlogon_mode and not self._persistent_helper_connected():
                 if not self._start_persistent_helper():
@@ -1139,7 +1238,12 @@ class RemoteDesktopStreamer:
                     self._session_helper.send_input(
                         dict(params),
                         wait=not move_like,
-                        timeout=CRIT_ACK_TIMEOUT,
+                        # Winlogon inject + attach can exceed 80ms critical ACK.
+                        timeout=(
+                            max(float(CRIT_ACK_TIMEOUT), 0.45)
+                            if self._winlogon_mode and not move_like
+                            else CRIT_ACK_TIMEOUT
+                        ),
                     )
                 )
                 if ok:
@@ -2370,16 +2474,31 @@ class RemoteDesktopStreamer:
             self._stats["chrome_detected"] = False
             return
         _mean, var, bright = self._frame_luma_stats(img)
+        # Wallpaper often has high variance but glyph bright_ratio≈0. Expose a
+        # content/spread ratio so cloud "degraded" banners don't fire on healthy
+        # lock wallpaper (C-RD-CHROME-5).
+        try:
+            small = img.resize((64, 36)).convert("L")
+            data = list(small.getdata())
+            n = max(1, len(data))
+            spread = float(sum(1 for x in data if abs(x - _mean) >= 8)) / n
+        except Exception:
+            spread = 0.0
+        report_bright = max(float(bright), float(spread) if var >= FLAT_VARIANCE_THRESHOLD else 0.0)
         self._last_frame_variance = float(var)
-        self._last_frame_bright_ratio = float(bright)
+        self._last_frame_bright_ratio = float(report_bright)
         chrome = bool(
             "+black" not in (method or "")
             and "+flat" not in (method or "")
-            and var >= FLAT_VARIANCE_THRESHOLD
-        ) or bool(bright >= FLAT_BRIGHT_RATIO_MAX and "+black" not in (method or ""))
+            and (
+                var >= FLAT_VARIANCE_THRESHOLD
+                or bright >= FLAT_BRIGHT_RATIO_MAX
+                or spread >= 0.08
+            )
+        )
         self._chrome_detected = chrome
         self._stats["frame_variance"] = float(var)
-        self._stats["bright_ratio"] = float(bright)
+        self._stats["bright_ratio"] = float(report_bright)
         self._stats["chrome_detected"] = bool(chrome)
 
     def _grab_printwindow_chrome(self):
@@ -2884,22 +3003,43 @@ class RemoteDesktopStreamer:
             return r"winsta0\Winlogon"
         return r"winsta0\default"
 
-    def _start_persistent_helper(self) -> bool:
+    def _start_persistent_helper(self, accept_timeout: Optional[float] = None) -> bool:
         target = self._target_session_id
         if not target:
+            self._last_helper_fail_phase = "token"
+            self._last_helper_fail_detail = "no_target_session"
             return False
         if self._persistent_helper_connected():
             return True
         self._stop_persistent_helper()
+        self._last_helper_token_source = ""
+        self._last_helper_fail_phase = ""
+        self._last_helper_fail_detail = ""
         try:
             from client_rd_session_helper import PersistentSessionHelper
 
             desktop = self._helper_desktop()
+            timeout = float(
+                accept_timeout
+                if accept_timeout is not None
+                else PROBE_TIMEOUT_SEC
+            )
+
+            def _launch(sid, cmd):
+                ok = self._launch_in_session(
+                    sid, cmd, wait=False, desktop=desktop
+                )
+                if not ok and not self._last_helper_fail_phase:
+                    self._last_helper_fail_phase = "spawn"
+                    self._last_helper_fail_detail = (
+                        f"CreateProcessAsUser failed "
+                        f"token={self._last_helper_token_source or 'none'}"
+                    )
+                return ok
+
             helper = PersistentSessionHelper(
                 int(target),
-                launch=lambda sid, cmd: self._launch_in_session(
-                    sid, cmd, wait=False, desktop=desktop
-                ),
+                launch=_launch,
                 command_builder=self._helper_command,
                 log=log,
             )
@@ -2916,13 +3056,27 @@ class RemoteDesktopStreamer:
                 config["fps"] = self._media_fps
                 config["quality"] = self._media_quality
                 config["prefer_raw"] = True
-            if not helper.start(config, timeout=PROBE_TIMEOUT_SEC):
-                log(f"[REMOTE-DESKTOP] persistent helper start failed: {helper.error}")
+            if not helper.start(config, timeout=timeout):
+                err = str(helper.error or "helper start failed")
+                self._last_helper_fail_detail = err
+                low = err.lower()
+                if "accept" in low or "timed out" in low or "timeout" in low:
+                    self._last_helper_fail_phase = "accept"
+                elif "createprocess" in low or "launch" in low:
+                    self._last_helper_fail_phase = "spawn"
+                elif not self._last_helper_fail_phase:
+                    self._last_helper_fail_phase = "spawn"
+                log(
+                    f"[REMOTE-DESKTOP] persistent helper start failed: {err} "
+                    f"phase={self._last_helper_fail_phase} "
+                    f"token={self._last_helper_token_source or 'none'}"
+                )
                 helper.stop()
                 return False
             self._session_helper = helper
             self._helper_frame_id = 0
             self._helper_frame_misses = 0
+            self._last_helper_fail_phase = ""
             method = (
                 "persistent-winlogon-helper"
                 if self._winlogon_mode
@@ -2932,11 +3086,14 @@ class RemoteDesktopStreamer:
             self._stats["capture_method"] = self._capture_method
             log(
                 f"[REMOTE-DESKTOP] persistent helper connected session={target} "
-                f"desktop={desktop}"
+                f"desktop={desktop} token={self._last_helper_token_source or '?'} "
+                f"accept≤{timeout:.1f}s"
             )
             return True
         except Exception as e:
             log(f"[REMOTE-DESKTOP] persistent helper error: {e}")
+            self._last_helper_fail_phase = "spawn"
+            self._last_helper_fail_detail = str(e)
             self._stop_persistent_helper()
             return False
 
@@ -3041,7 +3198,9 @@ class RemoteDesktopStreamer:
             except Exception:
                 pass
 
-    def _grab_via_user_helper(self) -> Tuple[Optional[bytes], int, int]:
+    def _grab_via_user_helper(
+        self, wait_sec: Optional[float] = None
+    ) -> Tuple[Optional[bytes], int, int]:
         """Capture via CreateProcessAsUser into the target WTS session.
 
         Used when agent runs in Session 0 or a different session than the
@@ -3066,6 +3225,7 @@ class RemoteDesktopStreamer:
                 target = csid if csid not in (None, 0, 0xFFFFFFFF) else None
         if not target:
             log("[REMOTE-DESKTOP] No interactive session for helper capture")
+            self._last_helper_fail_phase = "token"
             return None, 0, 0
 
         # Already in the requested session — caller should use in-process grab
@@ -3094,17 +3254,30 @@ class RemoteDesktopStreamer:
             log(
                 f"[REMOTE-DESKTOP] helper launch failed for session={target} "
                 f"desktop={self._helper_desktop()} "
+                f"token={self._last_helper_token_source or 'none'} "
                 "(no Session-0 fallback — would capture black)"
             )
+            if not self._last_helper_fail_phase:
+                self._last_helper_fail_phase = "spawn"
             return None, 0, 0
 
-        deadline = time.time() + PROBE_TIMEOUT_SEC + 2
+        wait_for = float(
+            wait_sec
+            if wait_sec is not None
+            else (PROBE_TIMEOUT_SEC + 2)
+        )
+        deadline = time.time() + max(0.5, wait_for)
         while time.time() < deadline:
             if os.path.isfile(out_path) and os.path.getsize(out_path) >= MIN_JPEG_BYTES:
                 break
-            time.sleep(0.15)
+            time.sleep(0.12)
         else:
-            log("[REMOTE-DESKTOP] helper capture timed out (no JPEG file)")
+            log(
+                f"[REMOTE-DESKTOP] helper capture timed out "
+                f"(no JPEG file ≤{wait_for:.1f}s, "
+                f"token={self._last_helper_token_source or 'none'})"
+            )
+            self._last_helper_fail_phase = self._last_helper_fail_phase or "no_frame"
             return None, 0, 0
 
         try:
@@ -3127,7 +3300,10 @@ class RemoteDesktopStreamer:
             self._use_user_helper = True
             self._screen_w, self._screen_h = w, h
             self._capture_w, self._capture_h = w, h
-            log(f"[REMOTE-DESKTOP] helper capture ok — {w}x{h} {len(data)}B session={target}")
+            log(
+                f"[REMOTE-DESKTOP] helper capture ok — {w}x{h} {len(data)}B "
+                f"session={target} token={self._last_helper_token_source or '?'}"
+            )
             return data, w, h
         except Exception as e:
             log(f"[REMOTE-DESKTOP] helper read failed: {e}")
@@ -3196,7 +3372,10 @@ class RemoteDesktopStreamer:
             kernel = ctypes.windll.kernel32
 
             h_token, token_src = self._open_session_token(int(session_id))
+            self._last_helper_token_source = str(token_src or "")
             if not h_token:
+                self._last_helper_fail_phase = "token"
+                self._last_helper_fail_detail = str(token_src or "no_token")
                 log(
                     f"[REMOTE-DESKTOP] no interactive token for session={session_id} "
                     f"({token_src})"
@@ -3264,6 +3443,8 @@ class RemoteDesktopStreamer:
             last_err = int(kernel.GetLastError() or 0)
             kernel.CloseHandle(h_token)
             if not ok:
+                self._last_helper_fail_phase = "create"
+                self._last_helper_fail_detail = f"CreateProcessAsUser err={last_err}"
                 log(
                     f"[REMOTE-DESKTOP] CreateProcessAsUser failed "
                     f"err={last_err} desktop={desk} token={token_src}"
@@ -3331,10 +3512,30 @@ class RemoteDesktopStreamer:
         self._q_put_text(json.dumps(payload, separators=(",", ":")))
 
     def _on_media_fallback(self, error: str) -> None:
+        prev = self._transport
+        ice = ""
+        try:
+            snap = self._media.status() if hasattr(self._media, "status") else {}
+            if isinstance(snap, dict):
+                ice = str(snap.get("ice_state") or "")
+        except Exception:
+            ice = ""
         self._media_session_id = ""
         if self._transport == "webrtc":
             self._transport = "websocket" if self._ws_ok else "http"
-        log(f"[REMOTE-DESKTOP] WebRTC fallback to JPEG: {str(error)[:160]}")
+        log(
+            f"[REMOTE-DESKTOP] WebRTC fallback to JPEG: {str(error)[:160]} "
+            f"(prev={prev} ice={ice or '?'} media_sid_cleared=1)"
+        )
+        try:
+            self.emit_stream_progress(
+                "webrtc",
+                f"WebRTC failed → JPEG-WS ({str(error)[:80]})",
+                error="WEBRTC_FALLBACK",
+                force=True,
+            )
+        except Exception:
+            pass
 
     def _ingest_data_channel_input(self, envelope: dict):
         """WebRTC data channel and WS share the same input-v2 validator."""
@@ -3352,32 +3553,57 @@ class RemoteDesktopStreamer:
             }.get(t, "")
         stream_id = str(message.get("stream_id") or "")
         session_id = str(message.get("session_id") or "")
+        has_ice_servers = "ice_servers" in (message or {})
+        log(
+            f"[REMOTE-DESKTOP] WebRTC signal action={action or '?'} "
+            f"stream_match={bool(stream_id and stream_id == self._stream_id)} "
+            f"has_session={bool(session_id)} ice_servers={has_ice_servers} "
+            f"media_sid={'set' if self._media_session_id else 'empty'}"
+        )
         if int(message.get("protocol") or 0) != 1:
+            log("[REMOTE-DESKTOP] WebRTC reject: unsupported signaling protocol")
             return {"accepted": False, "error": "unsupported signaling protocol"}
         if not self._running or not self._stream_id:
+            log("[REMOTE-DESKTOP] WebRTC reject: stream not active")
             return {"accepted": False, "error": "stream not active"}
         if not stream_id or stream_id != self._stream_id:
+            log("[REMOTE-DESKTOP] WebRTC reject: stale or mismatched stream_id")
             return {"accepted": False, "error": "stale or mismatched stream_id"}
         if not session_id:
+            log("[REMOTE-DESKTOP] WebRTC reject: missing session_id")
             return {"accepted": False, "error": "missing session_id"}
         if self._media_session_id and session_id != self._media_session_id:
+            log("[REMOTE-DESKTOP] WebRTC reject: mismatched media session_id")
             return {"accepted": False, "error": "stale or mismatched session_id"}
         if action not in ("offer", "answer", "ice"):
+            log(f"[REMOTE-DESKTOP] WebRTC reject: unsupported action={action}")
             return {"accepted": False, "error": "unsupported signaling action"}
         if not self._media.capabilities().get("webrtc"):
+            log("[REMOTE-DESKTOP] WebRTC reject: runtime unavailable")
             return {"accepted": False, "error": "webrtc runtime unavailable"}
 
         establishing = not self._media_session_id and action == "offer"
         if not self._media_session_id and not establishing:
+            log("[REMOTE-DESKTOP] WebRTC reject: offer required before signal")
             return {"accepted": False, "error": "offer required before signal"}
         if establishing:
             self._media_session_id = session_id
+            log(
+                f"[REMOTE-DESKTOP] WebRTC offer accepted → establishing "
+                f"session_id={session_id[:12]}…"
+            )
         normalized = dict(message)
         normalized["action"] = action
         try:
             result = self._media.handle_signal(normalized)
         except Exception as exc:
             result = {"accepted": False, "error": str(exc)}
+            log(f"[REMOTE-DESKTOP] WebRTC handle_signal raised: {exc}")
+        if not result.get("accepted"):
+            log(
+                f"[REMOTE-DESKTOP] WebRTC signal not accepted "
+                f"action={action} err={result.get('error') or result.get('reason')}"
+            )
         if not result.get("accepted") and establishing:
             self._media_session_id = ""
         return result

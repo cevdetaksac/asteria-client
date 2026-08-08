@@ -310,5 +310,51 @@ class TestStuckButtonRelease(unittest.TestCase):
         self.assertNotIn("left", rd._pressed_buttons)
 
 
+class TestWinlogonHelperInput(unittest.TestCase):
+    def test_in_session_helper_injects_locally_not_nested(self):
+        """Helper process must SendInput locally — never spawn another helper."""
+        rd = _make()
+        rd._winlogon_mode = True
+        rd._in_session_helper = True
+        rd._use_user_helper = False
+        rd._session_helper = None
+        calls = []
+        rd._inject_local = lambda ev, p: calls.append((ev, p.get("text"))) or True
+        rd._start_persistent_helper = lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("must not spawn nested helper")
+        )
+        out = rd.apply_input({"event": "type_text", "text": "abc"})
+        self.assertTrue(out.get("success"))
+        self.assertEqual(calls, [("type_text", "abc")])
+        self.assertEqual(rd._stats["inputs_applied"], 1)
+        self.assertEqual(rd._last_input_event, "type_text")
+
+    def test_parent_winlogon_forwards_to_helper(self):
+        rd = _make()
+        rd._winlogon_mode = True
+        rd._in_session_helper = False
+        helper = FakeMailbox()
+        rd._session_helper = helper
+        rd._persistent_helper_connected = lambda: True
+        out = rd.apply_input({"protocol": 2, "input": {"event": "type_text", "text": "x"}})
+        self.assertTrue(out.get("success"))
+        self.assertEqual(len(helper.events), 1)
+        forwarded, waited = helper.events[0]
+        self.assertTrue(waited)
+        # Parent forwards normalized-or-raw envelope; either must carry type_text.
+        blob = str(forwarded)
+        self.assertIn("type_text", blob)
+
+    def test_protocol2_type_text_normalized(self):
+        from client_remote_desktop import RemoteDesktopStreamer
+
+        p = RemoteDesktopStreamer._normalize_input_envelope({
+            "protocol": 2,
+            "input": {"event": "type_text", "text": "hi"},
+        })
+        self.assertEqual(p.get("event"), "type_text")
+        self.assertEqual(p.get("text"), "hi")
+
+
 if __name__ == "__main__":
     unittest.main()

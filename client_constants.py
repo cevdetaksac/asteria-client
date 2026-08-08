@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.87"  # C-RD-CHROME: Logon/SAS pixels not solid blue; flat_frame honesty
+VERSION = "4.9.88"  # fail-fast Logon Start + Winlogon type_text/key inject via helper SendInput
 
 
 
