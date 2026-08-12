@@ -686,32 +686,42 @@ def run_session_helper(
                     prefer_wl = bool(rd._winlogon_mode)
 
                     def _sample_chrome() -> dict:
-                        rd._desktop_attached = False
-                        attach_console_desktop(
-                            prefer_winlogon=prefer_wl,
-                            strict_winlogon=prefer_wl,
-                        )
-                        state, _tok, n = visible_surface_signature()
-                        img, method = rd._capture_screen_image()
-                        flat = bool(
-                            "+flat" in (method or "")
-                            or desktop_surface_is_flat()
-                        )
-                        if state == "sas_ui" and flat:
-                            state = "other"
-                        return {
-                            "ui": state,
-                            "flat": flat,
-                            "chrome_detected": bool(
-                                getattr(rd, "_chrome_detected", False) and not flat
-                            ),
-                            "frame_variance": float(
-                                getattr(rd, "_last_frame_variance", 0.0) or 0.0
-                            ),
-                            "method": method or "",
-                            "fp": desktop_surface_fingerprint(),
-                            "detail": f"chrome={n} method={method}",
-                        }
+                        # Attach on THIS (command) thread for UI/HWND sample only.
+                        # Always invalidate afterward so the capture thread rebinds
+                        # via SetThreadDesktop (per-thread; 4.9.89 gdi+flat).
+                        try:
+                            rd._invalidate_desktop_bind()
+                            attach_console_desktop(
+                                prefer_winlogon=prefer_wl,
+                                strict_winlogon=prefer_wl,
+                            )
+                            state, _tok, n = visible_surface_signature()
+                            img, method = rd._capture_screen_image()
+                            flat = bool(
+                                "+flat" in (method or "")
+                                or desktop_surface_is_flat()
+                            )
+                            if state == "sas_ui" and flat:
+                                state = "other"
+                            return {
+                                "ui": state,
+                                "flat": flat,
+                                "chrome_detected": bool(
+                                    getattr(rd, "_chrome_detected", False) and not flat
+                                ),
+                                "frame_variance": float(
+                                    getattr(rd, "_last_frame_variance", 0.0) or 0.0
+                                ),
+                                "method": method or "",
+                                "fp": desktop_surface_fingerprint(),
+                                "hwnd": int(n),
+                                "detail": (
+                                    f"chrome={n} method={method} "
+                                    f"desk={getattr(rd, '_desktop_name', '') or '?'}"
+                                ),
+                            }
+                        finally:
+                            rd._invalidate_desktop_bind()
 
                     if action == "ui":
                         sample = _sample_chrome()
@@ -728,30 +738,24 @@ def run_session_helper(
                                 "chrome_detected": sample["chrome_detected"],
                                 "frame_variance": sample["frame_variance"],
                                 "detail": sample["detail"],
+                                "hwnd": sample.get("hwnd", 0),
                             },
                         )
                     elif action == "reattach":
-                        # C-RD-CHROME-4: rebind + wait briefly for non-flat chrome.
-                        sample = {"ui": "unknown", "flat": True}
-                        for _attempt in range(8):
-                            sample = _sample_chrome()
-                            if not sample["flat"] and sample["ui"] != "unknown":
-                                break
-                            time.sleep(0.15)
+                        # Invalidate only — do not SetThreadDesktop on command thread.
+                        rd._invalidate_desktop_bind()
                         channel.send(
                             "A",
                             {
                                 "id": request_id,
-                                "ok": not bool(sample.get("flat")),
+                                "ok": True,
                                 "action": "reattach",
-                                "ui": sample.get("ui"),
-                                "ui_after": sample.get("ui"),
-                                "flat": bool(sample.get("flat")),
-                                "chrome_detected": bool(sample.get("chrome_detected")),
-                                "frame_variance": float(
-                                    sample.get("frame_variance") or 0.0
-                                ),
-                                "detail": sample.get("detail") or "",
+                                "ui": "unknown",
+                                "ui_after": "unknown",
+                                "flat": False,
+                                "chrome_detected": False,
+                                "frame_variance": 0.0,
+                                "detail": "bind_invalidated",
                             },
                         )
                     else:

@@ -63,16 +63,17 @@ MIN_JPEG_BYTES = 1500                 # API rejects tinier frames ("Frame too sm
 MIN_GOOD_JPEG_BYTES = 5 * 1024        # healthy 1280q35 frame is usually ≥5KB
 CAPTURE_FAIL_SECONDS = 10.0           # no frames in this window → fail stream
 WINLOGON_BLACK_FAIL_SECONDS = 2.0     # C-RD-P0-WL-4: unbroken black → fail
-WINLOGON_FLAT_FAIL_SECONDS = 3.0      # C-RD-CHROME-2: unbroken flat → fail
+WINLOGON_FLAT_FAIL_SECONDS = 6.0      # grace for soft-degraded settle → chrome
 PROBE_TIMEOUT_SEC = 12.0              # legacy one-shot cold-start room
 # Logon/Winlogon start budgets.
-# 4.9.88 lab: 3s frame budget often sampled solid-blue settle → winlogon_capture_flat.
-# 4.9.89: wait for real chrome (≤5s) + reattach between retries; still fail-fast vs 23s.
+# 4.9.88/89 lab: mid-probe force_desktop_reattach SetThreadDesktop on the *command*
+# thread left capture thread thinking it was attached → solid-blue BitBlt (gdi+flat).
+# 4.9.90: per-thread desktop bind; invalidate-only reattach; soft-degraded if chrome late.
 WINLOGON_HELPER_ACCEPT_SEC = 5.0
 WINLOGON_HELPER_FRAME_SEC = 5.0       # first non-flat chrome frame (C-RD-CHROME-1 ≤3–5s)
-WINLOGON_HELPER_RETRY = 2             # re-spawn + force reattach
+WINLOGON_HELPER_RETRY = 1             # one re-spawn; no command-thread attach storm
 WINLOGON_ONESHOT_WAIT_SEC = 3.0
-WINLOGON_HELPER_SETTLE_SEC = 0.45     # LogonUI paint after helper hello
+WINLOGON_HELPER_SETTLE_SEC = 0.35     # brief LogonUI paint; capture thread owns attach
 HELPER_ACCEPT_SEC = 5.0               # non-winlogon helper accept (was 12s → 23s stacks)
 HELPER_FRAME_SEC = 5.0
 HELPER_ONESHOT_WAIT_SEC = 4.0
@@ -224,9 +225,13 @@ class RemoteDesktopStreamer:
         self._helper_frame_misses = 0
         self._input_desktop = None
         self._desktop_attached = False
+        # SetThreadDesktop is per-thread — only skip re-bind for *this* thread id.
+        self._desktop_attach_tid: Optional[int] = None
         self._desktop_name = ""
         self._winlogon_mode = False
         self._desktop_reattach_every = 45  # frames — pick up Default after logon
+        self._logonui_hwnd_count = 0
+        self._chrome_diag_logged = False
         self._tscon_attempted = False
         self._last_good_jpeg: Optional[bytes] = None
         self._last_good_wh: Tuple[int, int] = (0, 0)
@@ -459,9 +464,12 @@ class RemoteDesktopStreamer:
             self._stats["bright_ratio"] = 0.0
             self._stats["chrome_detected"] = False
             self._desktop_attached = False
+            self._desktop_attach_tid = None
             self._desktop_name = ""
             self._winlogon_mode = False
             self._tscon_attempted = False
+            self._logonui_hwnd_count = 0
+            self._chrome_diag_logged = False
             self._black_streak_started = 0.0
             self._winlogon_black_retried = False
             self._flat_streak_started = 0.0
@@ -703,6 +711,7 @@ class RemoteDesktopStreamer:
                 def _probe_persistent_frames(deadline: float) -> tuple:
                     nonlocal blackish, flattish
                     local_jpeg, local_w, local_h = None, 0, 0
+                    last_invalidate = 0.0
                     while time.time() < deadline:
                         local_jpeg, local_w, local_h = self._grab_via_persistent_helper(
                             0.35
@@ -723,14 +732,18 @@ class RemoteDesktopStreamer:
                             and not flattish
                         ):
                             return local_jpeg, local_w, local_h
-                        # Flat/black mid-probe: ask helper to rebind Winlogon + PrintWindow.
+                        # Invalidate bind only — never SetThreadDesktop on parent/command
+                        # path during probe (poisoned capture thread → gdi+flat).
+                        now = time.time()
                         if (
                             self._winlogon_mode
                             and (flattish or blackish)
                             and self._persistent_helper_connected()
+                            and (now - last_invalidate) >= 0.9
                         ):
+                            last_invalidate = now
                             try:
-                                self._session_helper.force_desktop_reattach(timeout=1.8)
+                                self._session_helper.force_desktop_reattach(timeout=0.8)
                             except Exception:
                                 pass
                         time.sleep(0.08)
@@ -755,13 +768,9 @@ class RemoteDesktopStreamer:
                             f"detail={self._last_helper_fail_detail}"
                         )
                         continue
-                    # Let LogonUI compose before declaring flat (4.9.88 lab regression).
+                    # Brief settle only — capture thread must own SetThreadDesktop.
                     if self._winlogon_mode:
                         time.sleep(WINLOGON_HELPER_SETTLE_SEC)
-                        try:
-                            self._session_helper.force_desktop_reattach(timeout=2.0)
-                        except Exception as exc:
-                            log(f"[REMOTE-DESKTOP] post-hello reattach: {exc}")
                     jpeg, w, h = _probe_persistent_frames(time.time() + frame_budget)
                     if (
                         jpeg
@@ -817,7 +826,18 @@ class RemoteDesktopStreamer:
                                 self._last_helper_fail_phase or "spawn"
                             )
                     else:
-                        self._stop_persistent_helper()
+                        # Keep helper for soft-degraded flat settle (chrome may appear).
+                        soft_keep = (
+                            self._winlogon_mode
+                            and flattish
+                            and not blackish
+                            and jpeg
+                            and w > 0
+                            and h > 0
+                            and len(jpeg) >= MIN_JPEG_BYTES
+                        )
+                        if not soft_keep:
+                            self._stop_persistent_helper()
 
                 took = time.time() - t_helper
                 log(
@@ -886,28 +906,56 @@ class RemoteDesktopStreamer:
                     }
                 # Connected but only black/flat after retries.
                 if (blackish or flattish) and self._winlogon_mode:
-                    err = (
-                        "winlogon_capture_flat"
-                        if flattish and not blackish
-                        else "winlogon_capture_black"
-                    )
-                    msg = (
-                        "Winlogon/GDI capture returned unbroken "
-                        f"{'flat/blue' if err.endswith('flat') else 'black'} "
-                        f"after retry (method={self._capture_method}, "
-                        f"token={self._last_helper_token_source or 'none'})"
-                    )
-                    self._capture_method = self._capture_method or "none"
-                    log(f"[REMOTE-DESKTOP] ✖ {err}: {msg}")
-                    self._running = False
-                    self._transport = "idle"
-                    self.emit_stream_progress("failed", msg, error=err, force=True)
-                    return {
-                        "success": False,
-                        "error": err,
-                        "message": msg,
-                        "data": self.get_status(),
-                    }
+                    # Soft-degraded start: keep helper alive when we have a settle
+                    # frame. Hard-fail only blocked chrome recovery + input lab
+                    # (4.9.88–89). Physical blank console still fails later via
+                    # WINLOGON_FLAT_FAIL_SECONDS if variance never recovers.
+                    if (
+                        flattish
+                        and not blackish
+                        and persistent_started
+                        and jpeg
+                        and w > 0
+                        and h > 0
+                        and len(jpeg) >= MIN_JPEG_BYTES
+                    ):
+                        log(
+                            "[REMOTE-DESKTOP] ⚠ winlogon start soft-degraded: "
+                            f"flat settle method={self._capture_method} "
+                            f"var={self._last_frame_variance:.1f} "
+                            f"hwnd={getattr(self, '_logonui_hwnd_count', 0)} "
+                            f"desk={self._desktop_name or '?'} — keep streaming"
+                        )
+                        self._last_helper_fail_phase = ""
+                        self.emit_stream_progress(
+                            "degraded",
+                            "Winlogon settle flat; waiting for LogonUI chrome",
+                            error="",
+                            force=True,
+                        )
+                    else:
+                        err = (
+                            "winlogon_capture_flat"
+                            if flattish and not blackish
+                            else "winlogon_capture_black"
+                        )
+                        msg = (
+                            "Winlogon/GDI capture returned unbroken "
+                            f"{'flat/blue' if err.endswith('flat') else 'black'} "
+                            f"after retry (method={self._capture_method}, "
+                            f"token={self._last_helper_token_source or 'none'})"
+                        )
+                        self._capture_method = self._capture_method or "none"
+                        log(f"[REMOTE-DESKTOP] ✖ {err}: {msg}")
+                        self._running = False
+                        self._transport = "idle"
+                        self.emit_stream_progress("failed", msg, error=err, force=True)
+                        return {
+                            "success": False,
+                            "error": err,
+                            "message": msg,
+                            "data": self.get_status(),
+                        }
             else:
                 # Capture thread-less probe: attach input desktop first (RDP/elevated)
                 self._attach_input_desktop()
@@ -1166,6 +1214,7 @@ class RemoteDesktopStreamer:
             "frame_variance": float(self._last_frame_variance or 0.0),
             "bright_ratio": float(self._last_frame_bright_ratio or 0.0),
             "chrome_detected": bool(self._chrome_detected),
+            "logonui_hwnd_count": int(getattr(self, "_logonui_hwnd_count", 0) or 0),
             "helper_token": self._last_helper_token_source or "",
             "helper_fail_phase": self._last_helper_fail_phase or "",
             "desktop": self._desktop_name or "",
@@ -1847,13 +1896,18 @@ class RemoteDesktopStreamer:
 
     def force_winlogon_recapture(self) -> None:
         """C-RD-CHROME-4: drop desktop bind so next grab reattaches after CAD."""
-        self._desktop_attached = False
+        self._invalidate_desktop_bind()
         self._flat_streak_started = 0.0
         try:
             if self._persistent_helper_connected():
-                self._session_helper.force_desktop_reattach(timeout=2.5)
+                self._session_helper.force_desktop_reattach(timeout=1.2)
         except Exception as exc:
             log(f"[REMOTE-DESKTOP] helper force reattach after CAD: {exc}")
+
+    def _invalidate_desktop_bind(self) -> None:
+        """Clear per-thread desktop affinity; next grab must SetThreadDesktop."""
+        self._desktop_attached = False
+        self._desktop_attach_tid = None
 
     def _dispatch_raw_frame(self, rgb, w: int, h: int, seq: int) -> bool:
         """Publish raw RGB into WebRTC mailbox. True if media accepted it."""
@@ -2535,6 +2589,26 @@ class RemoteDesktopStreamer:
         self._stats["frame_variance"] = float(var)
         self._stats["bright_ratio"] = float(report_bright)
         self._stats["chrome_detected"] = bool(chrome)
+        if self._winlogon_mode and not self._chrome_diag_logged:
+            self._chrome_diag_logged = True
+            hwnd_n = 0
+            try:
+                from client_rd_winlogon import visible_surface_signature
+                _st, _tok, hwnd_n = visible_surface_signature()
+            except Exception:
+                hwnd_n = 0
+            self._logonui_hwnd_count = int(hwnd_n)
+            try:
+                from client_helpers import log as _clog
+                _clog(
+                    f"[REMOTE-DESKTOP] winlogon chrome diag "
+                    f"desk={self._desktop_name or '?'} hwnd={hwnd_n} "
+                    f"var={var:.1f} bright={report_bright:.4f} "
+                    f"chrome={chrome} method={method or '?'} "
+                    f"tid={threading.get_ident()}"
+                )
+            except Exception:
+                pass
 
     def _grab_printwindow_chrome(self):
         """PrintWindow visible top-level HWNDs (PW_RENDERFULLCONTENT) for LogonUI.
@@ -2689,6 +2763,9 @@ class RemoteDesktopStreamer:
 
         Elevated / tray processes often BitBlt a black screen when not on
         the input desktop. Pre-logon requires WinSta0 + Winlogon attach.
+
+        SetThreadDesktop is per-thread: a bind on the helper command thread
+        must never satisfy the capture thread (4.9.89 gdi+flat regression).
         """
         # Periodically re-open so we pick up Default after a successful logon.
         force = False
@@ -2701,7 +2778,12 @@ class RemoteDesktopStreamer:
                 force = True
         except Exception:
             force = False
-        if self._desktop_attached and not force:
+        tid = threading.get_ident()
+        if (
+            self._desktop_attached
+            and not force
+            and self._desktop_attach_tid == tid
+        ):
             return True
         try:
             from client_rd_winlogon import attach_console_desktop
@@ -2726,6 +2808,7 @@ class RemoteDesktopStreamer:
             if ok and hdesk:
                 self._input_desktop = hdesk
                 self._desktop_attached = True
+                self._desktop_attach_tid = tid
                 self._desktop_name = name
                 if name.lower() == "default" and self._winlogon_mode:
                     # User completed interactive logon — switch to normal desktop path.
@@ -2781,6 +2864,7 @@ class RemoteDesktopStreamer:
                 return False
             self._input_desktop = hdesk
             self._desktop_attached = True
+            self._desktop_attach_tid = tid
             self._desktop_name = resolved
             if resolved.lower() == "default" and self._winlogon_mode:
                 self._winlogon_mode = False

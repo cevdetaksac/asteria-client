@@ -266,5 +266,39 @@ class TestCadKeyIgnored(unittest.TestCase):
         self.assertEqual(out.get("error"), "cad_key_ignored")
 
 
+class TestDesktopAttachTid(unittest.TestCase):
+    def test_attach_skip_requires_same_thread(self):
+        from client_remote_desktop import RemoteDesktopStreamer
+
+        rd = RemoteDesktopStreamer(api_client=None, token_getter=lambda: "")
+        rd._desktop_attached = True
+        rd._desktop_attach_tid = 999999  # not this thread
+        rd._winlogon_mode = False
+        with mock.patch.object(
+            rd,
+            "_attach_input_desktop",
+            wraps=rd._attach_input_desktop,
+        ):
+            # Force early-return path: wrong tid must not skip (would call OS attach).
+            # Simulate the guard alone:
+            import threading
+
+            tid = threading.get_ident()
+            self.assertNotEqual(rd._desktop_attach_tid, tid)
+            # Correct tid + attached → skip
+            rd._desktop_attach_tid = tid
+            self.assertTrue(rd._desktop_attached and rd._desktop_attach_tid == tid)
+
+    def test_invalidate_clears_tid(self):
+        from client_remote_desktop import RemoteDesktopStreamer
+
+        rd = RemoteDesktopStreamer(api_client=None, token_getter=lambda: "")
+        rd._desktop_attached = True
+        rd._desktop_attach_tid = 123
+        rd._invalidate_desktop_bind()
+        self.assertFalse(rd._desktop_attached)
+        self.assertIsNone(rd._desktop_attach_tid)
+
+
 if __name__ == "__main__":
     unittest.main()

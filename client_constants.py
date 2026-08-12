@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.89"  # restore Logon chrome (flat settle recovery); CAD console SID; input proof log
+VERSION = "4.9.90"  # SetThreadDesktop per-thread; no command-thread reattach poison; soft flat start
 
 
 

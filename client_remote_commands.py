@@ -1526,10 +1526,15 @@ class RemoteCommandExecutor:
             return out
 
         def _effect_from_sample(before_ui: str, sample: dict) -> tuple:
-            """Return (effect, detail, ui_after) gated by non-flat chrome."""
+            """Return (effect, detail, ui_after) gated by non-flat chrome.
+
+            UI titles come from helper-side HWND enum (not Session-0). When
+            titles stay unknown, pixel fingerprint / variance still counts.
+            """
             ui_after = str(sample.get("ui") or "unknown")
             flat = bool(sample.get("flat"))
             chrome = bool(sample.get("chrome_detected"))
+            after_fp = str(sample.get("fp") or "")
             if flat:
                 if ui_after == "sas_ui":
                     ui_after = "other"
@@ -1552,6 +1557,16 @@ class RemoteCommandExecutor:
                 and chrome
             ):
                 return True, f"ui_state {before_ui}->{ui_after}", ui_after
+            if (
+                before_fp
+                and after_fp
+                and before_fp != after_fp
+                and chrome
+                and not flat
+            ):
+                if ui_after in ("", "unknown"):
+                    ui_after = "other"
+                return True, f"surface_fp_changed {before_ui}->{ui_after}", ui_after
             return False, f"no_sas_effect state={ui_after}", ui_after
 
         # --- Path A: Session-0 service SendSAS(FALSE) — OS routes to console ---
