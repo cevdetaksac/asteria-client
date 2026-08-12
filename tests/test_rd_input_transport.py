@@ -7,6 +7,7 @@ move coalescing, relative movement and stuck-button release without needing a
 real Windows desktop session (all injection primitives are stubbed).
 """
 
+import time
 import unittest
 
 from client_remote_desktop import (
@@ -344,6 +345,58 @@ class TestWinlogonHelperInput(unittest.TestCase):
         # Parent forwards normalized-or-raw envelope; either must carry type_text.
         blob = str(forwarded)
         self.assertIn("type_text", blob)
+        self.assertEqual(rd._stats["inputs_applied"], 1)
+        self.assertEqual(rd._last_input_event, "type_text")
+
+    def test_parent_syncs_helper_inputs_applied_from_ack(self):
+        rd = _make()
+        rd._winlogon_mode = True
+        rd._in_session_helper = False
+        rd._stats["inputs_applied"] = 2
+
+        class AckHelper(FakeMailbox):
+            def send_input_result(self, event, wait=False, timeout=0.2):
+                self.events.append((event, wait))
+                return {
+                    "ok": True,
+                    "inputs_applied": 5,
+                    "last_input_event": "type_text",
+                    "event": "type_text",
+                }
+
+        rd._session_helper = AckHelper()
+        rd._persistent_helper_connected = lambda: True
+        out = rd.apply_input({"event": "type_text", "text": "pw"})
+        self.assertTrue(out.get("success"))
+        self.assertEqual(rd._stats["inputs_applied"], 5)
+        self.assertEqual(rd._last_input_event, "type_text")
+
+    def test_sync_helper_frame_telemetry_clears_stale_flat(self):
+        from PIL import Image
+
+        rd = _make()
+        rd._winlogon_mode = True
+        rd._capture_method = "persistent-winlogon-helper:gdi+flat"
+        rd._chrome_detected = False
+        rd._flat_streak_started = time.time()
+        # Noisy non-flat RGB
+        img = Image.new("RGB", (64, 36))
+        px = img.load()
+        for y in range(36):
+            for x in range(64):
+                px[x, y] = (x * 3 % 255, y * 7 % 255, (x + y) % 255)
+        raw = img.tobytes()
+        rd._sync_helper_frame_telemetry(
+            {"method": "gdi+flat", "format": "rgb", "hwnd": 4, "desktop": "Winlogon"},
+            payload=raw,
+            width=64,
+            height=36,
+            fmt="rgb",
+        )
+        self.assertNotIn("+flat", rd._capture_method)
+        self.assertTrue(rd._chrome_detected)
+        self.assertEqual(rd._logonui_hwnd_count, 4)
+        self.assertEqual(rd._flat_streak_started, 0.0)
 
     def test_protocol2_type_text_normalized(self):
         from client_remote_desktop import RemoteDesktopStreamer

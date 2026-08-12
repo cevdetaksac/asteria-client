@@ -225,24 +225,28 @@ class PersistentSessionHelper:
             return (self._frame_id,) + self._latest
 
     def send_input(self, event: dict, timeout: float = 0.08, wait: bool = False) -> bool:
-        """Forward an input event to the helper.
+        """Forward an input event to the helper. True when delivered/acked ok."""
+        result = self.send_input_result(event, timeout=timeout, wait=wait)
+        return bool(result.get("ok"))
 
-        wait=False (moves): fire-and-forget, returns as soon as the frame is
-        written to the socket — never blocks the caller (e.g. the WS thread).
-        wait=True (critical edges): waits up to ``timeout`` for a short ACK, but
-        still returns True on timeout if the pipe is alive (assume queued), so a
-        slow ACK never turns a real keypress into a spurious failure.
+    def send_input_result(
+        self, event: dict, timeout: float = 0.08, wait: bool = False
+    ) -> dict:
+        """Forward input; return ACK fields (inputs_applied / last_input_event).
+
+        wait=False (moves): fire-and-forget.
+        wait=True (critical): wait for ACK; on timeout assume queued if pipe live.
         """
         channel = self._channel
         if channel is None:
-            return False
+            return {"ok": False, "detail": "helper_not_connected"}
         if not wait:
             try:
                 channel.send("I", {"id": 0, "event": event})
-                return True
+                return {"ok": True, "detail": "fire_and_forget"}
             except Exception as exc:
                 self._error = str(exc)
-                return False
+                return {"ok": False, "detail": str(exc)}
         with self._condition:
             self._request_id += 1
             request_id = self._request_id
@@ -253,7 +257,7 @@ class PersistentSessionHelper:
             self._error = str(exc)
             with self._condition:
                 self._pending.pop(request_id, None)
-            return False
+            return {"ok": False, "detail": str(exc)}
         deadline = time.monotonic() + max(0.0, timeout)
         with self._condition:
             while self._pending.get(request_id) is None and self.connected:
@@ -263,10 +267,21 @@ class PersistentSessionHelper:
                 self._condition.wait(remaining)
             acked = self._pending.pop(request_id, None)
         if acked is None:
-            return True  # timeout — assume queued on live pipe
+            return {
+                "ok": True,
+                "detail": "ack_timeout_assumed_queued",
+                "inputs_applied": 0,
+                "last_input_event": "",
+            }
         if isinstance(acked, dict):
-            return bool(acked.get("ok"))
-        return bool(acked)
+            return {
+                "ok": bool(acked.get("ok")),
+                "detail": str(acked.get("detail") or ""),
+                "event": str(acked.get("event") or ""),
+                "inputs_applied": int(acked.get("inputs_applied") or 0),
+                "last_input_event": str(acked.get("last_input_event") or ""),
+            }
+        return {"ok": bool(acked), "detail": ""}
 
     def send_sas(self, timeout: float = 4.0) -> dict:
         """Ask the in-session helper to call SendSAS + report UI effect (C-RD-CAD-*)."""
@@ -529,14 +544,24 @@ def run_session_helper(
                                 "chrome_detected": bool(
                                     getattr(rd, "_chrome_detected", False)
                                 ),
+                                "hwnd": int(
+                                    getattr(rd, "_logonui_hwnd_count", 0) or 0
+                                ),
+                                "desktop": str(
+                                    getattr(rd, "_desktop_name", "") or ""
+                                ),
                             }, rgb)
                             sent = True
                     elif img is not None and (
                         "+flat" in (method or "") or "+black" in (method or "")
                     ):
-                        # Still emit a tagged JPEG so parent can fail honesty.
+                        # Re-grab may recover chrome — header must reflect *post-grab*
+                        # method (4.9.90 lab: JPEG had chrome while meta stayed +flat).
                         jpeg, width, height = rd._grab_jpeg()
                         if jpeg and width > 0 and height > 0:
+                            method_now = str(rd._capture_method or method or "gdi")
+                            flat_now = "+flat" in method_now
+                            black_now = "+black" in method_now
                             captured_mono = time.monotonic()
                             channel.send("F", {
                                 "format": "jpeg",
@@ -548,12 +573,22 @@ def run_session_helper(
                                 "origin_y": int(rd._screen_y),
                                 "capture_ms": round((captured_mono - started) * 1000.0, 3),
                                 "capture_mono_ms": int(captured_mono * 1000),
-                                "method": method or rd._capture_method,
-                                "flat_frame": "+flat" in (method or ""),
+                                "method": method_now,
+                                "flat_frame": bool(flat_now),
                                 "frame_variance": float(
                                     getattr(rd, "_last_frame_variance", 0.0) or 0.0
                                 ),
-                                "chrome_detected": False,
+                                "chrome_detected": bool(
+                                    getattr(rd, "_chrome_detected", False)
+                                    and not flat_now
+                                    and not black_now
+                                ),
+                                "hwnd": int(
+                                    getattr(rd, "_logonui_hwnd_count", 0) or 0
+                                ),
+                                "desktop": str(
+                                    getattr(rd, "_desktop_name", "") or ""
+                                ),
                             }, jpeg)
                             sent = True
                 if not sent:
@@ -577,6 +612,12 @@ def run_session_helper(
                             ),
                             "chrome_detected": bool(
                                 getattr(rd, "_chrome_detected", False)
+                            ),
+                            "hwnd": int(
+                                getattr(rd, "_logonui_hwnd_count", 0) or 0
+                            ),
+                            "desktop": str(
+                                getattr(rd, "_desktop_name", "") or ""
                             ),
                         }, jpeg)
             except Exception as exc:
@@ -620,6 +661,7 @@ def run_session_helper(
                 event = header.get("event") or {}
                 ok = False
                 detail = ""
+                ev = ""
                 try:
                     if isinstance(event, dict):
                         # C-RD-IN-WL-1: inject on this Winlogon desktop — never
@@ -669,6 +711,13 @@ def run_session_helper(
                         "ok": bool(ok),
                         "detail": detail,
                         "action": "input",
+                        "event": ev,
+                        "inputs_applied": int(
+                            rd._stats.get("inputs_applied") or 0
+                        ),
+                        "last_input_event": str(
+                            getattr(rd, "_last_input_event", "") or ""
+                        ),
                     },
                 )
                 continue

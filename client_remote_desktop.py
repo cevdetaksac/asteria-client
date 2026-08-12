@@ -1304,21 +1304,28 @@ class RemoteDesktopStreamer:
             if self._persistent_helper_connected():
                 # Forward over the full-duplex helper channel. Moves are async
                 # (fire-and-forget); critical edges use a very short ACK only.
-                ok = bool(
-                    self._session_helper.send_input(
+                timeout = (
+                    max(float(CRIT_ACK_TIMEOUT), 0.45)
+                    if self._winlogon_mode and not move_like
+                    else CRIT_ACK_TIMEOUT
+                )
+                if hasattr(self._session_helper, "send_input_result"):
+                    ack = self._session_helper.send_input_result(
                         dict(params),
                         wait=not move_like,
-                        # Winlogon inject + attach can exceed 80ms critical ACK.
-                        timeout=(
-                            max(float(CRIT_ACK_TIMEOUT), 0.45)
-                            if self._winlogon_mode and not move_like
-                            else CRIT_ACK_TIMEOUT
-                        ),
+                        timeout=timeout,
                     )
-                )
-                if ok:
-                    self._stats["inputs_applied"] += 1
-                    self._last_input_event = event_name
+                else:
+                    ok_legacy = bool(
+                        self._session_helper.send_input(
+                            dict(params),
+                            wait=not move_like,
+                            timeout=timeout,
+                        )
+                    )
+                    ack = {"ok": ok_legacy, "inputs_applied": 0}
+                if ack.get("ok"):
+                    self._note_helper_input_applied(event_name, ack)
                     return result({"success": True, "message": f"input {event} forwarded"})
                 return result({"success": False, "error": f"input {event} not forwarded"})
             if self._use_user_helper:
@@ -1343,6 +1350,27 @@ class RemoteDesktopStreamer:
         except Exception as e:
             log(f"[REMOTE-DESKTOP] Input error: {e}")
             return result({"success": False, "error": str(e)})
+
+    def _note_helper_input_applied(self, event_name: str, ack: dict) -> None:
+        """Bump parent inputs_applied on helper inject success; prefer ACK tally."""
+        helper_n = int((ack or {}).get("inputs_applied") or 0)
+        if helper_n > 0:
+            self._stats["inputs_applied"] = max(
+                int(self._stats.get("inputs_applied") or 0),
+                helper_n,
+            )
+        else:
+            self._stats["inputs_applied"] = int(
+                self._stats.get("inputs_applied") or 0
+            ) + 1
+        last = str(
+            (ack or {}).get("last_input_event")
+            or (ack or {}).get("event")
+            or event_name
+            or ""
+        ).strip()
+        if last:
+            self._last_input_event = last
 
     @staticmethod
     def _normalize_input_envelope(params: dict) -> dict:
@@ -1736,22 +1764,28 @@ class RemoteDesktopStreamer:
             else:
                 if self._black_streak_started <= 0:
                     self._black_streak_started = now
-            self._desktop_attached = False
-            self._attach_input_desktop()
-            sid = self._target_session_id
-            if not self._tscon_attempted:
-                if self._try_reconnect_session_to_console(sid):
-                    time.sleep(0.35)
-                    self._desktop_attached = False
-                    self._attach_input_desktop()
-                    jpeg2, w2, h2 = self._grab_jpeg()
-                    method2 = self._capture_method or ""
-                    if (
-                        jpeg2
-                        and "+black" not in method2
-                        and "+flat" not in method2
-                    ):
-                        jpeg, w, h = jpeg2, w2, h2
+            # Session-0 BitBlt cannot recover Winlogon chrome — re-pull helper.
+            if self._use_user_helper and self._persistent_helper_connected():
+                try:
+                    self.force_winlogon_recapture()
+                except Exception:
+                    pass
+                jpeg2, w2, h2 = self._grab_via_persistent_helper(0.55)
+                method2 = self._capture_method or ""
+                if (
+                    jpeg2
+                    and w2 > 0
+                    and h2 > 0
+                    and "+black" not in method2
+                    and "+flat" not in method2
+                ):
+                    jpeg, w, h = jpeg2, w2, h2
+                    self._black_streak_started = 0.0
+                    self._flat_streak_started = 0.0
+                elif self._last_helper_raw and "+flat" not in method2 and "+black" not in method2:
+                    encoded = self._encode_helper_raw_jpeg()
+                    if encoded[0]:
+                        jpeg, w, h = encoded
                         self._black_streak_started = 0.0
                         self._flat_streak_started = 0.0
                     else:
@@ -1771,13 +1805,48 @@ class RemoteDesktopStreamer:
                         self._maybe_fail_winlogon_black()
                     return
             else:
-                self._stats["frames_failed"] += 1
-                if bad_flat:
-                    self._maybe_fail_winlogon_flat()
+                self._invalidate_desktop_bind()
+                self._attach_input_desktop()
+                sid = self._target_session_id
+                if not self._tscon_attempted:
+                    if self._try_reconnect_session_to_console(sid):
+                        time.sleep(0.35)
+                        self._invalidate_desktop_bind()
+                        self._attach_input_desktop()
+                        jpeg2, w2, h2 = self._grab_jpeg()
+                        method2 = self._capture_method or ""
+                        if (
+                            jpeg2
+                            and "+black" not in method2
+                            and "+flat" not in method2
+                        ):
+                            jpeg, w, h = jpeg2, w2, h2
+                            self._black_streak_started = 0.0
+                            self._flat_streak_started = 0.0
+                        else:
+                            self._stats["frames_failed"] += 1
+                            if bad_flat:
+                                self._maybe_fail_winlogon_flat()
+                            else:
+                                self._stats["black_frames"] += 1
+                                self._maybe_fail_winlogon_black()
+                            return
+                    else:
+                        self._stats["frames_failed"] += 1
+                        if bad_flat:
+                            self._maybe_fail_winlogon_flat()
+                        else:
+                            self._stats["black_frames"] += 1
+                            self._maybe_fail_winlogon_black()
+                        return
                 else:
-                    self._stats["black_frames"] += 1
-                    self._maybe_fail_winlogon_black()
-                return
+                    self._stats["frames_failed"] += 1
+                    if bad_flat:
+                        self._maybe_fail_winlogon_flat()
+                    else:
+                        self._stats["black_frames"] += 1
+                        self._maybe_fail_winlogon_black()
+                    return
         else:
             self._black_streak_started = 0.0
             self._flat_streak_started = 0.0
@@ -2591,18 +2660,22 @@ class RemoteDesktopStreamer:
         self._stats["chrome_detected"] = bool(chrome)
         if self._winlogon_mode and not self._chrome_diag_logged:
             self._chrome_diag_logged = True
-            hwnd_n = 0
-            try:
-                from client_rd_winlogon import visible_surface_signature
-                _st, _tok, hwnd_n = visible_surface_signature()
-            except Exception:
+            # Only enum HWND on the in-session helper desktop; Session-0 parent
+            # enum is empty/wrong and must not clobber helper-supplied hwnd.
+            if getattr(self, "_in_session_helper", False):
                 hwnd_n = 0
-            self._logonui_hwnd_count = int(hwnd_n)
+                try:
+                    from client_rd_winlogon import visible_surface_signature
+                    _st, _tok, hwnd_n = visible_surface_signature()
+                except Exception:
+                    hwnd_n = 0
+                self._logonui_hwnd_count = int(hwnd_n)
             try:
                 from client_helpers import log as _clog
                 _clog(
                     f"[REMOTE-DESKTOP] winlogon chrome diag "
-                    f"desk={self._desktop_name or '?'} hwnd={hwnd_n} "
+                    f"desk={self._desktop_name or '?'} "
+                    f"hwnd={getattr(self, '_logonui_hwnd_count', 0)} "
                     f"var={var:.1f} bright={report_bright:.4f} "
                     f"chrome={chrome} method={method or '?'} "
                     f"tid={threading.get_ident()}"
@@ -3239,6 +3312,109 @@ class RemoteDesktopStreamer:
             log(f"[REMOTE-DESKTOP] helper raw→jpeg encode failed: {exc}")
             return None, 0, 0
 
+    def _sync_helper_frame_telemetry(
+        self,
+        meta: dict,
+        *,
+        payload: Optional[bytes] = None,
+        width: int = 0,
+        height: int = 0,
+        fmt: str = "jpeg",
+    ) -> None:
+        """Mirror helper chrome/method/variance into parent live status.
+
+        Soft-start may leave gdi+flat / chrome=false; settle frames must refresh
+        these even when JPEG already shows LogonUI (4.9.90 residual).
+        """
+        meta = meta if isinstance(meta, dict) else {}
+        method = str(meta.get("method") or "capture")
+        prefix = (
+            "persistent-winlogon-helper"
+            if self._winlogon_mode
+            else "persistent-user-helper"
+        )
+        prev_method = self._capture_method or ""
+        var = meta.get("frame_variance")
+        chrome_meta = meta.get("chrome_detected")
+        hwnd = meta.get("hwnd")
+        desk = str(meta.get("desktop") or "").strip()
+        if desk:
+            self._desktop_name = desk
+
+        img = None
+        if payload and width > 0 and height > 0:
+            try:
+                from PIL import Image
+                if str(fmt).lower() == "rgb" and len(payload) >= width * height * 3:
+                    img = Image.frombytes("RGB", (width, height), bytes(payload))
+                elif str(fmt).lower() != "rgb":
+                    img = Image.open(io.BytesIO(payload)).convert("RGB")
+            except Exception:
+                img = None
+
+        bad_tag = ""
+        if "+black" in method:
+            bad_tag = "+black"
+        elif "+flat" in method:
+            bad_tag = "+flat"
+
+        if img is not None:
+            # Pixel truth overrides a stale +flat tag from an earlier settle grab.
+            if self._is_mostly_black(img):
+                bad_tag = "+black"
+            elif self._is_mostly_flat(img):
+                bad_tag = "+flat"
+            else:
+                bad_tag = ""
+            base_m = method.split("+")[0] if method else "capture"
+            self._remember_frame_chrome(img, f"{prefix}:{base_m}{bad_tag}")
+        else:
+            if var is not None:
+                try:
+                    self._last_frame_variance = float(var)
+                    self._stats["frame_variance"] = float(var)
+                except (TypeError, ValueError):
+                    pass
+            if chrome_meta is not None:
+                chrome = bool(chrome_meta) and bad_tag == ""
+                self._chrome_detected = chrome
+                self._stats["chrome_detected"] = chrome
+            elif bad_tag:
+                self._chrome_detected = False
+                self._stats["chrome_detected"] = False
+
+        # Helper hwnd/desktop wins over Session-0 enum inside _remember_frame_chrome.
+        if hwnd is not None:
+            try:
+                self._logonui_hwnd_count = int(hwnd)
+            except (TypeError, ValueError):
+                pass
+        if desk:
+            self._desktop_name = desk
+
+        base = method.split("+")[0] if method else "capture"
+        if str(fmt).lower() == "rgb":
+            self._capture_method = f"{prefix}:raw{bad_tag}"
+        else:
+            self._capture_method = f"{prefix}:{base}{bad_tag}"
+        self._stats["capture_method"] = self._capture_method
+
+        if bad_tag == "":
+            self._flat_streak_started = 0.0
+            self._black_streak_started = 0.0
+            # One more hwnd/var diag after soft-start flat → real chrome.
+            if "+flat" in prev_method and self._chrome_detected:
+                self._chrome_diag_logged = False
+                if img is not None:
+                    self._remember_frame_chrome(img, self._capture_method)
+                if hwnd is not None:
+                    try:
+                        self._logonui_hwnd_count = int(hwnd)
+                    except (TypeError, ValueError):
+                        pass
+                if desk:
+                    self._desktop_name = desk
+
     def _grab_via_persistent_helper(
         self, timeout: float = 2.0
     ) -> Tuple[Optional[bytes], int, int]:
@@ -3267,43 +3443,23 @@ class RemoteDesktopStreamer:
             self._last_capture_mono = float(meta["capture_mono_ms"]) / 1000.0
         self._screen_w, self._screen_h = native_width, native_height
         self._capture_w, self._capture_h = width, height
-        method = str(meta.get("method") or "capture")
-        bad_tag = ""
-        if "+black" in method:
-            bad_tag = "+black"
-        elif "+flat" in method:
-            bad_tag = "+flat"
-        prefix = (
-            "persistent-winlogon-helper"
-            if self._winlogon_mode
-            else "persistent-user-helper"
-        )
         fmt = str(meta.get("format") or "jpeg").lower()
         if fmt == "rgb" and payload and width > 0 and height > 0:
             if len(payload) < width * height * 3:
                 self._stats["frames_failed"] += 1
                 return None, 0, 0
-            # Detect flat/black from raw bytes when helper omitted tags.
-            if not bad_tag and self._winlogon_mode:
-                try:
-                    from PIL import Image
-                    img = Image.frombytes("RGB", (width, height), bytes(payload))
-                    if self._is_mostly_black(img):
-                        bad_tag = "+black"
-                    elif self._is_mostly_flat(img):
-                        bad_tag = "+flat"
-                    self._remember_frame_chrome(img, f"{prefix}:raw{bad_tag}")
-                except Exception:
-                    pass
+            self._sync_helper_frame_telemetry(
+                meta, payload=payload, width=width, height=height, fmt="rgb"
+            )
             self._last_helper_raw = (bytes(payload), width, height)
-            self._capture_method = f"{prefix}:raw{bad_tag}"
-            self._stats["capture_method"] = self._capture_method
-            # No JPEG when feeding WebRTC; callers encode on demand for WS fallback.
             return None, width, height
-        self._capture_method = f"{prefix}:{method}"
-        if bad_tag and bad_tag not in self._capture_method:
-            self._capture_method = f"{self._capture_method}{bad_tag}"
-        self._stats["capture_method"] = self._capture_method
+        self._sync_helper_frame_telemetry(
+            meta,
+            payload=payload if payload else None,
+            width=width,
+            height=height,
+            fmt="jpeg",
+        )
         return payload, width, height
 
     def _stop_persistent_helper(self) -> None:
@@ -3863,6 +4019,15 @@ class RemoteDesktopStreamer:
             "session_id": self._target_session_id,
             "username": self._target_username or "",
             "media": media,
+            "capture_method": self._capture_method or "",
+            "chrome_detected": bool(self._chrome_detected),
+            "flat_frame": bool("+flat" in (self._capture_method or "")),
+            "frame_variance": float(self._last_frame_variance or 0.0),
+            "bright_ratio": float(self._last_frame_bright_ratio or 0.0),
+            "logonui_hwnd_count": int(getattr(self, "_logonui_hwnd_count", 0) or 0),
+            "desktop": self._desktop_name or "",
+            "inputs_applied": int(self._stats.get("inputs_applied") or 0),
+            "last_input_event": getattr(self, "_last_input_event", "") or "",
         }
         self._q_put_text(json.dumps(meta))
 
