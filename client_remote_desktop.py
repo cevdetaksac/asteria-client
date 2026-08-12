@@ -65,11 +65,17 @@ CAPTURE_FAIL_SECONDS = 10.0           # no frames in this window → fail stream
 WINLOGON_BLACK_FAIL_SECONDS = 2.0     # C-RD-P0-WL-4: unbroken black → fail
 WINLOGON_FLAT_FAIL_SECONDS = 3.0      # C-RD-CHROME-2: unbroken flat → fail
 PROBE_TIMEOUT_SEC = 12.0              # legacy one-shot cold-start room
-# Logon/Winlogon start budgets (lab: 23s jpeg=0B was accept 8–12s + oneshot 14s).
-WINLOGON_HELPER_ACCEPT_SEC = 4.0      # fail-fast if helper never connects
-WINLOGON_HELPER_FRAME_SEC = 3.0       # first non-flat chrome frame
-WINLOGON_HELPER_RETRY = 1             # one re-spawn only
-WINLOGON_ONESHOT_WAIT_SEC = 3.0       # legacy oneshot file wait (was 14s)
+# Logon/Winlogon start budgets.
+# 4.9.88 lab: 3s frame budget often sampled solid-blue settle → winlogon_capture_flat.
+# 4.9.89: wait for real chrome (≤5s) + reattach between retries; still fail-fast vs 23s.
+WINLOGON_HELPER_ACCEPT_SEC = 5.0
+WINLOGON_HELPER_FRAME_SEC = 5.0       # first non-flat chrome frame (C-RD-CHROME-1 ≤3–5s)
+WINLOGON_HELPER_RETRY = 2             # re-spawn + force reattach
+WINLOGON_ONESHOT_WAIT_SEC = 3.0
+WINLOGON_HELPER_SETTLE_SEC = 0.45     # LogonUI paint after helper hello
+HELPER_ACCEPT_SEC = 5.0               # non-winlogon helper accept (was 12s → 23s stacks)
+HELPER_FRAME_SEC = 5.0
+HELPER_ONESHOT_WAIT_SEC = 4.0
 
 # Absolute pointer moves (normalized 0..1). Subject to the move budget only.
 ABS_MOVE_EVENTS = frozenset({"move", "mousemove"})
@@ -683,14 +689,16 @@ class RemoteDesktopStreamer:
                 accept_timeout = (
                     WINLOGON_HELPER_ACCEPT_SEC
                     if self._winlogon_mode
-                    else PROBE_TIMEOUT_SEC
+                    else HELPER_ACCEPT_SEC
                 )
                 frame_budget = (
                     WINLOGON_HELPER_FRAME_SEC
                     if self._winlogon_mode
-                    else max(2.5, min(PROBE_TIMEOUT_SEC, 8.0))
+                    else HELPER_FRAME_SEC
                 )
-                retries = WINLOGON_HELPER_RETRY if self._winlogon_mode else 0
+                retries = (
+                    WINLOGON_HELPER_RETRY if self._winlogon_mode else 1
+                )
 
                 def _probe_persistent_frames(deadline: float) -> tuple:
                     nonlocal blackish, flattish
@@ -715,6 +723,16 @@ class RemoteDesktopStreamer:
                             and not flattish
                         ):
                             return local_jpeg, local_w, local_h
+                        # Flat/black mid-probe: ask helper to rebind Winlogon + PrintWindow.
+                        if (
+                            self._winlogon_mode
+                            and (flattish or blackish)
+                            and self._persistent_helper_connected()
+                        ):
+                            try:
+                                self._session_helper.force_desktop_reattach(timeout=1.8)
+                            except Exception:
+                                pass
                         time.sleep(0.08)
                     return local_jpeg, local_w, local_h
 
@@ -737,6 +755,13 @@ class RemoteDesktopStreamer:
                             f"detail={self._last_helper_fail_detail}"
                         )
                         continue
+                    # Let LogonUI compose before declaring flat (4.9.88 lab regression).
+                    if self._winlogon_mode:
+                        time.sleep(WINLOGON_HELPER_SETTLE_SEC)
+                        try:
+                            self._session_helper.force_desktop_reattach(timeout=2.0)
+                        except Exception as exc:
+                            log(f"[REMOTE-DESKTOP] post-hello reattach: {exc}")
                     jpeg, w, h = _probe_persistent_frames(time.time() + frame_budget)
                     if (
                         jpeg
@@ -754,7 +779,8 @@ class RemoteDesktopStreamer:
                     self._last_helper_fail_detail = (
                         f"method={self._capture_method} "
                         f"jpeg={0 if not jpeg else len(jpeg)}B "
-                        f"black={blackish} flat={flattish}"
+                        f"black={blackish} flat={flattish} "
+                        f"var={self._last_frame_variance:.1f}"
                     )
 
                 took = time.time() - t_helper
@@ -769,16 +795,19 @@ class RemoteDesktopStreamer:
                 if not good:
                     # Short legacy oneshot only when persistent never connected —
                     # avoid stacking another 14s wait after accept_timeout.
-                    if not persistent_started and self._winlogon_mode:
+                    oneshot_wait = (
+                        WINLOGON_ONESHOT_WAIT_SEC
+                        if self._winlogon_mode
+                        else HELPER_ONESHOT_WAIT_SEC
+                    )
+                    if not persistent_started:
                         log(
                             "[REMOTE-DESKTOP] persistent helper never connected; "
-                            f"short oneshot ≤{WINLOGON_ONESHOT_WAIT_SEC:.0f}s "
+                            f"short oneshot ≤{oneshot_wait:.0f}s "
                             f"(token={self._last_helper_token_source})"
                         )
                         oneshot_t0 = time.time()
-                        jpeg, w, h = self._grab_via_user_helper(
-                            wait_sec=WINLOGON_ONESHOT_WAIT_SEC
-                        )
+                        jpeg, w, h = self._grab_via_user_helper(wait_sec=oneshot_wait)
                         took = time.time() - t_helper
                         if (
                             (not jpeg or len(jpeg) < MIN_JPEG_BYTES)
@@ -787,14 +816,6 @@ class RemoteDesktopStreamer:
                             self._last_helper_fail_phase = (
                                 self._last_helper_fail_phase or "spawn"
                             )
-                    elif not self._winlogon_mode:
-                        self._stop_persistent_helper()
-                        log(
-                            "[REMOTE-DESKTOP] persistent helper failed start/probe; "
-                            "falling back to legacy one-shot capture"
-                        )
-                        jpeg, w, h = self._grab_via_user_helper()
-                        took = time.time() - t_helper
                     else:
                         self._stop_persistent_helper()
 
@@ -2231,21 +2252,34 @@ class RemoteDesktopStreamer:
                     f"session={sid}/{csid} state={state} method={method}")
             method = method + "+black"
         elif self._is_mostly_flat(img):
-            # C-RD-CHROME-1/2: PrintWindow LogonUI before declaring solid fill.
+            # C-RD-CHROME-1/2: reattach + PrintWindow before declaring solid fill.
             recovered = False
             if self._winlogon_mode:
                 try:
-                    alt = self._grab_printwindow_chrome()
+                    self._desktop_attached = False
+                    self._attach_input_desktop()
+                    # Fresh BitBlt after rebind (LogonUI may have painted).
+                    retry = self._grab_gdi()
                     if (
-                        alt is not None
-                        and not self._is_mostly_flat(alt)
-                        and not self._is_mostly_black(alt)
+                        retry is not None
+                        and not self._is_mostly_flat(retry)
+                        and not self._is_mostly_black(retry)
                     ):
-                        img = alt
-                        method = "printwindow-logonui"
+                        img = retry
+                        method = "gdi-reattach"
                         recovered = True
+                    if not recovered:
+                        alt = self._grab_printwindow_chrome()
+                        if (
+                            alt is not None
+                            and not self._is_mostly_flat(alt)
+                            and not self._is_mostly_black(alt)
+                        ):
+                            img = alt
+                            method = "printwindow-logonui"
+                            recovered = True
                 except Exception as exc:
-                    log(f"[REMOTE-DESKTOP] PrintWindow chrome fallback failed: {exc}")
+                    log(f"[REMOTE-DESKTOP] flat recovery failed: {exc}")
             if not recovered:
                 self._stats["flat_frames"] = int(self._stats.get("flat_frames") or 0) + 1
                 now = time.time()
@@ -2254,7 +2288,8 @@ class RemoteDesktopStreamer:
                     _m, var, bright = self._frame_luma_stats(img)
                     log(
                         f"[REMOTE-DESKTOP] ⚠ Flat Winlogon frame "
-                        f"(var={var:.1f} bright={bright:.4f}) method={method}"
+                        f"(var={var:.1f} bright={bright:.4f} "
+                        f"desk={self._desktop_name or '?'}) method={method}"
                     )
                 method = method + "+flat"
                 self._desktop_attached = False

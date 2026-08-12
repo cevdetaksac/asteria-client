@@ -1400,22 +1400,32 @@ class RemoteCommandExecutor:
 
         rd = self._get_remote_desktop()
         if want_winlogon or getattr(rd, "_winlogon_mode", False):
-            # C-RD-CON-7 / CL-RD-CAD-2: never bind username; omit forced SID preference.
-            pass
-
-        if session_id is None:
-            try:
-                sid = getattr(rd, "_target_session_id", None)
-                session_id = int(sid) if sid is not None else None
-            except (TypeError, ValueError):
-                session_id = None
-        if session_id is None:
+            # C-RD-CON-7 / CL-RD-CAD-2: active console only — ignore cloud/stale SID.
+            session_id = None
             try:
                 from client_rd_winlogon import console_session_id
                 csid = int(console_session_id() or 0)
                 session_id = csid if csid > 0 else None
             except Exception:
                 session_id = None
+            log(
+                f"[REMOTE-CMD] CAD prefer=winlogon -> console session_id={session_id} "
+                f"(ignored params/stream user SID)"
+            )
+        else:
+            if session_id is None:
+                try:
+                    sid = getattr(rd, "_target_session_id", None)
+                    session_id = int(sid) if sid is not None else None
+                except (TypeError, ValueError):
+                    session_id = None
+            if session_id is None:
+                try:
+                    from client_rd_winlogon import console_session_id
+                    csid = int(console_session_id() or 0)
+                    session_id = csid if csid > 0 else None
+                except Exception:
+                    session_id = None
 
         from client_rd_winlogon import (
             ensure_software_sas_generation,

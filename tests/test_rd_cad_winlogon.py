@@ -114,6 +114,8 @@ class TestRemoteSendSasHonesty(unittest.TestCase):
         ), mock.patch(
             "client_rd_winlogon.software_sas_allows_services", return_value=True
         ), mock.patch(
+            "client_rd_winlogon.console_session_id", return_value=2
+        ), mock.patch(
             "client_rd_winlogon.invoke_send_sas",
             return_value=(True, "SendSAS(FALSE) invoked"),
         ), mock.patch(
@@ -135,6 +137,45 @@ class TestRemoteSendSasHonesty(unittest.TestCase):
         self.assertEqual(data.get("software_sas_generation"), 1)
         self.assertNotEqual(data.get("ui_after"), None)
 
+    def test_prefer_winlogon_ignores_stale_user_session_id(self):
+        """Lab 4.9.88: CAD prefer=winlogon must not bind locked-user sid=3."""
+        ex = self._executor()
+        rd = mock.MagicMock()
+        rd._target_session_id = 3
+        rd._winlogon_mode = False
+        rd._persistent_helper_connected.return_value = False
+        with mock.patch.object(ex, "_get_remote_desktop", return_value=rd), mock.patch(
+            "client_rd_winlogon.ensure_software_sas_generation",
+            return_value=(1, "policy_ok"),
+        ), mock.patch(
+            "client_rd_winlogon.software_sas_allows_services", return_value=True
+        ), mock.patch(
+            "client_rd_winlogon.console_session_id", return_value=1
+        ), mock.patch(
+            "client_rd_winlogon.invoke_send_sas",
+            return_value=(True, "SendSAS(FALSE) invoked"),
+        ), mock.patch(
+            "client_rd_winlogon.watch_sas_effect",
+            return_value=(False, "no_sas_effect state=unknown", "unknown"),
+        ), mock.patch(
+            "client_rd_winlogon.send_sas_with_console_affinity",
+            return_value=(True, "SendSAS(FALSE) invoked", {
+                "token_source": "process:winlogon.exe",
+                "impersonated": True,
+                "desktop": "Winlogon",
+            }),
+        ) as aff:
+            out = ex._cmd_remote_send_sas({
+                "prefer": "winlogon",
+                "pre_logon": True,
+                "session_id": 3,
+            })
+        data = out.get("data") or {}
+        self.assertEqual(data.get("session_id"), 1)
+        # Affinity called with console SID 1, not stale 3.
+        self.assertTrue(aff.called)
+        self.assertEqual(aff.call_args[0][0], 1)
+
     def test_service_path_success_when_effect_observed(self):
         ex = self._executor()
         rd = mock.MagicMock()
@@ -147,6 +188,8 @@ class TestRemoteSendSasHonesty(unittest.TestCase):
             return_value=(1, "enabled"),
         ), mock.patch(
             "client_rd_winlogon.software_sas_allows_services", return_value=True
+        ), mock.patch(
+            "client_rd_winlogon.console_session_id", return_value=2
         ), mock.patch(
             "client_rd_winlogon.invoke_send_sas",
             return_value=(True, "SendSAS(FALSE) invoked"),
@@ -192,6 +235,8 @@ class TestRemoteSendSasHonesty(unittest.TestCase):
             return_value=(1, "policy_ok"),
         ), mock.patch(
             "client_rd_winlogon.software_sas_allows_services", return_value=True
+        ), mock.patch(
+            "client_rd_winlogon.console_session_id", return_value=2
         ), mock.patch(
             "client_rd_winlogon.invoke_send_sas",
             return_value=(True, "SendSAS(FALSE) invoked"),

@@ -636,6 +636,16 @@ def run_session_helper(
                                     int(rd._stats.get("inputs_applied") or 0) + 1
                                 )
                                 rd._last_input_event = ev
+                                try:
+                                    from client_helpers import log as _hlog
+                                    _hlog(
+                                        f"[remote-input] helper-inject ok event={ev} "
+                                        f"path=local-sendinput "
+                                        f"desk={rd._desktop_name or '?'} "
+                                        f"applied={rd._stats['inputs_applied']}"
+                                    )
+                                except Exception:
+                                    pass
                             else:
                                 key_l = str(params.get("key") or "").strip().lower()
                                 if key_l in (
