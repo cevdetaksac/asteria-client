@@ -4,7 +4,6 @@
 > Client: **4.9.34** · Contract: **1.4.31** · Brand: **Asteria** (`asteria.run`)  
 > Durum: **aktif plan** — uygulama fazlara bağlı  
 > İlgili: [`GUI_WEBVIEW_ROADMAP.md`](GUI_WEBVIEW_ROADMAP.md) ·  
-> [`SECURITY_RESILIENCE_ROADMAP.md`](SECURITY_RESILIENCE_ROADMAP.md) ·  
 > [`LINUX_AGENT_PLAN.md`](LINUX_AGENT_PLAN.md) *(ileride Linux/macOS ajan)* ·  
 > contract `agent/gui-control-center.md` · `cloud/PRODUCT_BRANDING.md`
 
@@ -43,7 +42,7 @@ kullanıcıya modern Asteria arayüzü vermek.
 
 Mevcut güvenlik ilkesi (değişmez): *“Mimari bilinse de güvenli kalmalıdır.”*
 Binary obfuscation ek maliyet katmanıdır; tek kontrol değildir
-(`SECURITY_RESILIENCE_ROADMAP.md`).
+(`asteria-contract` `SECURITY_RESILIENCE_VNEXT.md`).
 
 ---
 

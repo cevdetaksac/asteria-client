@@ -1,6 +1,6 @@
 # Docs cleanup (no client bump)
 
-Removed local stub copies: `docs/api/*`, `docs/CLIENT.md`, old threat-intel/ransomware pointer MDs, and `release-provenance-v*.json`. Contract SoT is asteria-contract `features/`.
+Removed `docs/ux-review` screenshots, duplicate resilience/alert plan MDs. Contract **1.4.64** cloud checklist is SoT for dashboard work.
 
 # v4.9.96
 

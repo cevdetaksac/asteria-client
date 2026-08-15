@@ -52,7 +52,7 @@ build-fix-run.log
 deploy-*.txt
 verify-*.txt
 gh-release-prune-log.txt
-release-provenance-*.json
+docs/ux-review/
 status-probe-*.json
 gui-count.txt
 gui-single.txt
