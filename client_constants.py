@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.99"  # C-RD-PIX: lock follow → Winlogon pixels; healthy-frame before WebRTC
+VERSION = "4.9.100"  # Console lock/logon/logoff: Winlogon helper pixels, same stream
 
 
 

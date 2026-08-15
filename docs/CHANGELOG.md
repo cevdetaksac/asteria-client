@@ -2,6 +2,13 @@
 
 Removed `docs/ux-review` screenshots, duplicate resilience/alert plan MDs. Contract **1.4.64** cloud checklist is SoT for dashboard work.
 
+# v4.9.100
+
+## Physical-console remote desktop (lock / logon / logoff)
+- Do not follow Default while input desktop is still Winlogon (listed username ≠ unlocked)
+- Lock/logoff → Winlogon helper with winlogon.exe token (user token cannot BitBlt Winlogon)
+- Unlock/logon → DXGI Default on the same stream once helper reports Default
+
 # v4.9.99
 
 ## Remote desktop pixels + video-rate capture (contract 1.4.69)

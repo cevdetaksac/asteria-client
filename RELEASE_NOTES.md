@@ -1,5 +1,15 @@
 # Release notes
 
+# Asteria Client 4.9.100 — lock, logon, and logoff like sitting at the PC
+
+Lab on 4.9.99 still showed `persistent-user-helper` + `gdi+black` because a
+listed console username made Follow jump to Default while the input desktop
+was Winlogon. Follow now waits for Default; lock/logoff respawns the Winlogon
+helper with a winlogon.exe token so LogonUI pixels can stream, then DXGI
+continues on the same `stream_id` after unlock.
+
+---
+
 # Asteria Client 4.9.99 — LogonUI pixels, video-rate stream
 
 Contract 1.4.69 C-RD-PIX: Default Connect on a locked console must show the

@@ -523,10 +523,10 @@ class TestDecideConsoleFollow(unittest.TestCase):
             "desktop_default",
         )
 
-    def test_user_active_same_sid(self):
+    def test_user_active_same_sid_stays_until_default_desktop(self):
         from client_rd_winlogon import decide_console_follow
 
-        self.assertEqual(
+        self.assertIsNone(
             decide_console_follow(
                 follow_console=True,
                 winlogon_mode=True,
@@ -536,8 +536,43 @@ class TestDecideConsoleFollow(unittest.TestCase):
                 helper_desktop="Winlogon",
                 logonui_hwnd=0,
                 chrome_detected=False,
+            )
+        )
+
+    def test_lock_promotes_user_helper_to_winlogon(self):
+        from client_rd_winlogon import decide_console_secure
+
+        self.assertEqual(
+            decide_console_secure(
+                follow_console=True,
+                winlogon_mode=False,
+                helper_desktop="Winlogon",
+                logonui_present=False,
+                console_username="administrator",
+                black_frame=True,
             ),
-            "user_session_active",
+            "input_desktop_winlogon",
+        )
+        self.assertEqual(
+            decide_console_secure(
+                follow_console=True,
+                winlogon_mode=False,
+                helper_desktop="Default",
+                logonui_present=False,
+                console_username="",
+                black_frame=False,
+            ),
+            "no_user",
+        )
+        self.assertIsNone(
+            decide_console_secure(
+                follow_console=True,
+                winlogon_mode=False,
+                helper_desktop="Default",
+                logonui_present=False,
+                console_username="administrator",
+                black_frame=True,
+            )
         )
 
     def test_still_on_logonui(self):

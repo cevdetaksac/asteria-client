@@ -993,7 +993,11 @@ class RemoteDesktopStreamer:
                             "message": msg,
                             "data": self.get_status(),
                         }
-                if (blackish or flattish) and not self._winlogon_mode:
+                wrong_secure = (
+                    not self._winlogon_mode
+                    and "winlogon" in str(self._desktop_name or "").lower()
+                )
+                if (blackish or flattish or wrong_secure) and not self._winlogon_mode:
                     fb = self._fallback_user_helper_to_winlogon(
                         jpeg=jpeg, w=w, h=h, phase="gdi_black"
                     )
@@ -1736,7 +1740,6 @@ class RemoteDesktopStreamer:
                 self._sync_media_capture_mode()
                 self._progress_heartbeat_tick()
                 self._maybe_follow_console_desktop()
-                self._maybe_promote_follow_lock_capture()
                 self._capture_and_send()
             except Exception as e:
                 self._stats["frames_failed"] += 1
@@ -3280,19 +3283,19 @@ class RemoteDesktopStreamer:
         )
 
     def _maybe_follow_console_desktop(self) -> None:
-        """C-RD-FOLLOW-1…8: leave Winlogon after logon/unlock on the same stream."""
-        if self._follow_busy or not self._running:
+        """Follow Default after logon; Winlogon after lock/logoff (same stream)."""
+        if self._follow_busy or not self._running or not self._follow_console:
             return
         now = time.time()
         if (now - float(self._last_follow_check or 0)) < FOLLOW_CHECK_SEC:
             return
         self._last_follow_check = now
-        if not self._winlogon_mode and str(self._desktop_name or "").lower() != "winlogon":
-            return
         try:
             from client_rd_winlogon import (
                 console_session_id,
                 decide_console_follow,
+                decide_console_secure,
+                session_has_logonui,
                 session_username,
             )
             csid = int(console_session_id() or 0)
@@ -3302,6 +3305,26 @@ class RemoteDesktopStreamer:
                 or (self._session_helper.session_id if self._session_helper else 0)
                 or (self._target_session_id or 0)
             )
+            logonui = bool(session_has_logonui(csid or int(self._target_session_id or 0)))
+            black = "+black" in str(self._capture_method or "")
+            secure = decide_console_secure(
+                follow_console=True,
+                winlogon_mode=bool(self._winlogon_mode),
+                helper_desktop=str(self._desktop_name or ""),
+                logonui_present=logonui,
+                console_username=user,
+                black_frame=black,
+            )
+            if secure:
+                self._fallback_user_helper_to_winlogon(
+                    jpeg=None, w=0, h=0, phase=secure
+                )
+                return
+            if (
+                not self._winlogon_mode
+                and str(self._desktop_name or "").lower() != "winlogon"
+            ):
+                return
             reason = decide_console_follow(
                 follow_console=bool(self._follow_console),
                 winlogon_mode=bool(self._winlogon_mode),
@@ -3316,6 +3339,7 @@ class RemoteDesktopStreamer:
                 not reason
                 and user
                 and self._winlogon_mode
+                and str(self._desktop_name or "").lower() == "default"
                 and int(getattr(self, "_helper_frame_misses", 0) or 0) >= 2
             ):
                 reason = "stale_winlogon_no_frames"
@@ -4064,7 +4088,10 @@ class RemoteDesktopStreamer:
         """
         try:
             from client_rd_winlogon import open_session_interactive_token
-            return open_session_interactive_token(int(session_id))
+            return open_session_interactive_token(
+                int(session_id),
+                for_secure_desktop=bool(self._winlogon_mode),
+            )
         except Exception as exc:
             log(f"[REMOTE-DESKTOP] open_session_token error: {exc}")
             return None, "no_token"

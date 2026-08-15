@@ -121,13 +121,33 @@ def decide_console_follow(
         return "console_sid_changed"
     if desk == "default":
         return "desktop_default"
-    if (
-        user
-        and int(logonui_hwnd or 0) <= 0
-        and not chrome_detected
-        and (not spawn_sid or not csid or csid == spawn_sid)
-    ):
-        return "user_session_active"
+    # Stay on Winlogon until the helper reports Default. A listed username with
+    # hwnd=0 is the lock screen (lab: user-helper gdi+black). Do not "follow"
+    # to Default while input desktop is still Winlogon.
+    return None
+
+
+def decide_console_secure(
+    *,
+    follow_console: bool,
+    winlogon_mode: bool,
+    helper_desktop: str = "",
+    logonui_present: bool = False,
+    console_username: str = "",
+    black_frame: bool = False,
+) -> Optional[str]:
+    """Physical console locked / logged-off → Winlogon helper (same stream)."""
+    if not follow_console or winlogon_mode:
+        return None
+    desk = str(helper_desktop or "").strip().lower()
+    if desk == "winlogon":
+        return "input_desktop_winlogon"
+    if logonui_present:
+        return "logonui"
+    if not str(console_username or "").strip():
+        return "no_user"
+    if black_frame and desk != "default":
+        return "black_secure"
     return None
 
 
@@ -328,13 +348,14 @@ def _duplicate_primary_token(pid: int):
             pass
 
 
-def open_session_interactive_token(session_id: int):
+def open_session_interactive_token(
+    session_id: int, *, for_secure_desktop: bool = False
+):
     """C-RD-S0-4 token chain for Session-0 → interactive helper spawn.
 
-    Order:
-      1. ``WTSQueryUserToken`` (logged-on / locked user)
-      2. ``winlogon.exe`` / ``LogonUI.exe`` primary token in that session
-      3. SYSTEM primary + ``TokenSessionId`` (last resort)
+    Default (Default desktop DXGI): user token first.
+    Winlogon/lock: ``winlogon.exe`` / LogonUI token first — a logged-on user
+    token cannot BitBlt ``winsta0\\Winlogon`` (lab gdi+black).
 
     Returns ``(HANDLE|None, source_tag)``. Caller must ``CloseHandle`` the token.
     """
@@ -349,23 +370,44 @@ def open_session_interactive_token(session_id: int):
         "SeIncreaseQuotaPrivilege",
     )
 
+    def _from_secure_processes():
+        for image in ("winlogon.exe", "LogonUI.exe", "logonui.exe", "LockApp.exe"):
+            for pid in _pids_named(image):
+                if _session_of_pid(pid) != sid:
+                    continue
+                h_dup = _duplicate_primary_token(pid)
+                if h_dup:
+                    log(
+                        f"[RD-WINLOGON] session token via {image} pid={pid} "
+                        f"session={sid} secure={for_secure_desktop}"
+                    )
+                    return h_dup, f"process:{image}"
+        return None, ""
+
+    if for_secure_desktop:
+        h_sec, tag = _from_secure_processes()
+        if h_sec:
+            return h_sec, tag
+    else:
+        h_token = wintypes.HANDLE()
+        if _wtsapi32.WTSQueryUserToken(sid, ctypes.byref(h_token)):
+            return h_token, "user"
+        user_err = int(_kernel32.GetLastError() or 0)
+        h_sec, tag = _from_secure_processes()
+        if h_sec:
+            log(
+                f"[RD-WINLOGON] session token via {tag} "
+                f"session={sid} (WTS user err={user_err})"
+            )
+            return h_sec, tag
+
     h_token = wintypes.HANDLE()
-    if _wtsapi32.WTSQueryUserToken(sid, ctypes.byref(h_token)):
-        return h_token, "user"
-
-    user_err = int(_kernel32.GetLastError() or 0)
-
-    for image in ("winlogon.exe", "LogonUI.exe", "logonui.exe"):
-        for pid in _pids_named(image):
-            if _session_of_pid(pid) != sid:
-                continue
-            h_dup = _duplicate_primary_token(pid)
-            if h_dup:
-                log(
-                    f"[RD-WINLOGON] session token via {image} pid={pid} "
-                    f"session={sid} (WTS user err={user_err})"
-                )
-                return h_dup, f"process:{image}"
+    if not for_secure_desktop:
+        user_err = int(_kernel32.GetLastError() or 0)
+    else:
+        user_err = 0
+        if _wtsapi32.WTSQueryUserToken(sid, ctypes.byref(h_token)):
+            return h_token, "user_last"
 
     # SYSTEM + TokenSessionId fallback
     h_proc = wintypes.HANDLE()
