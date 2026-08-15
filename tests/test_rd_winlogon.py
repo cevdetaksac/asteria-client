@@ -267,6 +267,33 @@ class TestWinlogonStartContract(unittest.TestCase):
                 except Exception:
                     pass
 
+    def test_follow_lock_listed_user_uses_winlogon_helper(self):
+        rd = self._make_rd()
+        rd._target_session_id = 3
+        rd._follow_console = True
+        with mock.patch.object(
+            rd, "_console_interactive_username", return_value="administrator"
+        ), mock.patch(
+            "client_rd_winlogon.session_has_logonui", return_value=True
+        ):
+            rd._apply_follow_secure_or_default()
+        self.assertTrue(rd._winlogon_mode)
+        self.assertEqual(rd._target_username, "")
+
+    def test_promote_gdi_black_user_helper(self):
+        rd = self._make_rd()
+        rd._follow_console = True
+        rd._winlogon_mode = False
+        rd._capture_method = "persistent-user-helper:gdi+black"
+        rd._desktop_name = "Winlogon"
+        self.assertTrue(rd._should_promote_follow_to_winlogon())
+
+    def test_healthy_frame_blocks_black_webrtc(self):
+        rd = self._make_rd()
+        rd._capture_method = "gdi+black"
+        self.assertFalse(rd._frame_is_healthy())
+        self.assertFalse(rd._media_ready())
+
     def test_secure_desktop_still_uses_winlogon(self):
         from client_rd_winlogon import console_start_secure_desktop
         self.assertTrue(
@@ -276,6 +303,25 @@ class TestWinlogonStartContract(unittest.TestCase):
         self.assertFalse(
             console_start_secure_desktop(username="administrator", logonui_present=False)
         )
+
+
+class TestSessionHasLogonui(unittest.TestCase):
+    def _make_rd(self):
+        from client_remote_desktop import RemoteDesktopStreamer
+        return RemoteDesktopStreamer(api_client=None, token_getter=lambda: "")
+
+    def test_unreadable_session_counts_on_console(self):
+        from client_rd_winlogon import session_has_logonui
+        with mock.patch(
+            "client_rd_winlogon._pids_named",
+            side_effect=lambda image: [42] if "logonui" in image.lower() else [],
+        ), mock.patch(
+            "client_rd_winlogon._session_of_pid", return_value=-1
+        ), mock.patch(
+            "client_rd_winlogon.console_session_id", return_value=3
+        ):
+            self.assertTrue(session_has_logonui(3))
+            self.assertFalse(session_has_logonui(9))
 
     def test_resolve_start_topology_named(self):
         from client_rd_winlogon import resolve_start_topology

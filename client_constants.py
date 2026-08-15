@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.98"  # Single-flight update mutex — no dual installer download
+VERSION = "4.9.99"  # C-RD-PIX: lock follow → Winlogon pixels; healthy-frame before WebRTC
 
 
 

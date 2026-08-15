@@ -2,6 +2,15 @@
 
 Removed `docs/ux-review` screenshots, duplicate resilience/alert plan MDs. Contract **1.4.64** cloud checklist is SoT for dashboard work.
 
+# v4.9.99
+
+## Remote desktop pixels + video-rate capture (contract 1.4.69)
+- Follow + lock with a listed username: LogonUI → Winlogon helper (not `persistent-user-helper` `gdi+black`)
+- Logging failure must not roll Follow back to Default GDI
+- WebRTC JPEG suppress / `connected` health only after one non-black frame
+- WebRTC JPEG suppress / `connected` health only after one non-black frame
+- Capture 60 fps raw / 8 Mbps target; `t:meta.black_frame` every ≤5 frames
+
 # v4.9.98
 
 ## One installer download

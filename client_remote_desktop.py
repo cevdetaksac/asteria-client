@@ -31,17 +31,16 @@ from client_helpers import log
 from client_rd_adaptive import AdaptiveStreamController
 
 # Defaults: JPEG-WS is fallback only; WebRTC/H.264 is the smooth primary path.
-DEFAULT_FPS = 15.0
-DEFAULT_QUALITY = 50
-DEFAULT_MAX_WIDTH = 1280
+DEFAULT_FPS = 24.0
+DEFAULT_QUALITY = 62
+DEFAULT_MAX_WIDTH = 1920
 MIN_ENCODE_WIDTH = 800
 MIN_ENCODE_HEIGHT = 600
-TARGET_FRAME_BYTES = 320 * 1024       # aim ≤ ~320 KB
+TARGET_FRAME_BYTES = 480 * 1024
 MAX_FRAME_BYTES = 2 * 1024 * 1024
-# WebRTC primary capture rate (independent of JPEG knobs).
-MEDIA_CAPTURE_FPS = 45.0
-MEDIA_CAPTURE_QUALITY = 78
-JPEG_FALLBACK_FPS_WHILE_NEGOTIATING = 12.0
+MEDIA_CAPTURE_FPS = 60.0
+MEDIA_CAPTURE_QUALITY = 82
+JPEG_FALLBACK_FPS_WHILE_NEGOTIATING = 24.0
 IDLE_STOP_SECONDS = 300
 INPUT_RATE_LIMIT = 60                 # legacy alias (kept for backward compat)
 INPUT_RATE_WINDOW = 1.0
@@ -446,7 +445,7 @@ class RemoteDesktopStreamer:
                 "remote_stream_start received",
                 force=True,
             )
-            self._requested_fps = max(1.0, min(float(fps or DEFAULT_FPS), 30.0))
+            self._requested_fps = max(12.0, min(float(fps or DEFAULT_FPS), 60.0))
             self._requested_quality = max(20, min(int(quality or DEFAULT_QUALITY), 85))
             self._requested_max_width = max(
                 MIN_ENCODE_WIDTH, min(int(max_width or DEFAULT_MAX_WIDTH), 1920)
@@ -994,6 +993,32 @@ class RemoteDesktopStreamer:
                             "message": msg,
                             "data": self.get_status(),
                         }
+                if (blackish or flattish) and not self._winlogon_mode:
+                    fb = self._fallback_user_helper_to_winlogon(
+                        jpeg=jpeg, w=w, h=h, phase="gdi_black"
+                    )
+                    if fb:
+                        jpeg, w, h = fb
+                        blackish = "+black" in (self._capture_method or "")
+                        flattish = "+flat" in (self._capture_method or "")
+                    elif blackish:
+                        err = "winlogon_capture_black"
+                        msg = (
+                            "Follow Default helper painted gdi+black "
+                            f"(method={self._capture_method}, "
+                            f"desk={self._desktop_name or '?'}); "
+                            "Winlogon helper retry also failed"
+                        )
+                        log(f"[REMOTE-DESKTOP] ✖ {err}: {msg}")
+                        self._running = False
+                        self._transport = "idle"
+                        self.emit_stream_progress("failed", msg, error=err, force=True)
+                        return {
+                            "success": False,
+                            "error": err,
+                            "message": msg,
+                            "data": self.get_status(),
+                        }
             else:
                 # Capture thread-less probe: attach input desktop first (RDP/elevated)
                 self._attach_input_desktop()
@@ -1218,6 +1243,7 @@ class RemoteDesktopStreamer:
         media.setdefault("target_bitrate_bps", None)
         # C-RD-P0-ICE-3: JPEG-WS stays active until ICE+DTLS verified.
         media["jpeg_fallback_active"] = bool(not media_ready)
+        media["healthy_frame"] = bool(self._frame_is_healthy())
         return {
             "streaming": self._running,
             "transport": self._transport,
@@ -1620,7 +1646,21 @@ class RemoteDesktopStreamer:
         except Exception:
             return False
 
+    def _frame_is_healthy(self) -> bool:
+        """C-RD-PIX-1: JPEG size alone is not health."""
+        method = str(self._capture_method or "")
+        if "+black" in method or "+flat" in method:
+            return False
+        if self._black_streak_started > 0:
+            return False
+        if self._winlogon_mode and not self._chrome_detected:
+            if float(self._last_frame_variance or 0.0) < FLAT_VARIANCE_THRESHOLD:
+                return False
+        return True
+
     def _media_ready(self) -> bool:
+        if not self._frame_is_healthy():
+            return False
         try:
             status = self._media.status()
             return bool(
@@ -1634,13 +1674,11 @@ class RemoteDesktopStreamer:
     def _effective_capture_settings(self) -> Tuple[float, int, int]:
         if self._media_ready():
             return self._media_fps, self._media_quality, self._max_width
-        # WebRTC-first: while offer/ICE is in flight, don't crawl at JPEG 6 fps —
-        # keep a fluid provisional rate so H.264 handover has fresh frames and
-        # JPEG fallback still looks like video, not a slideshow.
+        # Capture at media fps whenever WebRTC exists so handover is video-smooth.
         if self._webrtc_available() and self._running:
             return (
-                max(float(self._fps), JPEG_FALLBACK_FPS_WHILE_NEGOTIATING),
-                max(int(self._quality), DEFAULT_QUALITY),
+                max(float(self._media_fps), JPEG_FALLBACK_FPS_WHILE_NEGOTIATING),
+                max(int(self._quality), MEDIA_CAPTURE_QUALITY),
                 self._max_width,
             )
         return self._fps, self._quality, self._max_width
@@ -1698,6 +1736,7 @@ class RemoteDesktopStreamer:
                 self._sync_media_capture_mode()
                 self._progress_heartbeat_tick()
                 self._maybe_follow_console_desktop()
+                self._maybe_promote_follow_lock_capture()
                 self._capture_and_send()
             except Exception as e:
                 self._stats["frames_failed"] += 1
@@ -2084,7 +2123,9 @@ class RemoteDesktopStreamer:
             "capture_mono_ms": int(self._last_capture_mono * 1000),
         }
         try:
-            if self._media.publish_frame(jpeg, media_metadata):
+            if self._frame_is_healthy() and self._media.publish_frame(
+                jpeg, media_metadata
+            ):
                 self._transport = "webrtc"
                 self._last_activity = time.time()
                 # A stale JPEG may already be waiting from pre-connect. Remove
@@ -3031,22 +3072,27 @@ class RemoteDesktopStreamer:
         sid = int(self._target_session_id or 0)
         user = self._console_interactive_username()
         logonui = False
+        secure = False
         try:
             from client_rd_winlogon import (
                 console_start_secure_desktop,
                 session_has_logonui,
             )
             logonui = bool(session_has_logonui(sid)) if sid > 0 else False
-            if console_start_secure_desktop(username=user, logonui_present=logonui):
-                self._winlogon_mode = True
-                self._target_username = ""
-                log(
-                    f"[REMOTE-DESKTOP] follow → Winlogon "
-                    f"(logonui={logonui} user={user!r} session={sid})"
-                )
-                return
+            secure = bool(
+                console_start_secure_desktop(username=user, logonui_present=logonui)
+            )
         except Exception as exc:
             log(f"[REMOTE-DESKTOP] follow desktop probe: {exc}")
+            secure = False
+        if secure:
+            self._winlogon_mode = True
+            self._target_username = ""
+            log(
+                f"[REMOTE-DESKTOP] follow -> Winlogon "
+                f"(logonui={logonui} user={user!r} session={sid})"
+            )
+            return
         self._winlogon_mode = False
         self._prefer_dxgi = True
         self._follow_console = True
@@ -3054,7 +3100,7 @@ class RemoteDesktopStreamer:
             self._target_username = user
         self._desktop_name = "Default"
         log(
-            f"[REMOTE-DESKTOP] follow → Default DXGI "
+            f"[REMOTE-DESKTOP] follow -> Default DXGI "
             f"session={sid} user={user!r} — skip Winlogon helper"
         )
 
@@ -3144,6 +3190,94 @@ class RemoteDesktopStreamer:
             self._last_helper_fail_phase = ""
             return jpeg2, w2, h2
         return None
+
+    def _should_promote_follow_to_winlogon(self) -> bool:
+        """Lock/LogonUI with a listed username → user-helper GDI black (C-RD-PIX-3)."""
+        if not self._follow_console or self._winlogon_mode or self._force_secure_desktop:
+            return False
+        method = str(self._capture_method or "").lower()
+        desk = str(self._desktop_name or "").lower()
+        if "winlogon" in desk:
+            return True
+        if "+black" not in method and "+flat" not in method:
+            return False
+        if "dxgi" in method or "nvenc" in method:
+            return False
+        try:
+            from client_rd_winlogon import session_has_logonui
+            if session_has_logonui(int(self._target_session_id or 0)):
+                return True
+        except Exception:
+            pass
+        return "gdi" in method or "helper" in method
+
+    def _fallback_user_helper_to_winlogon(
+        self,
+        *,
+        jpeg,
+        w: int,
+        h: int,
+        phase: str,
+    ):
+        """Follow + listed user but lock screen: switch to Winlogon helper."""
+        if not self._should_promote_follow_to_winlogon():
+            return None
+        sid = int(self._target_session_id or 0)
+        log(
+            f"[REMOTE-DESKTOP] C-RD-PIX-3 fallback Default→Winlogon "
+            f"phase={phase} jpeg={0 if not jpeg else len(jpeg)}B "
+            f"method={self._capture_method} desk={self._desktop_name} session={sid}"
+        )
+        self.emit_stream_progress(
+            "switching",
+            "Lock/LogonUI detected; attaching Winlogon helper",
+            force=True,
+        )
+        self._winlogon_mode = True
+        self._target_username = ""
+        self._desktop_name = "Winlogon"
+        self._prefer_dxgi = False
+        self._stop_persistent_helper()
+        if not self._start_persistent_helper(accept_timeout=WINLOGON_HELPER_ACCEPT_SEC):
+            log(
+                "[REMOTE-DESKTOP] Winlogon helper spawn failed after Default black "
+                f"phase={self._last_helper_fail_phase}"
+            )
+            return None
+        time.sleep(WINLOGON_HELPER_SETTLE_SEC)
+        deadline = time.time() + WINLOGON_HELPER_FRAME_SEC
+        jpeg2, w2, h2 = None, 0, 0
+        while time.time() < deadline:
+            jpeg2, w2, h2 = self._grab_via_persistent_helper(0.35)
+            if (not jpeg2 or len(jpeg2) < MIN_JPEG_BYTES) and self._last_helper_raw:
+                jpeg2, w2, h2 = self._encode_helper_raw_jpeg()
+            blackish = "+black" in (self._capture_method or "")
+            flattish = "+flat" in (self._capture_method or "")
+            if (
+                jpeg2
+                and w2 > 0
+                and h2 > 0
+                and len(jpeg2) >= MIN_JPEG_BYTES
+                and not blackish
+                and not flattish
+            ):
+                self._last_helper_fail_phase = ""
+                return jpeg2, w2, h2
+            time.sleep(0.08)
+        if jpeg2 and w2 > 0 and h2 > 0 and len(jpeg2) >= MIN_JPEG_BYTES:
+            if "+black" not in (self._capture_method or ""):
+                self._last_helper_fail_phase = ""
+                return jpeg2, w2, h2
+        return None
+
+    def _maybe_promote_follow_lock_capture(self) -> None:
+        if not self._running or self._follow_busy:
+            return
+        if not self._should_promote_follow_to_winlogon():
+            return
+        self._fallback_user_helper_to_winlogon(
+            jpeg=None, w=0, h=0, phase="live"
+        )
 
     def _maybe_follow_console_desktop(self) -> None:
         """C-RD-FOLLOW-1…8: leave Winlogon after logon/unlock on the same stream."""
@@ -4338,6 +4472,10 @@ class RemoteDesktopStreamer:
             "media": media,
             "capture_method": self._capture_method or "",
             "chrome_detected": bool(self._chrome_detected),
+            "black_frame": bool(
+                "+black" in (self._capture_method or "")
+                or self._black_streak_started > 0
+            ),
             "flat_frame": bool("+flat" in (self._capture_method or "")),
             "frame_variance": float(self._last_frame_variance or 0.0),
             "bright_ratio": float(self._last_frame_bright_ratio or 0.0),

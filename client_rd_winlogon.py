@@ -132,20 +132,34 @@ def decide_console_follow(
 
 
 def session_has_logonui(session_id: int) -> bool:
-    """True when LogonUI / LockApp is running in the console session."""
+    """True when LogonUI / LockApp is running in the console session.
+
+    If ProcessIdToSessionId fails (access), still treat a lock process as
+    present when it is the active console — otherwise follow+lock falls through
+    to Default GDI black (C-RD-PIX-3).
+    """
     try:
         sid = int(session_id or 0)
     except (TypeError, ValueError):
         return False
     if sid <= 0:
         return False
+    unmatched = False
     for image in ("LogonUI.exe", "logonui.exe", "LockApp.exe", "LockAppHost.exe"):
         for pid in _pids_named(image):
             try:
-                if _session_of_pid(pid) == sid:
-                    return True
+                psid = _session_of_pid(pid)
             except Exception:
-                continue
+                psid = -1
+            if psid == sid:
+                return True
+            if psid < 0:
+                unmatched = True
+    if unmatched:
+        try:
+            return int(console_session_id() or 0) == sid
+        except Exception:
+            return True
     return False
 
 

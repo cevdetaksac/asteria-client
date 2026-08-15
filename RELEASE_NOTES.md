@@ -1,5 +1,15 @@
 # Release notes
 
+# Asteria Client 4.9.99 — LogonUI pixels, video-rate stream
+
+Contract 1.4.69 C-RD-PIX: Default Connect on a locked console must show the
+password box, not a solid-black GDI fill advertised as NVENC. Follow promotes
+to the Winlogon helper when LogonUI is present or user-helper paints
+`gdi+black`. WebRTC is not treated as healthy until one real frame. Capture
+targets 60 fps / 8 Mbps so the viewer can stay video-smooth.
+
+---
+
 # Asteria Client 4.9.98 — one update download
 
 Two `asteria-client.exe` processes could both download the installer (JSON gate

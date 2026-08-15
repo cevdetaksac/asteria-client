@@ -16,7 +16,7 @@ class AdaptiveStreamController:
     oscillating resolution makes the dashboard hard to use.
     """
 
-    MIN_FPS = 1.0
+    MIN_FPS = 12.0
     MIN_QUALITY = 20
     MIN_WIDTH = 800
 
@@ -57,7 +57,7 @@ class AdaptiveStreamController:
     @staticmethod
     def _clamp_requested(fps, quality, max_width) -> dict:
         return {
-            "fps": max(1.0, min(float(fps), 30.0)),
+            "fps": max(12.0, min(float(fps), 60.0)),
             "quality": max(20, min(int(quality), 85)),
             "max_width": max(
                 AdaptiveStreamController.MIN_WIDTH,

@@ -201,7 +201,7 @@ class TestAdaptiveController(unittest.TestCase):
     def make(self):
         clock = FakeClock()
         controller = AdaptiveStreamController(
-            8, 60, 1600,
+            24, 60, 1600,
             clock=clock,
             degrade_cooldown=5,
             stable_window=20,
@@ -213,7 +213,7 @@ class TestAdaptiveController(unittest.TestCase):
         controller.note_coalesced(3)
         changed = controller.evaluate()
         self.assertIsNotNone(changed)
-        self.assertLess(changed["fps"], 8)
+        self.assertLess(changed["fps"], 24)
         self.assertLess(changed["quality"], 60)
         # Resolution must stay locked — dashboard UX.
         self.assertEqual(changed["max_width"], 1600)
@@ -243,7 +243,7 @@ class TestAdaptiveController(unittest.TestCase):
         self.assertEqual(controller.metrics["recovers"], 1)
 
     def test_width_floor_is_800(self):
-        controller = AdaptiveStreamController(8, 60, 400)
+        controller = AdaptiveStreamController(24, 60, 400)
         self.assertEqual(controller.effective["max_width"], 800)
 
     def test_telemetry_records_capture_send_and_failures(self):
