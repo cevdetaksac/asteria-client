@@ -1,3 +1,7 @@
+# Docs cleanup (no client bump)
+
+Removed local stub copies: `docs/api/*`, `docs/CLIENT.md`, old threat-intel/ransomware pointer MDs, and `release-provenance-v*.json`. Contract SoT is asteria-contract `features/`.
+
 # v4.9.96
 
 ## Threat-intel ACK + installer alias (contract 1.4.61)

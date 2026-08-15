@@ -32,7 +32,7 @@ Yoksa: kullanıcıya clone/submodule etmesini söyle; uydurma API yazma.
 - Brand: **Asteria** · Primary API: `https://asteria.run` (legacy: `honeypot.yesnext.com.tr`)
 - `agent/CLIENT.md`, `rebrand-asteria.md`, `firewall-brand-migrate.md`, `register-protection.md`
 - `api/08-architecture.md`, `api/09-threat-intel.md`, `api/03-control-websocket.md`
-- Client `docs/api/*` stub’dır — düzenleme sadece `asteria-contract` içinde
+- API/agent davranışı sadece `asteria-contract` (`features/` önce)
 
 ## Kurallar
 

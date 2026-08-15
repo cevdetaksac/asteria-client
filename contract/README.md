@@ -10,12 +10,12 @@ Remote: https://github.com/cevdetaksac/asteria-contract · **VERSION ≥ 1.4.35*
 
 Legacy clone URL redirects: `honeypot-contract` → `asteria-contract`.
 
-Local `docs/api/*` are stubs — source of truth is **only** asteria-contract.
+Source of truth is **only** asteria-contract (`features/` first).
 
 ## Agent / Cursor — read order
 
-1. `CONTRACT_ROOT/VERSION` + `INDEX.md` + `FLEET.md`
-2. Relevant `api/*`, `agent/*`, or `cloud/*`
+1. `CONTRACT_ROOT/VERSION` + `INDEX.md` + `FLEET.md` + `features/README.md`
+2. Relevant `features/*` (then `api/*` / `agent/*` appendices)
 3. Do not write code that contradicts the contract; note Open questions when unsure
 4. API change → contract MD + CHANGELOG + VERSION → then client/cloud code
 5. Cloud operators: `git pull` + `publish_contract.sh`

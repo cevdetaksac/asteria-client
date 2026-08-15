@@ -79,7 +79,7 @@ gh release create vX.Y.Z asteria-client-installer.exe `
 | [`contract/README.md`](contract/README.md) | Pointer to asteria-contract |
 | [`AGENTS.md`](AGENTS.md) | Cursor / agent reading order |
 
-Local `docs/api/*` files are **stubs** — edit behavior only in [asteria-contract](https://github.com/cevdetaksac/asteria-contract).
+API behavior lives only in [asteria-contract](https://github.com/cevdetaksac/asteria-contract) (`features/` + `api/`).
 
 ## Security
 
