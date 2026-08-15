@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.91"  # sync live chrome/method/inputs_applied from helper after soft-start
+VERSION = "4.9.92"  # parent inputs_applied++ per apply; do not max() helper process tally
 
 
 

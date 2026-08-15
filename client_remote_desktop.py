@@ -463,6 +463,10 @@ class RemoteDesktopStreamer:
             self._stats["frame_variance"] = 0.0
             self._stats["bright_ratio"] = 0.0
             self._stats["chrome_detected"] = False
+            # Per-stream input proof (C-RD-IN-WL-3). 4.9.91 used max(parent
+            # lifetime, helper-process tally) → stuck at 260 while bullets worked.
+            self._stats["inputs_applied"] = 0
+            self._last_input_event = ""
             self._desktop_attached = False
             self._desktop_attach_tid = None
             self._desktop_name = ""
@@ -1283,8 +1287,7 @@ class RemoteDesktopStreamer:
             if getattr(self, "_in_session_helper", False):
                 ok = self._inject_local(event, params)
                 if ok:
-                    self._stats["inputs_applied"] += 1
-                    self._last_input_event = event_name
+                    self._note_input_applied(event_name, params)
                     return result({"success": True, "message": f"input {event} applied"})
                 key_l = str(params.get("key") or "").strip().lower()
                 if key_l in ("ctrl+alt+del", "ctrl-alt-del", "ctrl+alt+delete", "cad"):
@@ -1325,7 +1328,7 @@ class RemoteDesktopStreamer:
                     )
                     ack = {"ok": ok_legacy, "inputs_applied": 0}
                 if ack.get("ok"):
-                    self._note_helper_input_applied(event_name, ack)
+                    self._note_input_applied(event_name, params, ack=ack)
                     return result({"success": True, "message": f"input {event} forwarded"})
                 return result({"success": False, "error": f"input {event} not forwarded"})
             if self._use_user_helper:
@@ -1335,8 +1338,7 @@ class RemoteDesktopStreamer:
 
             ok = self._inject_local(event, params)
             if ok:
-                self._stats["inputs_applied"] += 1
-                self._last_input_event = event_name
+                self._note_input_applied(event_name, params)
                 return result({"success": True, "message": f"input {event} applied"})
             # C-RD-CAD-6: synthetic CAD keys are ignored — not a silent success.
             key_l = str(params.get("key") or "").strip().lower()
@@ -1351,26 +1353,35 @@ class RemoteDesktopStreamer:
             log(f"[REMOTE-DESKTOP] Input error: {e}")
             return result({"success": False, "error": str(e)})
 
-    def _note_helper_input_applied(self, event_name: str, ack: dict) -> None:
-        """Bump parent inputs_applied on helper inject success; prefer ACK tally."""
-        helper_n = int((ack or {}).get("inputs_applied") or 0)
-        if helper_n > 0:
-            self._stats["inputs_applied"] = max(
-                int(self._stats.get("inputs_applied") or 0),
-                helper_n,
-            )
+    def _note_input_applied(
+        self, event_name: str, params: Optional[dict] = None, ack: Optional[dict] = None
+    ) -> None:
+        """Parent-stream tally on every successful apply (never max with helper PID).
+
+        Helper ``inputs_applied`` is a *new process* counter (starts at 0 each
+        spawn). Mixing it with a parent lifetime total via ``max()`` froze lab
+        at 260 while JPEG bullets still appeared.
+        """
+        params = params if isinstance(params, dict) else {}
+        ack = ack if isinstance(ack, dict) else {}
+        event_name = str(event_name or "").strip().lower()
+        if event_name == "type_text":
+            bump = max(1, len(str(params.get("text") or "")))
+        elif not _is_move_event(event_name, params):
+            bump = 1
         else:
-            self._stats["inputs_applied"] = int(
-                self._stats.get("inputs_applied") or 0
-            ) + 1
-        last = str(
-            (ack or {}).get("last_input_event")
-            or (ack or {}).get("event")
-            or event_name
-            or ""
-        ).strip()
-        if last:
-            self._last_input_event = last
+            bump = 1
+        self._stats["inputs_applied"] = int(self._stats.get("inputs_applied") or 0) + bump
+        ack_last = str(ack.get("last_input_event") or ack.get("event") or "").strip().lower()
+        # Keep original type_text; cloud key-expand must not clobber last_input_event.
+        if event_name == "type_text" or ack_last == "type_text":
+            self._last_input_event = "type_text"
+            return
+        if self._last_input_event == "type_text" and event_name == "key":
+            return
+        chosen = event_name or ack_last
+        if chosen:
+            self._last_input_event = chosen
 
     @staticmethod
     def _normalize_input_envelope(params: dict) -> dict:

@@ -327,7 +327,7 @@ class TestWinlogonHelperInput(unittest.TestCase):
         out = rd.apply_input({"event": "type_text", "text": "abc"})
         self.assertTrue(out.get("success"))
         self.assertEqual(calls, [("type_text", "abc")])
-        self.assertEqual(rd._stats["inputs_applied"], 1)
+        self.assertEqual(rd._stats["inputs_applied"], 3)
         self.assertEqual(rd._last_input_event, "type_text")
 
     def test_parent_winlogon_forwards_to_helper(self):
@@ -368,7 +368,35 @@ class TestWinlogonHelperInput(unittest.TestCase):
         rd._persistent_helper_connected = lambda: True
         out = rd.apply_input({"event": "type_text", "text": "pw"})
         self.assertTrue(out.get("success"))
-        self.assertEqual(rd._stats["inputs_applied"], 5)
+        self.assertEqual(rd._stats["inputs_applied"], 4)
+        self.assertEqual(rd._last_input_event, "type_text")
+
+    def test_parent_does_not_freeze_on_helper_tally_max(self):
+        """4.9.91 lab: max(parent=260, helper=4) stuck; bullets still worked."""
+        rd = _make()
+        rd._winlogon_mode = True
+        rd._in_session_helper = False
+        rd._stats["inputs_applied"] = 260
+
+        class AckHelper(FakeMailbox):
+            def send_input_result(self, event, wait=False, timeout=0.2):
+                self.events.append((event, wait))
+                return {
+                    "ok": True,
+                    "inputs_applied": 4,
+                    "last_input_event": "key",
+                    "event": "key",
+                }
+
+        rd._session_helper = AckHelper()
+        rd._persistent_helper_connected = lambda: True
+        out = rd.apply_input({"event": "type_text", "text": "zz91"})
+        self.assertTrue(out.get("success"))
+        self.assertEqual(rd._stats["inputs_applied"], 264)
+        self.assertEqual(rd._last_input_event, "type_text")
+        out2 = rd.apply_input({"event": "key", "key": "z"})
+        self.assertTrue(out2.get("success"))
+        self.assertEqual(rd._stats["inputs_applied"], 265)
         self.assertEqual(rd._last_input_event, "type_text")
 
     def test_sync_helper_frame_telemetry_clears_stale_flat(self):
