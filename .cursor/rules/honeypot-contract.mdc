@@ -31,7 +31,7 @@ Yoksa: kullanıcıya clone/submodule etmesini söyle; uydurma API yazma.
 - Fleet matrix: `FLEET.md` · Production floor: client ≥ **4.9.0** · Contract `VERSION` **1.4.31+**
 - Brand: **Asteria** · Primary API: `https://asteria.run` (legacy: `honeypot.yesnext.com.tr`)
 - `agent/CLIENT.md`, `rebrand-asteria.md`, `firewall-brand-migrate.md`, `register-protection.md`
-- `api/08-architecture.md`, `api/09-threat-intel.md`, `api/03-control-websocket.md`
+- `features/README.md` · `features/CLIENT_CHECKLIST.md` · `api/01-auth.md` · `api/03-control-websocket.md`
 - API/agent davranışı sadece `asteria-contract` (`features/` önce)
 
 ## Kurallar
