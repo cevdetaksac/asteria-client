@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """Cloud-driven threat intel — poll bundle, cache, apply defense layers.
 
-Contract: honeypot-contract api/09-threat-intel.md
+Contract: features/threat-intel.md (bundle). This module does NOT scrape Abuse.ch/CISA.
 Cloud is the source of truth. This module does NOT scrape Abuse.ch/CISA.
 Firewall IoCs → AR-INTEL-<id> (HP-* remains read/delete legacy only).
 """
