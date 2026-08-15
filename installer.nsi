@@ -13,7 +13,7 @@ OutFile "asteria-client-installer.exe"
 !define DESCRIPTION "Asteria Client - Deception Cloud Agent"
 !define VERSIONMAJOR 4
 !define VERSIONMINOR 9
-!define VERSIONBUILD 90
+!define VERSIONBUILD 91
 
 InstallDir "$PROGRAMFILES64\${COMPANYNAME}\${APPNAME}"
 
