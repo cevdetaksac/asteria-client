@@ -650,6 +650,10 @@ class RemoteDesktopStreamer:
             )
             if self._winlogon_mode:
                 self._target_username = ""
+            # C-RD-FOLLOW: omit-sid / Logon Start with an interactive Default
+            # session must not spawn Winlogon helper (lab 4.9.93 SID 3).
+            if self._follow_console:
+                self._maybe_skip_winlogon_for_live_console()
 
             pid_sid, csid = self._session_ids()
             # Cross-session capture MUST use CreateProcessAsUser helper.
@@ -913,16 +917,22 @@ class RemoteDesktopStreamer:
                         msg = helper_err
                     self._capture_method = "none"
                     self._stats["capture_method"] = "none"
-                    log(f"[REMOTE-DESKTOP] ✖ {err}: {msg}")
-                    self._running = False
-                    self._transport = "idle"
-                    self.emit_stream_progress("failed", msg, error=err, force=True)
-                    return {
-                        "success": False,
-                        "error": err,
-                        "message": msg,
-                        "data": self.get_status(),
-                    }
+                    fb = self._fallback_winlogon_helper_to_default(
+                        jpeg=jpeg, w=w, h=h, phase=phase
+                    )
+                    if fb:
+                        jpeg, w, h = fb
+                    else:
+                        log(f"[REMOTE-DESKTOP] ✖ {err}: {msg}")
+                        self._running = False
+                        self._transport = "idle"
+                        self.emit_stream_progress("failed", msg, error=err, force=True)
+                        return {
+                            "success": False,
+                            "error": err,
+                            "message": msg,
+                            "data": self.get_status(),
+                        }
                 # Connected but only black/flat after retries.
                 if (blackish or flattish) and self._winlogon_mode:
                     # Soft-degraded start: keep helper alive when we have a settle
@@ -2980,6 +2990,119 @@ class RemoteDesktopStreamer:
         except Exception as e:
             log(f"[REMOTE-DESKTOP] desktop attach error: {e}")
             return False
+
+    def _console_interactive_username(self) -> str:
+        sid = int(self._target_session_id or 0)
+        user = ""
+        try:
+            from client_rd_winlogon import session_username
+            user = session_username(sid)
+        except Exception:
+            user = ""
+        if user:
+            return user
+        try:
+            for row in self._enumerate_sessions() or []:
+                try:
+                    if int(row.get("session_id") or 0) != sid:
+                        continue
+                except (TypeError, ValueError):
+                    continue
+                if row.get("pre_logon"):
+                    continue
+                name = str(row.get("username") or "").strip()
+                if name:
+                    return name
+        except Exception:
+            pass
+        return str(self._target_username or "").strip()
+
+    def _maybe_skip_winlogon_for_live_console(self) -> None:
+        """If console already has a user Default desktop, skip Winlogon helper."""
+        if not self._winlogon_mode:
+            return
+        sid = int(self._target_session_id or 0)
+        if sid <= 0:
+            return
+        try:
+            from client_rd_winlogon import (
+                console_start_secure_desktop,
+                session_has_logonui,
+            )
+            user = self._console_interactive_username()
+            logonui = bool(session_has_logonui(sid))
+            if console_start_secure_desktop(username=user, logonui_present=logonui):
+                return
+        except Exception as exc:
+            log(f"[REMOTE-DESKTOP] console desktop probe: {exc}")
+            return
+        self._winlogon_mode = False
+        self._prefer_dxgi = True
+        self._follow_console = True
+        self._target_username = user
+        self._desktop_name = "Default"
+        log(
+            f"[REMOTE-DESKTOP] C-RD-FOLLOW live console Default "
+            f"session={sid} user={user!r} — skip Winlogon helper"
+        )
+
+    def _fallback_winlogon_helper_to_default(
+        self,
+        *,
+        jpeg,
+        w: int,
+        h: int,
+        phase: str,
+    ):
+        """jpeg=0B / accept timeout on Winlogon while Default is open → Default helper."""
+        if not self._winlogon_mode or not self._follow_console:
+            return None
+        phase_l = str(phase or "").lower()
+        if phase_l not in ("spawn", "accept", "token", "create", "no_frame", ""):
+            if jpeg and w > 0 and h > 0:
+                return None
+        sid = int(self._target_session_id or 0)
+        user = self._console_interactive_username()
+        logonui = False
+        try:
+            from client_rd_winlogon import session_has_logonui
+            logonui = bool(session_has_logonui(sid))
+        except Exception:
+            logonui = False
+        if logonui:
+            return None
+        if not user:
+            return None
+        log(
+            f"[REMOTE-DESKTOP] C-RD-FOLLOW fallback Winlogon→Default "
+            f"phase={phase_l or 'empty'} jpeg={0 if not jpeg else len(jpeg)}B "
+            f"session={sid} user={user!r}"
+        )
+        self.emit_stream_progress(
+            "switching",
+            f"Winlogon helper failed; attaching Default session {sid}",
+            force=True,
+        )
+        self._winlogon_mode = False
+        self._prefer_dxgi = True
+        self._follow_console = True
+        if user:
+            self._target_username = user
+        self._desktop_name = "Default"
+        self._stop_persistent_helper()
+        if not self._start_persistent_helper(accept_timeout=FOLLOW_ACCEPT_SEC):
+            log(
+                "[REMOTE-DESKTOP] Default helper spawn also failed "
+                f"phase={self._last_helper_fail_phase}"
+            )
+            return None
+        jpeg2, w2, h2 = self._grab_via_persistent_helper(0.8)
+        if (not jpeg2 or len(jpeg2) < MIN_JPEG_BYTES) and self._last_helper_raw:
+            jpeg2, w2, h2 = self._encode_helper_raw_jpeg()
+        if jpeg2 and w2 > 0 and h2 > 0 and len(jpeg2) >= MIN_JPEG_BYTES:
+            self._last_helper_fail_phase = ""
+            return jpeg2, w2, h2
+        return None
 
     def _maybe_follow_console_desktop(self) -> None:
         """C-RD-FOLLOW-1…8: leave Winlogon after logon/unlock on the same stream."""

@@ -201,6 +201,79 @@ class TestWinlogonStartContract(unittest.TestCase):
         self.assertFalse(result.get("success"))
         self.assertEqual(result.get("error"), "SESSION0_HELPER_SPAWN_FAILED")
 
+    def test_live_console_user_skips_winlogon_helper(self):
+        rd = self._make_rd()
+        sessions = [
+            {
+                "session_id": 3,
+                "username": "administrator",
+                "protocol": "Console",
+                "status": "Active",
+            },
+            {
+                "session_id": 3,
+                "username": "",
+                "pre_logon": True,
+                "desktop": "winlogon",
+                "protocol": "Console",
+            },
+        ]
+        jpeg = b"\xff\xd8" + b"x" * 2000 + b"\xff\xd9"
+        with mock.patch.object(
+            rd, "_enumerate_sessions", return_value=sessions
+        ), mock.patch(
+            "client_rd_winlogon.console_session_id", return_value=3
+        ), mock.patch(
+            "client_rd_winlogon.session_username", return_value="administrator"
+        ), mock.patch(
+            "client_rd_winlogon.session_has_logonui", return_value=False
+        ), mock.patch.object(
+            rd, "_session_ids", return_value=(0, 3)
+        ), mock.patch.object(
+            rd, "_start_persistent_helper", return_value=True
+        ) as start_helper, mock.patch.object(
+            rd, "_stop_persistent_helper"
+        ), mock.patch.object(
+            rd, "_grab_via_persistent_helper", return_value=(jpeg, 1024, 768)
+        ), mock.patch.object(
+            rd, "_persistent_helper_connected", return_value=False
+        ), mock.patch.object(
+            rd, "_webrtc_available", return_value=False
+        ), mock.patch.object(
+            rd, "emit_stream_progress"
+        ), mock.patch.object(
+            rd, "_session_connect_state", return_value="Active"
+        ):
+            rd._thread = None
+            result = rd.start(
+                prefer="winlogon",
+                pre_logon=True,
+                desktop="Winlogon",
+            )
+            try:
+                self.assertTrue(result.get("success"), result)
+                self.assertFalse(rd._winlogon_mode)
+                self.assertEqual(rd._target_session_id, 3)
+                self.assertEqual(rd._target_username, "administrator")
+                self.assertEqual((rd._desktop_name or "").lower(), "default")
+                self.assertNotEqual(result.get("error"), "SESSION0_HELPER_SPAWN_FAILED")
+                start_helper.assert_called()
+            finally:
+                try:
+                    rd.stop()
+                except Exception:
+                    pass
+
+    def test_secure_desktop_still_uses_winlogon(self):
+        from client_rd_winlogon import console_start_secure_desktop
+        self.assertTrue(
+            console_start_secure_desktop(username="administrator", logonui_present=True)
+        )
+        self.assertTrue(console_start_secure_desktop(username="", logonui_present=False))
+        self.assertFalse(
+            console_start_secure_desktop(username="administrator", logonui_present=False)
+        )
+
     def test_omit_session_id_refuses_invented_sid_when_no_console(self):
         rd = self._make_rd()
         sessions = [

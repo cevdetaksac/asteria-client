@@ -131,6 +131,37 @@ def decide_console_follow(
     return None
 
 
+def session_has_logonui(session_id: int) -> bool:
+    """True when LogonUI / LockApp is running in the console session."""
+    try:
+        sid = int(session_id or 0)
+    except (TypeError, ValueError):
+        return False
+    if sid <= 0:
+        return False
+    for image in ("LogonUI.exe", "logonui.exe", "LockApp.exe", "LockAppHost.exe"):
+        for pid in _pids_named(image):
+            try:
+                if _session_of_pid(pid) == sid:
+                    return True
+            except Exception:
+                continue
+    return False
+
+
+def console_start_secure_desktop(
+    *,
+    username: str = "",
+    logonui_present: bool = False,
+) -> bool:
+    """C-RD-FOLLOW: Winlogon helper only if LogonUI/SAS/lock or nobody logged on."""
+    if logonui_present:
+        return True
+    if not str(username or "").strip():
+        return True
+    return False
+
+
 def enable_process_privileges(*names: str) -> None:
     """Best-effort enable SeDebugPrivilege / SeAssignPrimaryTokenPrivilege etc."""
     try:

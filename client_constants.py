@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.93"  # inspect_process + C-RD-FOLLOW logon→Default same stream
+VERSION = "4.9.94"  # C-RD-FOLLOW: skip Winlogon helper when console Default is live
 
 
 
