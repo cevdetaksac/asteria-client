@@ -59,18 +59,19 @@ Output: `asteria-client-installer.exe` containing motor-only
 ```powershell
 .\build.ps1 -Clean -WebRTC -Sign -Release
 gh release create vX.Y.Z asteria-client-installer.exe `
-  --title "vX.Y.Z" --notes-file release_notes_vX.Y.Z.md
+  --title "vX.Y.Z" --notes "short summary"
 ```
 
 - Version: `VERSION` in `client_constants.py` (single source of truth)
 - Full history: `docs/CHANGELOG.md`
-- Per-tag notes: `release_notes_v*.md` (for `gh release`)
+- GitHub write-ups archive: `RELEASE_NOTES.md` (prepend new versions)
 
 ## Docs
 
 | Doc | Purpose |
 |-----|---------|
 | [`docs/CHANGELOG.md`](docs/CHANGELOG.md) | Client release history |
+| [`RELEASE_NOTES.md`](RELEASE_NOTES.md) | GitHub per-version write-ups |
 | [`docs/OPERATIONS.md`](docs/OPERATIONS.md) | Build / ops notes |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | Security reporting |
 | [`docs/ASTERIA_DUAL_TRACK_ROADMAP.md`](docs/ASTERIA_DUAL_TRACK_ROADMAP.md) | Motor hardening + `asteria-gui.exe` plan |

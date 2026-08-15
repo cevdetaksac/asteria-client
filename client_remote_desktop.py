@@ -232,6 +232,7 @@ class RemoteDesktopStreamer:
         self._desktop_name = ""
         self._winlogon_mode = False
         self._follow_console = False  # omit session_id → physical console (C-RD-FOLLOW-6)
+        self._force_secure_desktop = False
         self._follow_lock = threading.Lock()
         self._follow_busy = False
         self._last_follow_check = 0.0
@@ -406,6 +407,7 @@ class RemoteDesktopStreamer:
               prefer: Optional[str] = None,
               desktop: Optional[str] = None,
               pre_logon: Optional[bool] = None,
+              topology: Optional[str] = None,
               command_id: Optional[str] = None) -> dict:
         """Start capture + WS (with HTTP fallback).
 
@@ -413,13 +415,23 @@ class RemoteDesktopStreamer:
         No interactive sessions → NO_INTERACTIVE_SESSION.
         screen/capture 0×0 → CAPTURE_NO_DESKTOP.
 
-        ``prefer=winlogon`` / ``desktop=winlogon`` / ``pre_logon=true`` selects
-        the console Logon/Lock surface even when a user session shares the id.
+        ``topology=follow`` (default Connect, omit session_id): live Default
+        skips Winlogon helper. ``topology=winlogon`` (lock/logon row) forces it.
+        Legacy ``prefer=winlogon`` without SID is treated as follow (1.4.59).
         """
         prefer_l = str(prefer or "").strip().lower()
         desktop_l = str(desktop or "").strip().lower()
+        from client_rd_winlogon import resolve_start_topology
+        topo_mode, force_secure = resolve_start_topology(
+            topology=str(topology or ""),
+            prefer=prefer_l,
+            desktop=desktop_l,
+            pre_logon=pre_logon,
+            session_id_omitted=session_id is None,
+        )
         want_winlogon = bool(
-            prefer_l in ("winlogon", "console", "pre_logon", "pre-logon")
+            topo_mode in ("winlogon", "follow")
+            or prefer_l in ("winlogon", "console", "pre_logon", "pre-logon", "follow")
             or desktop_l in ("winlogon",)
             or pre_logon is True
         )
@@ -480,6 +492,7 @@ class RemoteDesktopStreamer:
             self._desktop_name = ""
             self._winlogon_mode = False
             self._follow_console = False
+            self._force_secure_desktop = bool(force_secure)
             self._follow_busy = False
             self._last_follow_check = 0.0
             self._helper_spawn_session_id = 0
@@ -652,7 +665,7 @@ class RemoteDesktopStreamer:
                 self._target_username = ""
             # C-RD-FOLLOW: omit-sid / Logon Start with an interactive Default
             # session must not spawn Winlogon helper (lab 4.9.93 SID 3).
-            if self._follow_console:
+            if self._follow_console and not self._force_secure_desktop:
                 self._maybe_skip_winlogon_for_live_console()
 
             pid_sid, csid = self._session_ids()
@@ -3019,7 +3032,7 @@ class RemoteDesktopStreamer:
 
     def _maybe_skip_winlogon_for_live_console(self) -> None:
         """If console already has a user Default desktop, skip Winlogon helper."""
-        if not self._winlogon_mode:
+        if not self._winlogon_mode or self._force_secure_desktop:
             return
         sid = int(self._target_session_id or 0)
         if sid <= 0:

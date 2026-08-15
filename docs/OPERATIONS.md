@@ -16,7 +16,8 @@ Artifact: `asteria-client-installer.exe` (repo root, not `dist\`).
 
 ```powershell
 gh release create vX.Y.Z asteria-client-installer.exe `
-  --title "vX.Y.Z" --notes-file release_notes_vX.Y.Z.md
+  --title "vX.Y.Z" --notes "short summary"
+# Archive the write-up at the top of RELEASE_NOTES.md
 ```
 
 Repo: `cevdetaksac/asteria-client` (legacy slug `yesnext-cloud-honeypot-client` redirects).

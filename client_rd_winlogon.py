@@ -149,6 +149,40 @@ def session_has_logonui(session_id: int) -> bool:
     return False
 
 
+def resolve_start_topology(
+    *,
+    topology: str = "",
+    prefer: str = "",
+    desktop: str = "",
+    pre_logon: Optional[bool] = None,
+    session_id_omitted: bool = True,
+) -> Tuple[str, bool]:
+    """Named Start topology (contract 1.4.59).
+
+    Returns ``(mode, force_secure)``:
+    - ``winlogon`` + force: lock/logon row — never skip Winlogon helper
+    - ``follow``: omit-sid / topology=follow — Winlogon only if secure desktop
+    - ``session``: user shortcut with explicit SID
+    """
+    t = str(topology or "").strip().lower()
+    p = str(prefer or "").strip().lower()
+    d = str(desktop or "").strip().lower()
+    if t in ("winlogon", "lock", "logon", "secure") or p in ("lock", "secure"):
+        return "winlogon", True
+    if t in ("follow", "default") or p in ("follow", "default"):
+        return "follow", False
+    if session_id_omitted:
+        return "follow", False
+    if (
+        p in ("winlogon", "console", "pre_logon", "pre-logon")
+        or d == "winlogon"
+        or pre_logon is True
+        or t in ("winlogon",)
+    ):
+        return "winlogon", True
+    return "session", False
+
+
 def console_start_secure_desktop(
     *,
     username: str = "",

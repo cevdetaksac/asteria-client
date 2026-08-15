@@ -274,6 +274,29 @@ class TestWinlogonStartContract(unittest.TestCase):
             console_start_secure_desktop(username="administrator", logonui_present=False)
         )
 
+    def test_resolve_start_topology_named(self):
+        from client_rd_winlogon import resolve_start_topology
+        mode, force = resolve_start_topology(
+            topology="", prefer="winlogon", session_id_omitted=True
+        )
+        self.assertEqual(mode, "follow")
+        self.assertFalse(force)
+        mode, force = resolve_start_topology(
+            topology="winlogon", prefer="winlogon", session_id_omitted=True
+        )
+        self.assertEqual(mode, "winlogon")
+        self.assertTrue(force)
+        mode, force = resolve_start_topology(
+            topology="follow", prefer="", session_id_omitted=True
+        )
+        self.assertEqual(mode, "follow")
+        self.assertFalse(force)
+        mode, force = resolve_start_topology(
+            topology="", prefer="winlogon", session_id_omitted=False
+        )
+        self.assertEqual(mode, "winlogon")
+        self.assertTrue(force)
+
     def test_omit_session_id_refuses_invented_sid_when_no_console(self):
         rd = self._make_rd()
         sessions = [

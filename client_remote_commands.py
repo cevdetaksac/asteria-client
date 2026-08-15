@@ -1314,6 +1314,7 @@ class RemoteCommandExecutor:
         )
         prefer = params.get("prefer") or None
         desktop = params.get("desktop") or None
+        topology = params.get("topology") or None
         pre_logon = (
             bool(params.get("pre_logon"))
             if params.get("pre_logon") is not None
@@ -1321,11 +1322,16 @@ class RemoteCommandExecutor:
         )
         prefer_l = str(prefer or "").strip().lower()
         desktop_l = str(desktop or "").strip().lower()
-        want_winlogon = bool(
-            prefer_l in ("winlogon", "console", "pre_logon", "pre-logon")
-            or desktop_l in ("winlogon",)
-            or pre_logon is True
+        topo_l = str(topology or "").strip().lower()
+        from client_rd_winlogon import resolve_start_topology
+        topo_mode, _force = resolve_start_topology(
+            topology=topo_l,
+            prefer=prefer_l,
+            desktop=desktop_l,
+            pre_logon=pre_logon,
+            session_id_omitted=sid is None,
         )
+        want_winlogon = topo_mode in ("winlogon", "follow")
         # C-RD-CON-3: cloud strips username; client also refuses bind on this path.
         username = None if want_winlogon else (params.get("username") or None)
         result = rd.start(
@@ -1338,6 +1344,7 @@ class RemoteCommandExecutor:
             prefer=prefer,
             desktop=desktop,
             pre_logon=pre_logon,
+            topology=topology,
             command_id=cmd_id or None,
         )
         if result.get("success"):

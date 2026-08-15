@@ -1,3 +1,23 @@
+# v4.9.95
+
+## Named console topology (contract 1.4.59)
+- `topology=follow`: omit-SID Start skips Winlogon helper when Default is live
+- `topology=winlogon`: lock/logon row forces Winlogon helper
+- Legacy omit-SID + `prefer=winlogon` treated as follow
+
+# v4.9.94
+
+## C-RD-FOLLOW: skip Winlogon helper on live Default
+- Omit `session_id` follows `WTSGetActiveConsoleSessionId`
+- Interactive username + no LogonUI → Default + DXGI (no Winlogon spawn)
+- jpeg=0B Winlogon + follow → fallback Default helper
+
+# v4.9.93
+
+## inspect_process + C-RD-FOLLOW
+- On-demand PID evidence; rundll32 `dll,Entry` is not lolbin
+- After logon, same stream follows console Default
+
 # v4.9.73
 
 ## Update path harden + installer alias gone

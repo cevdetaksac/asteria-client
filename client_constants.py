@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.94"  # C-RD-FOLLOW: skip Winlogon helper when console Default is live
+VERSION = "4.9.95"  # Named RD topology; lock row force Winlogon; follow skips helper
 
 
 
