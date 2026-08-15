@@ -358,7 +358,7 @@ class AiortcMediaTransport(OptionalMediaTransport):
         self._codec = ""
         self._preferred_codec = ""
         self._encoder_label = ""
-        self._target_bitrate_bps = 8_000_000
+        self._target_bitrate_bps = 12_000_000
         self._error = ""
         self._closing = False
         self._start_thread()
@@ -595,7 +595,22 @@ class AiortcMediaTransport(OptionalMediaTransport):
         except Exception:
             self._encoder_label = self._encoder_label or "aiortc"
         track_class = self._make_track_class()
-        pc.addTrack(track_class(self.mailbox))
+        sender = pc.addTrack(track_class(self.mailbox))
+        try:
+            params = sender.getParameters()
+            encodings = list(getattr(params, "encodings", None) or [{}])
+            if not encodings:
+                encodings = [{}]
+            encodings[0]["maxBitrate"] = int(self._target_bitrate_bps)
+            encodings[0]["maxFramerate"] = 60
+            params.encodings = encodings
+            set_params = getattr(sender, "setParameters", None)
+            if callable(set_params):
+                maybe = set_params(params)
+                if asyncio.iscoroutine(maybe):
+                    await maybe
+        except Exception:
+            pass
 
         @pc.on("connectionstatechange")
         async def connection_state_change():

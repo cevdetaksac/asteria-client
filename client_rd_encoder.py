@@ -97,9 +97,11 @@ def ensure_aiortc_h264_patched() -> str:
         ffmpeg_name = info["ffmpeg"]
         label = info["label"]
         options = _codec_options(ffmpeg_name)
-        max_rate = getattr(h264_mod, "MAX_FRAME_RATE", 30)
+        max_rate = 60
 
         def _encode_frame(self, frame, force_keyframe: bool):
+            if int(getattr(self, "target_bitrate", 0) or 0) < 8_000_000:
+                self.target_bitrate = 12_000_000
             if self.codec and (
                 frame.width != self.codec.width
                 or frame.height != self.codec.height

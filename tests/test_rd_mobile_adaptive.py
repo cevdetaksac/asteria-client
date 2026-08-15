@@ -6,7 +6,7 @@ import json
 import unittest
 
 from client_rd_adaptive import AdaptiveStreamController
-from client_remote_desktop import RemoteDesktopStreamer
+from client_remote_desktop import RemoteDesktopStreamer, normalize_stream_knobs
 
 
 class FakeClock:
@@ -208,9 +208,16 @@ class TestAdaptiveController(unittest.TestCase):
         )
         return clock, controller
 
+    def test_coalescing_does_not_count_as_congestion(self):
+        _clock, controller = self.make()
+        controller.note_coalesced(8)
+        self.assertIsNone(controller.evaluate())
+        self.assertEqual(controller.effective["fps"], 24)
+        self.assertEqual(controller.metrics["coalesced_frames"], 8)
+
     def test_degrades_under_backpressure(self):
         _clock, controller = self.make()
-        controller.note_coalesced(3)
+        controller.note_ws_failure()
         changed = controller.evaluate()
         self.assertIsNotNone(changed)
         self.assertLess(changed["fps"], 24)
@@ -232,7 +239,7 @@ class TestAdaptiveController(unittest.TestCase):
 
     def test_recovers_gradually_after_stable_window(self):
         clock, controller = self.make()
-        controller.note_coalesced()
+        controller.note_ws_failure()
         degraded = controller.evaluate()
         clock.advance(21)
         recovered = controller.evaluate()
@@ -242,9 +249,9 @@ class TestAdaptiveController(unittest.TestCase):
         self.assertEqual(recovered["max_width"], 1600)
         self.assertEqual(controller.metrics["recovers"], 1)
 
-    def test_width_floor_is_800(self):
+    def test_width_floor_is_1280(self):
         controller = AdaptiveStreamController(24, 60, 400)
-        self.assertEqual(controller.effective["max_width"], 800)
+        self.assertEqual(controller.effective["max_width"], 1280)
 
     def test_telemetry_records_capture_send_and_failures(self):
         _clock, controller = self.make()
@@ -279,6 +286,20 @@ class TestAdaptiveController(unittest.TestCase):
         self.assertEqual(helper.configs[-1]["max_width"], 900)
 
 
+class TestNormalizeStreamKnobs(unittest.TestCase):
+    def test_legacy_dashboard_slideshow_is_lifted_to_video(self):
+        fps, quality, width = normalize_stream_knobs(12, 40, 800)
+        self.assertEqual(fps, 30.0)
+        self.assertEqual(quality, 72)
+        self.assertEqual(width, 1920)
+
+    def test_high_knobs_are_clamped(self):
+        fps, quality, width = normalize_stream_knobs(120, 99, 3840)
+        self.assertEqual(fps, 60.0)
+        self.assertEqual(quality, 90)
+        self.assertEqual(width, 1920)
+
+
 class TestEncodeSizeLock(unittest.TestCase):
     def test_locks_first_frame_size_for_session(self):
         rd = RemoteDesktopStreamer()
@@ -287,13 +308,13 @@ class TestEncodeSizeLock(unittest.TestCase):
         self.assertEqual(first, (1280, 720))
         self.assertEqual(second, (1280, 720))
 
-    def test_min_floor_800x600_when_source_allows(self):
+    def test_min_floor_1280x720_when_source_allows(self):
         rd = RemoteDesktopStreamer()
         w, h = rd._compute_encode_size(1920, 1080, 800)
-        self.assertGreaterEqual(w, 800)
-        self.assertGreaterEqual(h, 450)  # 16:9 at 800w
+        self.assertGreaterEqual(w, 1280)
+        self.assertGreaterEqual(h, 720)
         w2, h2 = rd._compute_encode_size(1600, 1200, 800)
-        self.assertEqual((w2, h2), (800, 600))
+        self.assertEqual((w2, h2), (1280, 960))
 
 
 if __name__ == "__main__":

@@ -16,9 +16,9 @@ class AdaptiveStreamController:
     oscillating resolution makes the dashboard hard to use.
     """
 
-    MIN_FPS = 12.0
-    MIN_QUALITY = 20
-    MIN_WIDTH = 800
+    MIN_FPS = 20.0
+    MIN_QUALITY = 55
+    MIN_WIDTH = 1280
 
     def __init__(
         self,
@@ -57,8 +57,8 @@ class AdaptiveStreamController:
     @staticmethod
     def _clamp_requested(fps, quality, max_width) -> dict:
         return {
-            "fps": max(12.0, min(float(fps), 60.0)),
-            "quality": max(20, min(int(quality), 85)),
+            "fps": max(20.0, min(float(fps), 60.0)),
+            "quality": max(55, min(int(quality), 90)),
             "max_width": max(
                 AdaptiveStreamController.MIN_WIDTH,
                 min(int(max_width), 1920),
@@ -117,10 +117,9 @@ class AdaptiveStreamController:
             self._mark_pressure(1)
 
     def note_coalesced(self, count: int = 1) -> None:
+        """Dropping stale JPEGs is how WS stays live-video; do not treat as congestion."""
         count = max(0, int(count))
         self.metrics["coalesced_frames"] += count
-        if count:
-            self._mark_pressure(1)
 
     def note_ws_failure(self) -> None:
         self.metrics["ws_failures"] += 1

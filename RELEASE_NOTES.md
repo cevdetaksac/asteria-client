@@ -1,5 +1,15 @@
 # Release notes
 
+# Asteria Client 4.9.101 — remote desktop at video rate
+
+JPEG-WS was a slideshow when WebRTC UDP failed (typical through Cloudflare
+TCP 443). Start knobs `fps:12` / `quality:40` plus adaptive treating dropped
+stale frames as congestion produced ~8 fps. This build floors Start to
+1080p30, keeps coalescing from lowering fps, targets 12 Mbps / 60 fps H.264,
+and asks the cloud for TURNS on 443.
+
+---
+
 # Asteria Client 4.9.100 — lock, logon, and logoff like sitting at the PC
 
 Lab on 4.9.99 still showed `persistent-user-helper` + `gdi+black` because a

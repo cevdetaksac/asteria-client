@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.100"  # Console lock/logon/logoff: Winlogon helper pixels, same stream
+VERSION = "4.9.101"  # Remote desktop video-rate JPEG-WS + 12 Mbps WebRTC / TURNS hint
 
 
 

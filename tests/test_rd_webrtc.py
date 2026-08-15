@@ -110,6 +110,8 @@ class TestCapabilities(unittest.TestCase):
         self.assertTrue(
             hello["capabilities"]["webrtc"]["ice_server_config"]
         )
+        self.assertTrue(hello["capabilities"]["webrtc"]["needs_turn"])
+        self.assertEqual(hello["capabilities"]["smoothness"]["jpeg_fallback_fps"], 30.0)
 
     def test_probe_requires_real_peer_instantiation(self):
         class GoodPc:
@@ -185,16 +187,26 @@ class TestSignalingValidation(unittest.TestCase):
             self.assertFalse(result["accepted"])
         self.assertEqual(media.signals, [])
 
-    def test_missing_or_wrong_signaling_version_is_rejected(self):
+    def test_omitted_signaling_protocol_on_offer_is_accepted(self):
+        rd, media = self.make()
+        result = rd._handle_webrtc_signal({
+            "action": "offer",
+            "stream_id": "stream-current",
+            "session_id": "peer-a",
+            "sdp": "offer",
+        })
+        self.assertTrue(result["accepted"])
+        self.assertEqual(media.signals[-1]["action"], "offer")
+
+    def test_unknown_action_wrong_protocol_is_rejected(self):
         rd, _media = self.make()
-        for protocol in (None, 2):
-            result = rd._handle_webrtc_signal({
-                "action": "offer",
-                "protocol": protocol,
-                "stream_id": "stream-current",
-                "session_id": "peer-a",
-            })
-            self.assertFalse(result["accepted"])
+        result = rd._handle_webrtc_signal({
+            "action": "foo",
+            "protocol": 2,
+            "stream_id": "stream-current",
+            "session_id": "peer-a",
+        })
+        self.assertFalse(result["accepted"])
 
 
 class TestReofferFailure(unittest.TestCase):

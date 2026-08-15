@@ -146,7 +146,7 @@ class TestTransportSelection(unittest.TestCase):
         rd._quality = 25
         fps, quality, _width = rd._effective_capture_settings()
         self.assertEqual(fps, 60.0)
-        self.assertEqual(quality, 82)
+        self.assertEqual(quality, 85)
 
     def test_ws_healthy_sends_no_http(self):
         api = FakeApi()

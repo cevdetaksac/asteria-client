@@ -30,17 +30,18 @@ from urllib.parse import urlencode
 from client_helpers import log
 from client_rd_adaptive import AdaptiveStreamController
 
-# Defaults: JPEG-WS is fallback only; WebRTC/H.264 is the smooth primary path.
-DEFAULT_FPS = 24.0
-DEFAULT_QUALITY = 62
+# Defaults: JPEG-WS must stay video-like when WebRTC UDP is blocked (Cloudflare 443).
+DEFAULT_FPS = 30.0
+DEFAULT_QUALITY = 72
 DEFAULT_MAX_WIDTH = 1920
-MIN_ENCODE_WIDTH = 800
-MIN_ENCODE_HEIGHT = 600
-TARGET_FRAME_BYTES = 480 * 1024
+MIN_ENCODE_WIDTH = 1280
+MIN_ENCODE_HEIGHT = 720
+TARGET_FRAME_BYTES = 700 * 1024
 MAX_FRAME_BYTES = 2 * 1024 * 1024
 MEDIA_CAPTURE_FPS = 60.0
-MEDIA_CAPTURE_QUALITY = 82
-JPEG_FALLBACK_FPS_WHILE_NEGOTIATING = 24.0
+MEDIA_CAPTURE_QUALITY = 85
+JPEG_FALLBACK_FPS_WHILE_NEGOTIATING = 30.0
+TARGET_VIDEO_BITRATE_BPS = 12_000_000
 IDLE_STOP_SECONDS = 300
 INPUT_RATE_LIMIT = 60                 # legacy alias (kept for backward compat)
 INPUT_RATE_WINDOW = 1.0
@@ -107,6 +108,37 @@ def _is_move_event(event: str, params: dict) -> bool:
     if event == "drag_move":
         return True
     return _is_relative_pointer(event, params)
+
+
+def normalize_stream_knobs(fps, quality, max_width) -> tuple:
+    """Dashboard Start still examples fps=12/q=40/w=1280 — that is a slideshow.
+
+    Gigabit JPEG-WS and 1080p60 H.264 need a video floor even when the command
+    still carries the old contract sample knobs.
+    """
+    try:
+        dash_fps = float(fps if fps is not None else DEFAULT_FPS)
+    except (TypeError, ValueError):
+        dash_fps = DEFAULT_FPS
+    if dash_fps < 24.0:
+        dash_fps = 30.0
+    try:
+        dash_q = int(quality if quality is not None else DEFAULT_QUALITY)
+    except (TypeError, ValueError):
+        dash_q = DEFAULT_QUALITY
+    if dash_q < 55:
+        dash_q = DEFAULT_QUALITY
+    try:
+        dash_w = int(max_width if max_width is not None else DEFAULT_MAX_WIDTH)
+    except (TypeError, ValueError):
+        dash_w = DEFAULT_MAX_WIDTH
+    if dash_w < 1280:
+        dash_w = DEFAULT_MAX_WIDTH
+    return (
+        max(24.0, min(dash_fps, 60.0)),
+        max(55, min(dash_q, 90)),
+        max(1280, min(dash_w, 1920)),
+    )
 
 
 def _api_to_ws_agent_url(api_base: str, token: str = "") -> str:
@@ -445,10 +477,8 @@ class RemoteDesktopStreamer:
                 "remote_stream_start received",
                 force=True,
             )
-            self._requested_fps = max(12.0, min(float(fps or DEFAULT_FPS), 60.0))
-            self._requested_quality = max(20, min(int(quality or DEFAULT_QUALITY), 85))
-            self._requested_max_width = max(
-                MIN_ENCODE_WIDTH, min(int(max_width or DEFAULT_MAX_WIDTH), 1920)
+            self._requested_fps, self._requested_quality, self._requested_max_width = (
+                normalize_stream_knobs(fps, quality, max_width)
             )
             if self._running:
                 self._adaptive.update_requested(
@@ -4246,6 +4276,14 @@ class RemoteDesktopStreamer:
                 "ice_server_config": bool(
                     media.get("webrtc") and media.get("ice_server_config")
                 ),
+                "needs_turn": True,
+                "preferred_ice": "turns",
+            },
+            "smoothness": {
+                "capture_fps": MEDIA_CAPTURE_FPS,
+                "jpeg_fallback_fps": JPEG_FALLBACK_FPS_WHILE_NEGOTIATING,
+                "max_width": DEFAULT_MAX_WIDTH,
+                "target_bitrate_bps": TARGET_VIDEO_BITRATE_BPS,
             },
         }
 
@@ -4313,9 +4351,13 @@ class RemoteDesktopStreamer:
             f"has_session={bool(session_id)} ice_servers={has_ice_servers} "
             f"media_sid={'set' if self._media_session_id else 'empty'}"
         )
-        if int(message.get("protocol") or 0) != 1:
-            log("[REMOTE-DESKTOP] WebRTC reject: unsupported signaling protocol")
-            return {"accepted": False, "error": "unsupported signaling protocol"}
+        proto = int(message.get("protocol") or 0)
+        if proto != 1:
+            if action in ("offer", "answer", "ice"):
+                proto = 1
+            else:
+                log("[REMOTE-DESKTOP] WebRTC reject: unsupported signaling protocol")
+                return {"accepted": False, "error": "unsupported signaling protocol"}
         if not self._running or not self._stream_id:
             log("[REMOTE-DESKTOP] WebRTC reject: stream not active")
             return {"accepted": False, "error": "stream not active"}
