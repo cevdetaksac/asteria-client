@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.92"  # parent inputs_applied++ per apply; do not max() helper process tally
+VERSION = "4.9.93"  # inspect_process on-demand; rundll32 lolbin without .dll, false positive
 
 
 

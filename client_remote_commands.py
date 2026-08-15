@@ -87,7 +87,7 @@ ALLOWED_COMMANDS: Set[str] = {
     "emergency_lockdown", "lift_lockdown",
     "enable_lockdown", "disable_lockdown",  # aliases
     "unlock_ransomware_quarantine", "list_ransomware_quarantine",
-    "list_sessions", "list_processes", "list_local_users", "list_services", "snapshot",
+    "list_sessions", "list_processes", "inspect_process", "list_local_users", "list_services", "snapshot",
     "collect_diagnostics",
     "remote_stream_start", "remote_stream_stop", "remote_input",
     "remote_send_sas",
@@ -117,7 +117,7 @@ _STREAM_COMMANDS = frozenset({
     "remote_stream_start", "remote_stream_stop", "remote_input",
     "remote_send_sas",
     "remote_session_prepare", "list_local_users", "list_sessions",
-    "list_processes", "list_services",
+    "list_processes", "inspect_process", "list_services",
     "list_firewall",
 })
 
@@ -140,7 +140,7 @@ _IR_URGENT_COMMANDS = frozenset({
     "list_firewall", "firewall_set_profile", "firewall_rule",
     "self_update", "check_update",  # dashboard update — same urgency as IR
     "remote_session_prepare", "list_local_users",
-    "list_processes", "list_sessions",
+    "list_processes", "inspect_process", "list_sessions",
     # Disaster recovery — must reach a compromised host instantly
     "create_user", "remote_logon", "set_autologon", "clear_autologon", "reboot",
     # Network Guard — offline bomb response must reach host instantly
@@ -3297,6 +3297,30 @@ class RemoteCommandExecutor:
                 f"health_report={'ok' if reported else 'skipped'}"
             ),
             "data": {"processes": procs, "top_processes": procs},
+        }
+
+    def _cmd_inspect_process(self, params: dict) -> dict:
+        """C-PROC-INSPECT: on-demand evidence pack for one PID (modal, not health)."""
+        pid = params.get("pid")
+        try:
+            pid_i = int(pid)
+        except (TypeError, ValueError):
+            return {"success": False, "error": "pid required"}
+        if self.health_monitor and hasattr(self.health_monitor, "inspect_process"):
+            data = self.health_monitor.inspect_process(pid_i)
+        else:
+            from client_system_health import inspect_process_pid
+            data = inspect_process_pid(pid_i)
+        if not data.get("ok"):
+            return {
+                "success": False,
+                "error": str(data.get("error") or "inspect_failed"),
+                "data": data,
+            }
+        return {
+            "success": True,
+            "message": f"inspect pid={pid_i} verdict={data.get('verdict')}",
+            "data": data,
         }
 
     def _cmd_list_services(self, params: dict) -> dict:

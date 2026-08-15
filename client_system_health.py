@@ -28,6 +28,8 @@ Exports:
   SystemHealthMonitor — ana sınıf (start / stop / get_stats / get_snapshot)
 """
 
+import os
+import re
 import statistics
 import threading
 import time
@@ -67,9 +69,18 @@ _LOLBIN_HINTS = (
     ("wscript", (".vbs", ".js", "http")),
     ("cscript", (".vbs", ".js")),
     ("mshta", ("http", ".hta", "javascript:")),
-    ("rundll32", ("http", "javascript:", ".dll,")),
+    # `.dll,` is the normal rundll32 form (foo.dll,Entry) — not a LOLBIN by itself.
+    ("rundll32", ("http", "javascript:", "\\\\")),
+    ("regsvr32", ("http", "javascript:", "\\\\")),
     ("certutil", ("-urlcache", "-decode", "-f ")),
 )
+_SYSTEM_IMAGE_MARKERS = (
+    "\\windows\\system32\\",
+    "\\windows\\syswow64\\",
+    "\\windows\\winsxs\\",
+)
+_INSPECT_CMDLINE_MAX = 4000
+_INSPECT_PEER_MAX = 8
 
 # Known-benign heavy disk writers — NEVER label as ransomware from I/O alone
 _BENIGN_DISK_IO_NAMES = (
@@ -756,6 +767,7 @@ class SystemHealthMonitor:
                     "suspicious": suspicious,
                     "suspicion_reasons": reasons,
                     "interactive": interactive,
+                    "inspectable": True,
                 }
                 self._annotate_agent_self(entry)
                 collected[pid] = entry
@@ -863,7 +875,15 @@ class SystemHealthMonitor:
                 if any(h in clow for h in hints):
                     reasons.append("lolbin")
                     break
+        extra = _off_system_lolbin_payload(nlow, plow, cmdline)
+        for r in extra:
+            if r not in reasons:
+                reasons.append(r)
         return (len(reasons) > 0), reasons
+
+    def inspect_process(self, pid: int) -> dict:
+        """On-demand process evidence pack (C-PROC-INSPECT). Not on health cadence."""
+        return inspect_process_pid(int(pid))
 
     def _annotate_agent_self(self, entry: dict) -> None:
         """Mark our PID with HMAC proof; flag name-spoof copies as suspicious."""
@@ -1379,3 +1399,217 @@ class SystemHealthMonitor:
         elif len(self._anomalies) >= 1:
             return "warning"
         return "healthy"
+
+
+def _path_is_system_image(path: str) -> bool:
+    plow = (path or "").lower().replace("/", "\\")
+    return any(m in plow for m in _SYSTEM_IMAGE_MARKERS)
+
+
+def parse_rundll32_cmdline(cmdline: str) -> dict:
+    """Extract dll_path + export from rundll32 command line (best-effort)."""
+    raw = str(cmdline or "").strip()
+    out = {"dll_path": "", "dll_export": "", "url": ""}
+    if not raw:
+        return out
+    low = raw.lower()
+    if "http://" in low or "https://" in low or "javascript:" in low:
+        m = re.search(r"(https?://\S+|javascript:\S+)", raw, re.I)
+        if m:
+            out["url"] = m.group(1)[:500]
+            return out
+    # rundll32.exe [" ]path.dll,Entry
+    m = re.search(
+        r"rundll32(?:\.exe)?\s+(?:\"([^\"]+\.dll)\"|(\S+\.dll))\s*,\s*(\S+)",
+        raw,
+        re.I,
+    )
+    if m:
+        out["dll_path"] = (m.group(1) or m.group(2) or "")[:260]
+        out["dll_export"] = (m.group(3) or "").split()[0][:80]
+        return out
+    m = re.search(r"([^\"\s]+\.dll)\s*,\s*(\S+)", raw, re.I)
+    if m:
+        out["dll_path"] = m.group(1)[:260]
+        out["dll_export"] = (m.group(2) or "").split()[0][:80]
+    return out
+
+
+def _off_system_lolbin_payload(name: str, path: str, cmdline: str) -> List[str]:
+    """rundll32/regsvr32 loading a DLL outside Windows\\System32 → extra reason."""
+    nlow = (name or "").lower()
+    if "rundll32" not in nlow and "rundll32" not in (path or "").lower():
+        if "regsvr32" not in nlow:
+            return []
+    parsed = parse_rundll32_cmdline(cmdline)
+    dll = parsed.get("dll_path") or ""
+    if parsed.get("url"):
+        return []  # already lolbin via http/javascript
+    if not dll:
+        return []
+    # Bare "shell32.dll" is resolved from System32 — not off-system.
+    base = dll.replace("/", "\\")
+    if "\\" not in base.strip("."):
+        return []
+    if _path_is_system_image(dll):
+        return []
+    plow = dll.lower().replace("/", "\\")
+    if "\\program files" in plow:
+        return []
+    return ["lolbin_off_system_dll"]
+
+
+def _file_company(path: str) -> str:
+    if not path or not os.path.isfile(path):
+        return ""
+    try:
+        import win32api  # type: ignore
+
+        info = win32api.GetFileVersionInfo(path, "\\")
+        trans = win32api.GetFileVersionInfo(path, "\\VarFileInfo\\Translation")
+        if not trans:
+            return ""
+        lang, codepage = trans[0]
+        key = f"\\StringFileInfo\\{lang:04X}{codepage:04X}\\CompanyName"
+        return str(win32api.GetFileVersionInfo(path, key) or "")[:120]
+    except Exception:
+        return ""
+
+
+def inspect_process_pid(pid: int) -> dict:
+    """Evidence pack for one PID. Fail closed if process is gone."""
+    try:
+        import psutil
+    except Exception as exc:
+        return {"ok": False, "error": f"psutil:{exc}"}
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "invalid_pid"}
+    if pid <= 0:
+        return {"ok": False, "error": "invalid_pid"}
+    try:
+        proc = psutil.Process(pid)
+    except psutil.NoSuchProcess:
+        return {"ok": False, "error": "process_gone", "pid": pid}
+    except psutil.AccessDenied:
+        return {"ok": False, "error": "access_denied", "pid": pid}
+
+    try:
+        name = proc.name() or ""
+    except Exception:
+        name = ""
+    try:
+        path = proc.exe() or ""
+    except (psutil.AccessDenied, Exception):
+        path = ""
+    try:
+        cmdline_list = proc.cmdline() or []
+        cmdline = " ".join(cmdline_list) if isinstance(cmdline_list, list) else str(cmdline_list)
+    except (psutil.AccessDenied, Exception):
+        cmdline = ""
+    cmdline = cmdline[:_INSPECT_CMDLINE_MAX]
+    try:
+        username = proc.username() or ""
+    except Exception:
+        username = ""
+    try:
+        ppid = int(proc.ppid() or 0)
+    except Exception:
+        ppid = 0
+    parent_name = ""
+    parent_path = ""
+    if ppid > 0:
+        try:
+            parent = psutil.Process(ppid)
+            parent_name = parent.name() or ""
+            try:
+                parent_path = parent.exe() or ""
+            except Exception:
+                parent_path = ""
+        except Exception:
+            pass
+    try:
+        cwd = proc.cwd() or ""
+    except Exception:
+        cwd = ""
+    create_time = 0.0
+    try:
+        create_time = float(proc.create_time() or 0)
+    except Exception:
+        create_time = 0.0
+    started_at = ""
+    runtime_sec = 0
+    if create_time:
+        started_at = datetime.fromtimestamp(create_time, tz=timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        runtime_sec = max(0, int(time.time() - create_time))
+
+    suspicious, reasons = SystemHealthMonitor._process_suspicion(name, path, cmdline)
+    rundll = {}
+    if "rundll32" in name.lower() or "rundll32" in path.lower():
+        rundll = parse_rundll32_cmdline(cmdline)
+        dll_path = rundll.get("dll_path") or ""
+        if dll_path:
+            rundll["dll_in_system32"] = _path_is_system_image(dll_path)
+            rundll["dll_company"] = _file_company(dll_path)
+
+    peers = []
+    try:
+        for c in proc.net_connections(kind="inet"):
+            if len(peers) >= _INSPECT_PEER_MAX:
+                break
+            raddr = getattr(c, "raddr", None)
+            if not raddr:
+                continue
+            ip = str(getattr(raddr, "ip", "") or "")
+            port = int(getattr(raddr, "port", 0) or 0)
+            if not ip:
+                continue
+            status = str(getattr(c, "status", "") or "")
+            if status and status.upper() not in ("ESTABLISHED", "SYN_SENT", "CLOSE_WAIT"):
+                continue
+            peers.append({
+                "ip": ip[:64],
+                "port": port,
+                "status": status,
+                "loopback": ip.startswith("127.") or ip == "::1",
+            })
+    except (psutil.AccessDenied, Exception):
+        peers = []
+
+    remote_peers = [p for p in peers if not p.get("loopback")]
+    image_system = _path_is_system_image(path)
+    verdict = "observe"
+    if "lolbin" in reasons or rundll.get("url"):
+        verdict = "needs_review"
+    elif "lolbin_off_system_dll" in reasons:
+        verdict = "needs_review"
+    elif image_system and not remote_peers and (
+        not rundll or rundll.get("dll_in_system32") or not rundll.get("dll_path")
+    ):
+        verdict = "likely_benign"
+
+    return {
+        "ok": True,
+        "pid": pid,
+        "name": name,
+        "path": path[:260],
+        "username": username,
+        "ppid": ppid,
+        "parent_name": parent_name,
+        "parent_path": (parent_path or "")[:260],
+        "cwd": (cwd or "")[:260],
+        "cmdline": cmdline,
+        "started_at": started_at,
+        "runtime_sec": runtime_sec,
+        "image_system32": image_system,
+        "company": _file_company(path),
+        "suspicious": bool(suspicious),
+        "suspicion_reasons": reasons,
+        "rundll32": rundll or None,
+        "remote_peers": remote_peers,
+        "peer_count": len(remote_peers),
+        "verdict": verdict,
+    }
