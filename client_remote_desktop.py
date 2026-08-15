@@ -429,12 +429,10 @@ class RemoteDesktopStreamer:
             pre_logon=pre_logon,
             session_id_omitted=session_id is None,
         )
-        want_winlogon = bool(
-            topo_mode in ("winlogon", "follow")
-            or prefer_l in ("winlogon", "console", "pre_logon", "pre-logon", "follow")
-            or desktop_l in ("winlogon",)
-            or pre_logon is True
-        )
+        # Only lock/logon topology forces Winlogon. ``topology=follow`` must NOT
+        # set this — otherwise we pick the pre_logon sibling and Session-0 GDI
+        # paints gdi+black while Default is live (dashboard P0 warning).
+        want_winlogon = bool(force_secure)
         with self._lock:
             self._command_id = str(command_id or "").strip()
             self._stream_id = uuid.uuid4().hex
@@ -553,8 +551,8 @@ class RemoteDesktopStreamer:
                     "data": self.get_status(),
                 }
 
-            # C-RD-CON-3: Winlogon / Logon path never binds a username (Default stick).
-            bind_username = None if want_winlogon else username
+            # C-RD-CON-3 / TOPO-1: omit-sid and Winlogon never bind Start username.
+            bind_username = None if (want_winlogon or session_id is None) else username
 
             resolved_sid: Optional[int] = None
             if session_id is not None:
@@ -652,19 +650,17 @@ class RemoteDesktopStreamer:
                 )
 
             match_meta = match if isinstance(match, dict) else {}
-            self._winlogon_mode = bool(
-                want_winlogon
-                or match_meta.get("pre_logon")
-                or (
-                    not str(self._target_username or "").strip()
-                    and str(match_meta.get("desktop") or "").lower() == "winlogon"
-                )
-                or str(match_meta.get("desktop") or "").lower() == "winlogon"
-            )
+            self._winlogon_mode = bool(force_secure)
             if self._winlogon_mode:
                 self._target_username = ""
-            # C-RD-FOLLOW: omit-sid / Logon Start with an interactive Default
-            # session must not spawn Winlogon helper (lab 4.9.93 SID 3).
+            elif self._follow_console:
+                self._apply_follow_secure_or_default()
+            elif (
+                match_meta.get("pre_logon")
+                and not str(self._target_username or "").strip()
+            ):
+                self._winlogon_mode = True
+            # C-RD-FOLLOW: omit-sid live Default must not spawn Winlogon helper.
             if self._follow_console and not self._force_secure_desktop:
                 self._maybe_skip_winlogon_for_live_console()
 
@@ -3029,6 +3025,38 @@ class RemoteDesktopStreamer:
         except Exception:
             pass
         return str(self._target_username or "").strip()
+
+    def _apply_follow_secure_or_default(self) -> None:
+        """Follow Connect: Winlogon helper only when lock/LogonUI/no user."""
+        sid = int(self._target_session_id or 0)
+        user = self._console_interactive_username()
+        logonui = False
+        try:
+            from client_rd_winlogon import (
+                console_start_secure_desktop,
+                session_has_logonui,
+            )
+            logonui = bool(session_has_logonui(sid)) if sid > 0 else False
+            if console_start_secure_desktop(username=user, logonui_present=logonui):
+                self._winlogon_mode = True
+                self._target_username = ""
+                log(
+                    f"[REMOTE-DESKTOP] follow → Winlogon "
+                    f"(logonui={logonui} user={user!r} session={sid})"
+                )
+                return
+        except Exception as exc:
+            log(f"[REMOTE-DESKTOP] follow desktop probe: {exc}")
+        self._winlogon_mode = False
+        self._prefer_dxgi = True
+        self._follow_console = True
+        if user:
+            self._target_username = user
+        self._desktop_name = "Default"
+        log(
+            f"[REMOTE-DESKTOP] follow → Default DXGI "
+            f"session={sid} user={user!r} — skip Winlogon helper"
+        )
 
     def _maybe_skip_winlogon_for_live_console(self) -> None:
         """If console already has a user Default desktop, skip Winlogon helper."""

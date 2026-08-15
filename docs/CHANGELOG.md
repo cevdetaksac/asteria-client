@@ -2,6 +2,13 @@
 
 Removed `docs/ux-review` screenshots, duplicate resilience/alert plan MDs. Contract **1.4.64** cloud checklist is SoT for dashboard work.
 
+# v4.9.97
+
+## Follow Connect must not capture Session-0 Winlogon GDI
+- `topology=follow` no longer sets `want_winlogon` (that picked the Logon sibling and painted `gdi+black`)
+- Live console user → Default DXGI helper; lock/LogonUI/no user still uses Winlogon helper
+- Dashboard “Logon · varsayılan” black-frame warning on logged-on hosts
+
 # v4.9.96
 
 ## Threat-intel ACK + installer alias (contract 1.4.61)

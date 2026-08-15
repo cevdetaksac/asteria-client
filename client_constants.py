@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.96"  # Threat-intel 304 no ACK + firewall_current; installer alias rewrite
+VERSION = "4.9.97"  # Follow Connect must not GDI-attach Winlogon (gdi+black)
 
 
 

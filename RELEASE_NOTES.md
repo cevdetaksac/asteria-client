@@ -1,5 +1,14 @@
 # Release notes
 
+# Asteria Client 4.9.97 — Follow Connect DXGI, not gdi+black
+
+Dashboard Default Connect (`topology=follow`) was still treating follow as
+Winlogon, picking the Logon sibling, and Session-0 GDI painted a black frame
+(`gdi+black`). Live console user now attaches Default DXGI helper.
+
+---
+
+
 Per-version GitHub release write-ups, newest first. Ongoing history: [docs/CHANGELOG.md](docs/CHANGELOG.md).
 
 # Asteria Client 4.9.96 — Intel ACK honesty + installer alias

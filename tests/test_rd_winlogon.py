@@ -178,6 +178,10 @@ class TestWinlogonStartContract(unittest.TestCase):
             rd, "_enumerate_sessions", return_value=sessions
         ), mock.patch(
             "client_rd_winlogon.console_session_id", return_value=3
+        ), mock.patch(
+            "client_rd_winlogon.session_username", return_value=""
+        ), mock.patch(
+            "client_rd_winlogon.session_has_logonui", return_value=False
         ), mock.patch.object(
             rd, "_session_ids", return_value=(0, 3)
         ), mock.patch.object(
@@ -246,9 +250,8 @@ class TestWinlogonStartContract(unittest.TestCase):
         ):
             rd._thread = None
             result = rd.start(
-                prefer="winlogon",
-                pre_logon=True,
-                desktop="Winlogon",
+                topology="follow",
+                fps=12,
             )
             try:
                 self.assertTrue(result.get("success"), result)
