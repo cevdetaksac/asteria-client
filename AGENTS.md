@@ -3,7 +3,7 @@
 Before changing API / agent behavior, follow **asteria-contract** (SoT):
 
 1. `../asteria-contract/VERSION` + `INDEX.md` + `FLEET.md`
-2. Relevant `api/*`, `agent/*`, or `cloud/*`
+2. Relevant `features/*` (Remote Desktop = `features/remote-desktop.md`) then `api/01`–`03`
 3. Contract first on behavior changes; then code
 4. Local `docs/api/*` are stubs — edit the contract only
 
