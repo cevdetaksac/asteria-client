@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.97"  # Follow Connect must not GDI-attach Winlogon (gdi+black)
+VERSION = "4.9.98"  # Single-flight update mutex — no dual installer download
 
 
 
@@ -318,6 +318,8 @@ FILE_HEARTBEAT_INTERVAL = 60  # File heartbeat interval (was 10s, optimized to 6
 # Singleton mutex — DAEMON only (GUI frontends do not take this)
 SINGLETON_MUTEX_NAME = "Global\\AsteriaClient_Singleton"
 DAEMON_MUTEX_NAME = "Global\\AsteriaClient_Daemon"
+# Cross-process single-flight for installer download (JSON gate is racy).
+UPDATE_MUTEX_NAME = "Global\\AsteriaClient_UpdateGate"
 # Per-session GUI/tray singleton. Global\\ + session id crosses integrity levels
 # (Highest tray task vs Medium WTS spawn) so two frontends cannot both "own" a
 # Local\\ mutex in the same interactive session.

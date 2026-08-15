@@ -89,6 +89,15 @@ class TestOperationGate(unittest.TestCase):
         ok3, _ = try_acquire("gui_self_update")
         self.assertTrue(ok3)
 
+    def test_pid_alive_access_denied_is_alive(self):
+        from client_operation_gate import _pid_alive
+
+        fake_k32 = mock.MagicMock()
+        fake_k32.OpenProcess.return_value = 0
+        fake_k32.GetLastError.return_value = 5
+        with mock.patch("ctypes.windll.kernel32", fake_k32, create=True):
+            self.assertTrue(_pid_alive(4242))
+
     def test_force_reclaims_holder(self):
         from client_operation_gate import try_acquire, snapshot
 

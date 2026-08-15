@@ -19,6 +19,10 @@ import uuid
 from typing import Any, Dict, Optional, Tuple
 
 _GATE_LOCK = threading.RLock()
+_UPDATE_MUTEX_HANDLE = None
+WAIT_OBJECT_0 = 0
+WAIT_ABANDONED = 0x00000080
+ERROR_ACCESS_DENIED = 5
 
 # Families that are mutually exclusive within themselves.
 FAMILY_UPDATE = "update"
@@ -62,20 +66,83 @@ def _pid_alive(pid: int) -> bool:
     try:
         import ctypes
 
+        PROCESS_QUERY_LIMITED = 0x1000
         SYNCHRONIZE = 0x00100000
-        h = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, int(pid))
+        h = ctypes.windll.kernel32.OpenProcess(
+            PROCESS_QUERY_LIMITED | SYNCHRONIZE, False, int(pid)
+        )
         if h:
             ctypes.windll.kernel32.CloseHandle(h)
             return True
+        err = int(ctypes.windll.kernel32.GetLastError() or 0)
+        # Access denied: process exists (e.g. SYSTEM daemon vs user GUI).
+        if err == ERROR_ACCESS_DENIED:
+            return True
+    except Exception:
+        pass
+    try:
+        import psutil
+
+        return bool(psutil.pid_exists(int(pid)))
     except Exception:
         pass
     try:
         os.kill(int(pid), 0)
         return True
+    except PermissionError:
+        return True
     except OSError:
         return False
     except Exception:
         return False
+
+
+def _hold_update_mutex() -> bool:
+    """Exclusive OS mutex — only one process downloads/installs."""
+    global _UPDATE_MUTEX_HANDLE
+    if _UPDATE_MUTEX_HANDLE is not None:
+        return True
+    try:
+        import win32event
+        import win32api
+
+        name = "Global\\AsteriaClient_UpdateGate"
+        try:
+            from client_constants import UPDATE_MUTEX_NAME
+            name = UPDATE_MUTEX_NAME
+        except Exception:
+            pass
+        handle = win32event.CreateMutex(None, False, name)
+        rc = win32event.WaitForSingleObject(handle, 0)
+        if rc not in (WAIT_OBJECT_0, WAIT_ABANDONED):
+            try:
+                win32api.CloseHandle(handle)
+            except Exception:
+                pass
+            return False
+        _UPDATE_MUTEX_HANDLE = handle
+        return True
+    except Exception:
+        return True
+
+
+def _release_update_mutex() -> None:
+    global _UPDATE_MUTEX_HANDLE
+    handle = _UPDATE_MUTEX_HANDLE
+    _UPDATE_MUTEX_HANDLE = None
+    if not handle:
+        return
+    try:
+        import win32event
+        import win32api
+
+        try:
+            win32event.ReleaseMutex(handle)
+        except Exception:
+            pass
+        win32api.CloseHandle(handle)
+    except Exception:
+        pass
 
 
 def _read_raw() -> Optional[Dict[str, Any]]:
@@ -282,6 +349,13 @@ def try_acquire(
                 release_update_lock(resume_updaters=False)
             except Exception:
                 pass
+        if not _hold_update_mutex():
+            extra = _read_raw() or _synthetic_busy_from_legacy()
+            extra["busy"] = True
+            extra["ok"] = False
+            extra["error"] = "busy"
+            extra["detail"] = str(extra.get("detail") or "update_mutex_held")
+            return False, extra
         # Reclaim stale / forced
         token = uuid.uuid4().hex
         now = time.time()
@@ -301,6 +375,7 @@ def try_acquire(
             "command_id": str(command_id or ""),
         }
         if not _write_raw(payload):
+            _release_update_mutex()
             return False, {
                 "busy": True,
                 "ok": False,
@@ -322,16 +397,17 @@ def release(token: str = "", *, reason: str = "done", resume_updaters: bool = Tr
     with _GATE_LOCK:
         snap = _read_raw()
         if not snap:
-            _clear_legacy_lock(resume_updaters=resume_updaters)
-            return True
-        tok = str(token or "")
-        if tok and str(snap.get("token") or "") != tok:
-            try:
-                if int(snap.get("pid") or 0) != os.getpid():
+            pass
+        else:
+            tok = str(token or "")
+            if tok and str(snap.get("token") or "") != tok:
+                try:
+                    if int(snap.get("pid") or 0) != os.getpid():
+                        return False
+                except (TypeError, ValueError):
                     return False
-            except (TypeError, ValueError):
-                return False
-        _clear_file()
+            _clear_file()
+    _release_update_mutex()
     _clear_legacy_lock(resume_updaters=resume_updaters)
     return True
 
@@ -340,6 +416,7 @@ def force_clear(*, reason: str = "operator_recover", resume_updaters: bool = Tru
     """Operator / recovery path — drop gate regardless of holder."""
     with _GATE_LOCK:
         _clear_file()
+    _release_update_mutex()
     _clear_legacy_lock(resume_updaters=resume_updaters)
 
 

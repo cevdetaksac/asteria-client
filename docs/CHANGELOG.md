@@ -2,6 +2,12 @@
 
 Removed `docs/ux-review` screenshots, duplicate resilience/alert plan MDs. Contract **1.4.64** cloud checklist is SoT for dashboard work.
 
+# v4.9.98
+
+## One installer download
+- Cross-process `Global\\AsteriaClient_UpdateGate` mutex (JSON gate alone raced)
+- Treat ACCESS_DENIED / PermissionError on holder PID as **alive** (do not steal SYSTEM download)
+
 # v4.9.97
 
 ## Follow Connect must not capture Session-0 Winlogon GDI

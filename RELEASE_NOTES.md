@@ -1,5 +1,13 @@
 # Release notes
 
+# Asteria Client 4.9.98 — one update download
+
+Two `asteria-client.exe` processes could both download the installer (JSON gate
+TOCTOU + user process treating SYSTEM PID as dead). Named mutex + honest PID check.
+
+---
+
+
 # Asteria Client 4.9.97 — Follow Connect DXGI, not gdi+black
 
 Dashboard Default Connect (`topology=follow`) was still treating follow as
