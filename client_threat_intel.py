@@ -230,21 +230,10 @@ class ThreatIntelManager:
         if result.get("not_modified"):
             self._stats["syncs_304"] += 1
             self._touch_meta(ok=True)
-            # Reconcile expires/orphans locally; ACK only if FW state changed
+            # 1.4.59: 304 → local expire/orphan reconcile only; never ACK.
             try:
                 if self._bundle:
-                    applied = self.apply_bundle(self._bundle)
-                    changed = int(applied.get("firewall_added") or 0) + int(
-                        applied.get("firewall_removed") or 0
-                    )
-                    if changed:
-                        self._touch_meta(ok=True, applied=applied)
-                        if hasattr(self.api_client, "ack_threat_intel"):
-                            self.api_client.ack_threat_intel(
-                                token=token,
-                                bundle_version=self._version,
-                                stats=applied,
-                            )
+                    self.apply_bundle(self._bundle)
             except Exception as e:
                 log(f"[THREAT-INTEL] 304 reconcile error: {e}")
             return True
@@ -297,6 +286,7 @@ class ThreatIntelManager:
             "firewall_added": 0,
             "firewall_skipped": 0,
             "firewall_removed": 0,
+            "firewall_current": 0,
             "ransomware_rules": 0,
             "process_watch": 0,
             "banners": 0,
@@ -343,7 +333,23 @@ class ThreatIntelManager:
         except Exception:
             pass
 
+        try:
+            stats["firewall_current"] = self._count_standing_intel_rules()
+        except Exception:
+            stats.setdefault("firewall_current", 0)
+
         return stats
+
+    def _count_standing_intel_rules(self) -> int:
+        backend = self._backend()
+        if backend is None or not hasattr(backend, "list_intel_rules"):
+            return 0
+        n = 0
+        for r in backend.list_intel_rules() or []:
+            name = str((r or {}).get("name") or "")
+            if name.startswith("AR-INTEL-"):
+                n += 1
+        return n
 
     def _apply_firewall(
         self,

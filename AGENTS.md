@@ -3,7 +3,7 @@
 Before changing API / agent behavior, follow **asteria-contract** (SoT):
 
 1. `../asteria-contract/VERSION` + `INDEX.md` + `FLEET.md`
-2. Relevant `features/*` (Remote Desktop = `features/remote-desktop.md`) then `api/01`–`03`
+2. Relevant `features/*` then `api/01`–`03`
 3. Contract first on behavior changes; then code
 4. Local `docs/api/*` are stubs — edit the contract only
 
@@ -12,4 +12,4 @@ Before changing API / agent behavior, follow **asteria-contract** (SoT):
 
 Cursor rule: `.cursor/rules/honeypot-contract.mdc`  
 Pointer: [`contract/README.md`](contract/README.md)  
-Remote: https://github.com/cevdetaksac/asteria-contract (pin = `VERSION` file, currently **1.4.35**)
+Remote: https://github.com/cevdetaksac/asteria-contract (pin = `VERSION` file)

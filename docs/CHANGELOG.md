@@ -1,3 +1,10 @@
+# v4.9.96
+
+## Threat-intel ACK + installer alias (contract 1.4.61)
+- HTTP 304 never POSTs intel ACK
+- ACK `stats.firewall_current` = standing `AR-INTEL-*` count
+- `self_update` rewrites legacy `cloud-client-installer.exe` asset name
+
 # v4.9.95
 
 ## Named console topology (contract 1.4.59)

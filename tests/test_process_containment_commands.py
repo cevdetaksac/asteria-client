@@ -14,6 +14,8 @@ class TestProcessContainmentCatalog(unittest.TestCase):
         self.assertIn("resume_process", ALLOWED_COMMANDS)
         self.assertIn("suspend_process", REQUIRES_CONFIRMATION)
         self.assertNotIn("resume_process", REQUIRES_CONFIRMATION)
+        self.assertIn("inspect_process", ALLOWED_COMMANDS)
+        self.assertNotIn("inspect_process", REQUIRES_CONFIRMATION)
 
     def test_exact_identity_is_required(self):
         executor = RemoteCommandExecutor()

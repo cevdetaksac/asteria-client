@@ -155,5 +155,31 @@ class TestThreatIntelFirewallApply(unittest.TestCase):
         self.backend.apply_intel_block.assert_not_called()
 
 
+class TestThreatIntelAckContract(unittest.TestCase):
+    def test_304_never_acks(self):
+        mgr = ThreatIntelManager(
+            api_client=mock.Mock(),
+            token_getter=lambda: "t",
+        )
+        mgr._bundle = {"bundle_version": "x", "layers": {}}
+        mgr._version = "x"
+        mgr.api_client.fetch_threat_intel.return_value = {"not_modified": True}
+        mgr.api_client.ack_threat_intel = mock.Mock(return_value=True)
+        with mock.patch.object(mgr, "apply_bundle", return_value={"firewall_added": 2}):
+            self.assertTrue(mgr.sync_once())
+        mgr.api_client.ack_threat_intel.assert_not_called()
+
+    def test_firewall_current_counts_ar_intel(self):
+        mgr = ThreatIntelManager(api_client=mock.Mock(), token_getter=lambda: "t")
+        backend = mock.Mock()
+        backend.list_intel_rules.return_value = [
+            {"name": "AR-INTEL-1"},
+            {"name": "HP-INTEL-old"},
+            {"name": "AR-INTEL-2"},
+        ]
+        mgr._backend = lambda: backend
+        self.assertEqual(mgr._count_standing_intel_rules(), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

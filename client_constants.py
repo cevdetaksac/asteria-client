@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.95"  # Named RD topology; lock row force Winlogon; follow skips helper
+VERSION = "4.9.96"  # Threat-intel 304 no ACK + firewall_current; installer alias rewrite
 
 
 

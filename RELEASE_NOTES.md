@@ -2,6 +2,21 @@
 
 Per-version GitHub release write-ups, newest first. Ongoing history: [docs/CHANGELOG.md](docs/CHANGELOG.md).
 
+# Asteria Client 4.9.96 — Intel ACK honesty + installer alias
+
+## Why
+Contract 1.4.59/61: 304 threat-intel must not ACK; 200 ACK should report standing
+`AR-INTEL-*` count. Legacy `cloud-client-installer.exe` in `self_update` params
+must not miss the only published asset.
+
+## Client
+- 304: reconcile locally, **no ACK**
+- `stats.firewall_current` on apply/ACK
+- Rewrite `cloud-client-installer` → `asteria-client-installer.exe`
+- `inspect_process` stays off the confirm catalog
+
+---
+
 # Asteria Client 4.9.95 — Named console topology
 
 ## Why

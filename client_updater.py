@@ -1439,6 +1439,15 @@ def run_self_update_command(
     except (TypeError, ValueError):
         expected_size = None
     installer_name = (params.get("installer_name") or INSTALLER_ASSET_NAME).strip()
+    if installer_name.lower() in (
+        "cloud-client-installer.exe",
+        "cloud-client-installer",
+    ):
+        installer_name = INSTALLER_ASSET_NAME
+    if "cloud-client-installer" in download_url.lower():
+        download_url = download_url.replace(
+            "cloud-client-installer.exe", INSTALLER_ASSET_NAME
+        ).replace("cloud-client-installer", INSTALLER_ASSET_NAME)
     from_version = _current_installed_version()
     gate_token = ""
     cmd_id = str(params.get("command_id") or "")
