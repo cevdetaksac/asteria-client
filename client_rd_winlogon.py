@@ -62,6 +62,75 @@ def console_session_id() -> int:
         return 0
 
 
+WTS_USERNAME = 5
+
+
+def session_username(session_id: int) -> str:
+    """WTSQuerySessionInformationW UserName for one SID (empty if none)."""
+    try:
+        sid = int(session_id or 0)
+    except (TypeError, ValueError):
+        return ""
+    if sid <= 0:
+        return ""
+    buf = ctypes.c_void_p()
+    length = wintypes.DWORD()
+    try:
+        if not _wtsapi32.WTSQuerySessionInformationW(
+            0, sid, WTS_USERNAME, ctypes.byref(buf), ctypes.byref(length)
+        ):
+            return ""
+        try:
+            if not buf.value:
+                return ""
+            name = ctypes.wstring_at(buf) or ""
+            return str(name).strip()
+        finally:
+            _wtsapi32.WTSFreeMemory(buf)
+    except Exception:
+        return ""
+
+
+def decide_console_follow(
+    *,
+    follow_console: bool,
+    winlogon_mode: bool,
+    spawn_session_id: int,
+    console_sid: int,
+    console_username: str = "",
+    helper_desktop: str = "",
+    logonui_hwnd: int = 0,
+    chrome_detected: bool = False,
+) -> Optional[str]:
+    """C-RD-FOLLOW: reason to leave Winlogon on the same stream, else None.
+
+    ``follow_console`` is True when start omitted ``session_id`` (physical
+    console). Shortcut starts (explicit SID) still follow Winlogon→Default
+    on that SID but do not jump to a different console SID.
+    """
+    if not winlogon_mode and str(helper_desktop or "").strip().lower() != "winlogon":
+        return None
+    try:
+        spawn_sid = int(spawn_session_id or 0)
+        csid = int(console_sid or 0)
+    except (TypeError, ValueError):
+        return None
+    desk = str(helper_desktop or "").strip().lower()
+    user = str(console_username or "").strip()
+    if csid > 0 and spawn_sid > 0 and csid != spawn_sid and follow_console:
+        return "console_sid_changed"
+    if desk == "default":
+        return "desktop_default"
+    if (
+        user
+        and int(logonui_hwnd or 0) <= 0
+        and not chrome_detected
+        and (not spawn_sid or not csid or csid == spawn_sid)
+    ):
+        return "user_session_active"
+    return None
+
+
 def enable_process_privileges(*names: str) -> None:
     """Best-effort enable SeDebugPrivilege / SeAssignPrimaryTokenPrivilege etc."""
     try:

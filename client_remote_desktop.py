@@ -74,6 +74,8 @@ WINLOGON_HELPER_FRAME_SEC = 5.0       # first non-flat chrome frame (C-RD-CHROME
 WINLOGON_HELPER_RETRY = 1             # one re-spawn; no command-thread attach storm
 WINLOGON_ONESHOT_WAIT_SEC = 3.0
 WINLOGON_HELPER_SETTLE_SEC = 0.35     # brief LogonUI paint; capture thread owns attach
+FOLLOW_ACCEPT_SEC = 3.0               # C-RD-FOLLOW helper respawn after logon
+FOLLOW_CHECK_SEC = 0.25
 HELPER_ACCEPT_SEC = 5.0               # non-winlogon helper accept (was 12s → 23s stacks)
 HELPER_FRAME_SEC = 5.0
 HELPER_ONESHOT_WAIT_SEC = 4.0
@@ -229,7 +231,13 @@ class RemoteDesktopStreamer:
         self._desktop_attach_tid: Optional[int] = None
         self._desktop_name = ""
         self._winlogon_mode = False
-        self._desktop_reattach_every = 45  # frames — pick up Default after logon
+        self._follow_console = False  # omit session_id → physical console (C-RD-FOLLOW-6)
+        self._follow_lock = threading.Lock()
+        self._follow_busy = False
+        self._last_follow_check = 0.0
+        self._helper_spawn_session_id = 0
+        self._prefer_dxgi = False
+        self._desktop_reattach_every = 3  # C-RD-FOLLOW-3: Default before next frames
         self._logonui_hwnd_count = 0
         self._chrome_diag_logged = False
         self._tscon_attempted = False
@@ -471,6 +479,11 @@ class RemoteDesktopStreamer:
             self._desktop_attach_tid = None
             self._desktop_name = ""
             self._winlogon_mode = False
+            self._follow_console = False
+            self._follow_busy = False
+            self._last_follow_check = 0.0
+            self._helper_spawn_session_id = 0
+            self._prefer_dxgi = False
             self._tscon_attempted = False
             self._logonui_hwnd_count = 0
             self._chrome_diag_logged = False
@@ -564,45 +577,46 @@ class RemoteDesktopStreamer:
                         or str(match.get("username") or "")
                     )
             else:
-                # C-RD-S0-1 / C-RD-CON-2: omit session_id → console only.
-                # Never invent SID 1 via pick_default when console resolve fails.
-                if want_winlogon:
-                    try:
-                        from client_rd_winlogon import console_session_id
-                        csid = int(console_session_id() or 0)
-                    except Exception:
-                        csid = 0
-                    if csid <= 0:
-                        err = "NO_CONSOLE_SESSION"
-                        msg = (
-                            "WTSGetActiveConsoleSessionId returned 0 — "
-                            "refusing to invent session_id (C-RD-S0-1)"
-                        )
-                        log(f"[REMOTE-DESKTOP] ✖ {err}: {msg}")
-                        self._running = False
-                        self._transport = "idle"
-                        self._target_session_id = None
-                        self.emit_stream_progress("failed", msg, error=err, force=True)
-                        return {
-                            "success": False,
-                            "error": err,
-                            "message": msg,
-                            "data": self.get_status(),
-                        }
+                # C-RD-FOLLOW-6 / C-RD-S0-1: omit session_id → console only.
+                # Never bind the first Active SID from list_sessions.
+                self._follow_console = True
+                try:
+                    from client_rd_winlogon import console_session_id
+                    csid = int(console_session_id() or 0)
+                except Exception:
+                    csid = 0
+                if csid <= 0:
+                    err = "NO_CONSOLE_SESSION"
+                    msg = (
+                        "WTSGetActiveConsoleSessionId returned 0 — "
+                        "refusing to invent session_id (C-RD-S0-1)"
+                    )
+                    log(f"[REMOTE-DESKTOP] ✖ {err}: {msg}")
+                    self._running = False
+                    self._transport = "idle"
+                    self._target_session_id = None
+                    self.emit_stream_progress("failed", msg, error=err, force=True)
+                    return {
+                        "success": False,
+                        "error": err,
+                        "message": msg,
+                        "data": self.get_status(),
+                    }
+                same_sid = [
+                    s for s in interactive
+                    if int(s.get("session_id") or 0) == csid
+                ]
+                if want_winlogon and not same_sid:
                     same_sid = [
-                        s for s in interactive
-                        if int(s.get("session_id") or 0) == csid
+                        s for s in interactive if s.get("pre_logon")
                     ]
-                    if not same_sid:
-                        same_sid = [
-                            s for s in interactive if s.get("pre_logon")
-                        ]
-                    picked = None
-                    if same_sid:
-                        picked = self._select_session_row(
-                            same_sid, want_winlogon=True, username=None
-                        ) or same_sid[0]
-                    self._target_session_id = csid
+                picked = None
+                if same_sid:
+                    picked = self._select_session_row(
+                        same_sid, want_winlogon=want_winlogon, username=bind_username
+                    ) or same_sid[0]
+                self._target_session_id = csid
+                if want_winlogon:
                     self._target_username = ""
                     match = picked or {
                         "session_id": csid,
@@ -610,18 +624,19 @@ class RemoteDesktopStreamer:
                         "desktop": "winlogon",
                         "username": "",
                     }
-                    log(
-                        f"[REMOTE-DESKTOP] winlogon omit-sid → console "
-                        f"WTSGetActiveConsoleSessionId={csid}"
-                    )
                 else:
-                    picked = self._pick_default_session(interactive)
-                    self._target_session_id = int(picked["session_id"])
                     self._target_username = (
                         (bind_username or "").strip()
-                        or str(picked.get("username") or "")
+                        or str((picked or {}).get("username") or "")
                     )
-                    match = picked
+                    match = picked or {
+                        "session_id": csid,
+                        "username": self._target_username,
+                    }
+                log(
+                    f"[REMOTE-DESKTOP] omit-sid → console "
+                    f"WTSGetActiveConsoleSessionId={csid} winlogon={want_winlogon}"
+                )
 
             match_meta = match if isinstance(match, dict) else {}
             self._winlogon_mode = bool(
@@ -1663,6 +1678,7 @@ class RemoteDesktopStreamer:
                     break
                 self._sync_media_capture_mode()
                 self._progress_heartbeat_tick()
+                self._maybe_follow_console_desktop()
                 self._capture_and_send()
             except Exception as e:
                 self._stats["frames_failed"] += 1
@@ -2303,9 +2319,13 @@ class RemoteDesktopStreamer:
 
         img = None
         method = "none"
-        # WebRTC media mode: prefer Desktop Duplication (dirty/present driven)
-        # when the optional dxcam runtime is packaged. Falls back safely.
-        if self._media_ready():
+        # DXGI/NVENC path after Default follow (C-RD-FOLLOW-5) and WebRTC media.
+        try_dxgi = (not self._winlogon_mode) and (
+            self._media_ready()
+            or self._prefer_dxgi
+            or self._in_session_helper
+        )
+        if try_dxgi:
             try:
                 import dxcam  # type: ignore
                 if self._dxcam is None:
@@ -2897,6 +2917,7 @@ class RemoteDesktopStreamer:
                 if name.lower() == "default" and self._winlogon_mode:
                     # User completed interactive logon — switch to normal desktop path.
                     self._winlogon_mode = False
+                    self._prefer_dxgi = True
                     log("[REMOTE-DESKTOP] desktop switched Winlogon→Default (post-logon)")
                 return True
             if self._winlogon_mode and not force:
@@ -2952,12 +2973,132 @@ class RemoteDesktopStreamer:
             self._desktop_name = resolved
             if resolved.lower() == "default" and self._winlogon_mode:
                 self._winlogon_mode = False
+                self._prefer_dxgi = True
                 log("[REMOTE-DESKTOP] desktop switched Winlogon→Default (post-logon)")
             log(f"[REMOTE-DESKTOP] attached to input desktop name={resolved}")
             return True
         except Exception as e:
             log(f"[REMOTE-DESKTOP] desktop attach error: {e}")
             return False
+
+    def _maybe_follow_console_desktop(self) -> None:
+        """C-RD-FOLLOW-1…8: leave Winlogon after logon/unlock on the same stream."""
+        if self._follow_busy or not self._running:
+            return
+        now = time.time()
+        if (now - float(self._last_follow_check or 0)) < FOLLOW_CHECK_SEC:
+            return
+        self._last_follow_check = now
+        if not self._winlogon_mode and str(self._desktop_name or "").lower() != "winlogon":
+            return
+        try:
+            from client_rd_winlogon import (
+                console_session_id,
+                decide_console_follow,
+                session_username,
+            )
+            csid = int(console_session_id() or 0)
+            user = session_username(csid) if csid else ""
+            spawn = int(
+                self._helper_spawn_session_id
+                or (self._session_helper.session_id if self._session_helper else 0)
+                or (self._target_session_id or 0)
+            )
+            reason = decide_console_follow(
+                follow_console=bool(self._follow_console),
+                winlogon_mode=bool(self._winlogon_mode),
+                spawn_session_id=spawn,
+                console_sid=csid,
+                console_username=user,
+                helper_desktop=str(self._desktop_name or ""),
+                logonui_hwnd=int(self._logonui_hwnd_count or 0),
+                chrome_detected=bool(self._chrome_detected),
+            )
+            if (
+                not reason
+                and user
+                and self._winlogon_mode
+                and int(getattr(self, "_helper_frame_misses", 0) or 0) >= 2
+            ):
+                reason = "stale_winlogon_no_frames"
+        except Exception as exc:
+            log(f"[REMOTE-DESKTOP] follow decide error: {exc}")
+            return
+        if not reason:
+            return
+        new_sid = csid if csid > 0 else int(self._target_session_id or 0)
+        if new_sid <= 0:
+            return
+        self._execute_console_follow(reason, new_sid, user)
+
+    def _execute_console_follow(self, reason: str, new_sid: int, username: str) -> None:
+        """Tear Winlogon helper, rebind Default, keep stream_id (C-RD-FOLLOW-1/2/4)."""
+        if not self._follow_lock.acquire(blocking=False):
+            return
+        self._follow_busy = True
+        prev_sid = self._target_session_id
+        stream_id = self._stream_id
+        try:
+            log(
+                f"[REMOTE-DESKTOP] C-RD-FOLLOW {reason} "
+                f"sid {prev_sid}→{new_sid} user={username!r} "
+                f"stream={stream_id}"
+            )
+            self._progress_live_emitted = False
+            self.emit_stream_progress(
+                "switching",
+                f"Following console to Default (session {new_sid})",
+                force=True,
+            )
+            self._last_raw_hash = b""
+            self._idle_skip_streak = 0
+            spawn = int(
+                self._helper_spawn_session_id
+                or (self._session_helper.session_id if self._session_helper else 0)
+                or (prev_sid or 0)
+            )
+            same_sid = int(new_sid) == int(spawn)
+            desk = str(self._desktop_name or "").lower()
+            # Wrong SID or still on Winlogon → tear helper and spawn on Default.
+            respawn = (not same_sid) or desk != "default"
+            self._winlogon_mode = False
+            self._prefer_dxgi = True
+            self._target_session_id = int(new_sid)
+            self._target_username = str(username or "").strip()
+            self._desktop_name = "Default"
+            self._use_user_helper = True
+            if respawn or not self._persistent_helper_connected():
+                self._stop_persistent_helper()
+                started = self._start_persistent_helper(accept_timeout=FOLLOW_ACCEPT_SEC)
+                if not started:
+                    log(
+                        "[REMOTE-DESKTOP] C-RD-FOLLOW helper respawn failed "
+                        f"phase={self._last_helper_fail_phase} "
+                        f"detail={self._last_helper_fail_detail}"
+                    )
+                    return
+            elif self._persistent_helper_connected():
+                fps, quality, max_width = self._effective_capture_settings()
+                self._session_helper.update_config({
+                    "winlogon": False,
+                    "prefer_raw": True,
+                    "fps": max(float(fps), 15.0),
+                    "quality": quality,
+                    "max_width": max_width,
+                    "monitor": self._monitor_index,
+                })
+            self._stream_id = stream_id
+            self._enqueue_meta(force=True)
+            self.emit_stream_progress(
+                "live",
+                f"Console follow complete desktop=Default session={new_sid}",
+                force=True,
+            )
+        except Exception as exc:
+            log(f"[REMOTE-DESKTOP] C-RD-FOLLOW error: {exc}")
+        finally:
+            self._follow_busy = False
+            self._follow_lock.release()
 
     def _session_connect_state(self, session_id: Optional[int]) -> str:
         """Return WTS connect state name for logging (Active/Disconnected/…)."""
@@ -3279,6 +3420,7 @@ class RemoteDesktopStreamer:
             self._session_helper = helper
             self._helper_frame_id = 0
             self._helper_frame_misses = 0
+            self._helper_spawn_session_id = int(target)
             self._last_helper_fail_phase = ""
             method = (
                 "persistent-winlogon-helper"

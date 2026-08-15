@@ -499,6 +499,8 @@ def run_session_helper(
     rd._target_session_id = int(session_id or 0) or None
     # Winlogon / lock UI: stay on named Winlogon desktop (C-RD-CON-4).
     rd._winlogon_mode = bool(winlogon or config.get("winlogon"))
+    rd._prefer_dxgi = not bool(rd._winlogon_mode)
+    rd._desktop_reattach_every = 2
     # WebRTC-first: parent may request raw RGB over loopback (prefer_raw).
     prefer_raw = bool(config.get("prefer_raw"))
     # JPEG fallback normally stays lower; WebRTC/media can request 30–60 fps.
@@ -636,7 +638,14 @@ def run_session_helper(
                 break
             if kind == "C":
                 prefer_raw = bool(header.get("prefer_raw", prefer_raw))
+                was_wl = bool(rd._winlogon_mode)
                 rd._winlogon_mode = bool(header.get("winlogon", rd._winlogon_mode))
+                if was_wl and not rd._winlogon_mode:
+                    rd._prefer_dxgi = True
+                    try:
+                        rd._invalidate_desktop_bind()
+                    except Exception:
+                        pass
                 rd._fps = max(1.0, min(float(header.get("fps", rd._fps)), 60.0))
                 rd._quality = max(20, min(int(header.get("quality", rd._quality)), 85))
                 try:

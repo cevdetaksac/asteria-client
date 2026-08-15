@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.93"  # inspect_process on-demand; rundll32 lolbin without .dll, false positive
+VERSION = "4.9.93"  # inspect_process + C-RD-FOLLOW logon→Default same stream
 
 
 

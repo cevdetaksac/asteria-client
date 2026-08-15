@@ -332,5 +332,85 @@ class TestAttachStrictWinlogon(unittest.TestCase):
         self.assertIn("strict Winlogon", detail)
 
 
+class TestDecideConsoleFollow(unittest.TestCase):
+    def test_sid_change_on_console_start(self):
+        from client_rd_winlogon import decide_console_follow
+
+        self.assertEqual(
+            decide_console_follow(
+                follow_console=True,
+                winlogon_mode=True,
+                spawn_session_id=1,
+                console_sid=2,
+                console_username="administrator",
+                helper_desktop="Winlogon",
+                logonui_hwnd=1,
+                chrome_detected=True,
+            ),
+            "console_sid_changed",
+        )
+
+    def test_sid_change_ignored_on_shortcut_sid(self):
+        from client_rd_winlogon import decide_console_follow
+
+        self.assertIsNone(
+            decide_console_follow(
+                follow_console=False,
+                winlogon_mode=True,
+                spawn_session_id=1,
+                console_sid=2,
+                console_username="bob",
+                helper_desktop="Winlogon",
+            )
+        )
+
+    def test_default_desktop_triggers(self):
+        from client_rd_winlogon import decide_console_follow
+
+        self.assertEqual(
+            decide_console_follow(
+                follow_console=True,
+                winlogon_mode=True,
+                spawn_session_id=1,
+                console_sid=1,
+                helper_desktop="Default",
+            ),
+            "desktop_default",
+        )
+
+    def test_user_active_same_sid(self):
+        from client_rd_winlogon import decide_console_follow
+
+        self.assertEqual(
+            decide_console_follow(
+                follow_console=True,
+                winlogon_mode=True,
+                spawn_session_id=1,
+                console_sid=1,
+                console_username="administrator",
+                helper_desktop="Winlogon",
+                logonui_hwnd=0,
+                chrome_detected=False,
+            ),
+            "user_session_active",
+        )
+
+    def test_still_on_logonui(self):
+        from client_rd_winlogon import decide_console_follow
+
+        self.assertIsNone(
+            decide_console_follow(
+                follow_console=True,
+                winlogon_mode=True,
+                spawn_session_id=1,
+                console_sid=1,
+                console_username="",
+                helper_desktop="Winlogon",
+                logonui_hwnd=3,
+                chrome_detected=True,
+            )
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
