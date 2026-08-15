@@ -2,6 +2,13 @@
 
 Removed `docs/ux-review` screenshots, duplicate resilience/alert plan MDs. Contract **1.4.64** cloud checklist is SoT for dashboard work.
 
+# v4.9.102
+
+## C-RD-PIX-3: listed username is not an unlocked desktop
+- Win+L / unknown lock → Winlogon helper (`winlogon.exe` token, `winsta0\Winlogon`)
+- Skip Winlogon only when explorer is present, WTS unlocked, and no LogonUI
+- Do not keep a Default user helper after promoting to Winlogon
+
 # v4.9.101
 
 ## Remote desktop video-rate stream (contract 1.4.71)

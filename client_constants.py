@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.101"  # Remote desktop video-rate JPEG-WS + 12 Mbps WebRTC / TURNS hint
+VERSION = "4.9.102"  # PIX-3: lock with listed user → Winlogon helper, not user GDI black
 
 
 

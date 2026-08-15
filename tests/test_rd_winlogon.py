@@ -231,6 +231,10 @@ class TestWinlogonStartContract(unittest.TestCase):
             "client_rd_winlogon.session_username", return_value="administrator"
         ), mock.patch(
             "client_rd_winlogon.session_has_logonui", return_value=False
+        ), mock.patch(
+            "client_rd_winlogon.session_lock_state", return_value=False
+        ), mock.patch(
+            "client_rd_winlogon.session_has_process", return_value=True
         ), mock.patch.object(
             rd, "_session_ids", return_value=(0, 3)
         ), mock.patch.object(
@@ -274,7 +278,11 @@ class TestWinlogonStartContract(unittest.TestCase):
         with mock.patch.object(
             rd, "_console_interactive_username", return_value="administrator"
         ), mock.patch(
-            "client_rd_winlogon.session_has_logonui", return_value=True
+            "client_rd_winlogon.session_has_logonui", return_value=False
+        ), mock.patch(
+            "client_rd_winlogon.session_lock_state", return_value=True
+        ), mock.patch(
+            "client_rd_winlogon.session_has_process", return_value=True
         ):
             rd._apply_follow_secure_or_default()
         self.assertTrue(rd._winlogon_mode)
@@ -300,9 +308,40 @@ class TestWinlogonStartContract(unittest.TestCase):
             console_start_secure_desktop(username="administrator", logonui_present=True)
         )
         self.assertTrue(console_start_secure_desktop(username="", logonui_present=False))
-        self.assertFalse(
+        self.assertTrue(
             console_start_secure_desktop(username="administrator", logonui_present=False)
         )
+        self.assertFalse(
+            console_start_secure_desktop(
+                username="administrator",
+                logonui_present=False,
+                session_locked=False,
+                explorer_present=True,
+            )
+        )
+        self.assertTrue(
+            console_start_secure_desktop(
+                username="administrator",
+                logonui_present=False,
+                session_locked=True,
+                explorer_present=True,
+            )
+        )
+
+    def test_lock_flags_and_helper_mode_mismatch(self):
+        from client_rd_winlogon import interpret_session_lock_flags
+        self.assertTrue(interpret_session_lock_flags(0))
+        self.assertFalse(interpret_session_lock_flags(1))
+        self.assertIsNone(interpret_session_lock_flags(0xFFFFFFFF))
+        rd = self._make_rd()
+        rd._winlogon_mode = True
+        rd._helper_spawned_winlogon = False
+
+        class Helper:
+            connected = True
+
+        rd._session_helper = Helper()
+        self.assertFalse(rd._persistent_helper_matches_mode())
 
 
 class TestSessionHasLogonui(unittest.TestCase):

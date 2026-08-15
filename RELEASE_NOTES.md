@@ -1,5 +1,16 @@
 # Release notes
 
+# Asteria Client 4.9.102 — lock screen is Winlogon pixels, not user GDI black
+
+Follow Connect with a listed console username was still spawning
+`persistent-user-helper` on Default while the input desktop was Winlogon
+(Win+L). That helper cannot BitBlt LogonUI, so the viewer stayed 1024×768
+black. Follow now uses WTS lock + explorer + LogonUI, prefers the Winlogon
+helper unless Default is proven unlocked, and will not reuse a user helper
+after switching to Winlogon.
+
+---
+
 # Asteria Client 4.9.101 — remote desktop at video rate
 
 JPEG-WS was a slideshow when WebRTC UDP failed (typical through Cloudflare

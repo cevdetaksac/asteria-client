@@ -63,6 +63,10 @@ def console_session_id() -> int:
 
 
 WTS_USERNAME = 5
+WTS_SESSIONINFO_EX = 25
+WTS_SESSIONSTATE_LOCK = 0x00000000
+WTS_SESSIONSTATE_UNLOCK = 0x00000001
+WTS_SESSIONSTATE_UNKNOWN = 0xFFFFFFFF
 
 
 def session_username(session_id: int) -> str:
@@ -217,17 +221,105 @@ def resolve_start_topology(
     return "session", False
 
 
+def interpret_session_lock_flags(flags) -> Optional[bool]:
+    """WTSINFOEX SessionFlags → locked True / unlocked False / unknown None."""
+    try:
+        value = int(flags) & 0xFFFFFFFF
+    except (TypeError, ValueError):
+        return None
+    if value == WTS_SESSIONSTATE_UNKNOWN:
+        return None
+    if value == WTS_SESSIONSTATE_UNLOCK:
+        return False
+    if value == WTS_SESSIONSTATE_LOCK:
+        return True
+    return (value & 1) == 0
+
+
+def session_has_process(session_id: int, image_base: str) -> bool:
+    try:
+        sid = int(session_id or 0)
+    except (TypeError, ValueError):
+        return False
+    if sid <= 0:
+        return False
+    for pid in _pids_named(image_base):
+        if _session_of_pid(pid) == sid:
+            return True
+    return False
+
+
+def session_lock_state(session_id: int) -> Optional[bool]:
+    """True when WTS says the session is locked; None if unreadable."""
+    try:
+        sid = int(session_id or 0)
+    except (TypeError, ValueError):
+        return None
+    if sid <= 0:
+        return None
+    buf = ctypes.c_void_p()
+    length = wintypes.DWORD()
+    try:
+        if not _wtsapi32.WTSQuerySessionInformationW(
+            0, sid, WTS_SESSIONINFO_EX, ctypes.byref(buf), ctypes.byref(length)
+        ):
+            return None
+        try:
+            nbytes = int(length.value or 0)
+            if not buf.value or nbytes < 16:
+                return None
+            raw = ctypes.string_at(buf.value, nbytes)
+            level = int.from_bytes(raw[0:4], "little")
+            if level != 1:
+                return None
+            sid_at_4 = int.from_bytes(raw[4:8], "little")
+            sid_at_8 = int.from_bytes(raw[8:12], "little")
+            if sid_at_4 == sid:
+                flags = int.from_bytes(raw[12:16], "little", signed=True)
+            elif sid_at_8 == sid and nbytes >= 20:
+                flags = int.from_bytes(raw[16:20], "little", signed=True)
+            else:
+                flags = int.from_bytes(raw[12:16], "little", signed=True)
+            return interpret_session_lock_flags(flags)
+        finally:
+            _wtsapi32.WTSFreeMemory(buf)
+    except Exception:
+        return None
+
+
 def console_start_secure_desktop(
     *,
     username: str = "",
     logonui_present: bool = False,
+    session_locked: Optional[bool] = None,
+    explorer_present: Optional[bool] = None,
+    input_desktop: str = "",
 ) -> bool:
-    """C-RD-FOLLOW: Winlogon helper only if LogonUI/SAS/lock or nobody logged on."""
-    if logonui_present:
+    """Winlogon helper when the *input* desktop is secure — not when WTS lists a user.
+
+    Listed username + live Default is PIX-4. Listed username + Win+L is PIX-3.
+    Unknown lock with a username used to skip Winlogon and paint user-helper
+    ``gdi+black`` (Derin-Web). Prefer Winlogon unless Default is proven live.
+    """
+    desk = str(input_desktop or "").strip().lower()
+    if desk == "winlogon":
+        return True
+    if logonui_present or session_locked is True:
         return True
     if not str(username or "").strip():
         return True
-    return False
+    if explorer_present is False:
+        return True
+    if desk == "default" and session_locked is not True and not logonui_present:
+        return False
+    if (
+        explorer_present is True
+        and session_locked is False
+        and not logonui_present
+        and desk != "winlogon"
+    ):
+        return False
+    return True
 
 
 def enable_process_privileges(*names: str) -> None:

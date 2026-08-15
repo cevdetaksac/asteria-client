@@ -254,6 +254,7 @@ class RemoteDesktopStreamer:
         self._use_user_helper = False  # Session 0 / other session → CreateProcessAsUser helper
         self._in_session_helper = False  # True inside --rd-session-helper process
         self._session_helper = None     # persistent authenticated loopback bridge
+        self._helper_spawned_winlogon = None
         self._helper_frame_id = 0
         self._helper_frame_misses = 0
         self._input_desktop = None
@@ -542,6 +543,7 @@ class RemoteDesktopStreamer:
             self._last_good_wh = (0, 0)
             self._use_user_helper = False
             self._in_session_helper = False
+            self._helper_spawned_winlogon = None
             self._helper_frame_id = 0
             self._helper_frame_misses = 0
             self._media_mode_applied = False
@@ -1770,6 +1772,7 @@ class RemoteDesktopStreamer:
                 self._sync_media_capture_mode()
                 self._progress_heartbeat_tick()
                 self._maybe_follow_console_desktop()
+                self._maybe_promote_follow_lock_capture()
                 self._capture_and_send()
             except Exception as e:
                 self._stats["frames_failed"] += 1
@@ -3101,29 +3104,43 @@ class RemoteDesktopStreamer:
         return str(self._target_username or "").strip()
 
     def _apply_follow_secure_or_default(self) -> None:
-        """Follow Connect: Winlogon helper only when lock/LogonUI/no user."""
+        """Follow Connect: Winlogon unless Default input desktop is proven live."""
         sid = int(self._target_session_id or 0)
         user = self._console_interactive_username()
         logonui = False
-        secure = False
+        locked = None
+        explorer = None
         try:
             from client_rd_winlogon import (
                 console_start_secure_desktop,
                 session_has_logonui,
+                session_has_process,
+                session_lock_state,
             )
             logonui = bool(session_has_logonui(sid)) if sid > 0 else False
+            locked = session_lock_state(sid) if sid > 0 else None
+            explorer = (
+                session_has_process(sid, "explorer.exe") if sid > 0 else None
+            )
             secure = bool(
-                console_start_secure_desktop(username=user, logonui_present=logonui)
+                console_start_secure_desktop(
+                    username=user,
+                    logonui_present=logonui,
+                    session_locked=locked,
+                    explorer_present=explorer,
+                    input_desktop=str(self._desktop_name or ""),
+                )
             )
         except Exception as exc:
             log(f"[REMOTE-DESKTOP] follow desktop probe: {exc}")
-            secure = False
+            secure = True
         if secure:
             self._winlogon_mode = True
             self._target_username = ""
             log(
                 f"[REMOTE-DESKTOP] follow -> Winlogon "
-                f"(logonui={logonui} user={user!r} session={sid})"
+                f"(logonui={logonui} locked={locked} explorer={explorer} "
+                f"user={user!r} session={sid})"
             )
             return
         self._winlogon_mode = False
@@ -3134,7 +3151,7 @@ class RemoteDesktopStreamer:
         self._desktop_name = "Default"
         log(
             f"[REMOTE-DESKTOP] follow -> Default DXGI "
-            f"session={sid} user={user!r} — skip Winlogon helper"
+            f"session={sid} user={user!r} locked={locked} — skip Winlogon helper"
         )
 
     def _maybe_skip_winlogon_for_live_console(self) -> None:
@@ -3148,10 +3165,20 @@ class RemoteDesktopStreamer:
             from client_rd_winlogon import (
                 console_start_secure_desktop,
                 session_has_logonui,
+                session_has_process,
+                session_lock_state,
             )
             user = self._console_interactive_username()
             logonui = bool(session_has_logonui(sid))
-            if console_start_secure_desktop(username=user, logonui_present=logonui):
+            locked = session_lock_state(sid)
+            explorer = session_has_process(sid, "explorer.exe")
+            if console_start_secure_desktop(
+                username=user,
+                logonui_present=logonui,
+                session_locked=locked,
+                explorer_present=explorer,
+                input_desktop=str(self._desktop_name or ""),
+            ):
                 return
         except Exception as exc:
             log(f"[REMOTE-DESKTOP] console desktop probe: {exc}")
@@ -3276,6 +3303,7 @@ class RemoteDesktopStreamer:
                 "[REMOTE-DESKTOP] Winlogon helper spawn failed after Default black "
                 f"phase={self._last_helper_fail_phase}"
             )
+            self._winlogon_mode = False
             return None
         time.sleep(WINLOGON_HELPER_SETTLE_SEC)
         deadline = time.time() + WINLOGON_HELPER_FRAME_SEC
@@ -3699,13 +3727,21 @@ class RemoteDesktopStreamer:
             return r"winsta0\Winlogon"
         return r"winsta0\default"
 
+    def _persistent_helper_matches_mode(self) -> bool:
+        if not self._persistent_helper_connected():
+            return False
+        spawned = self._helper_spawned_winlogon
+        if spawned is None:
+            return False
+        return bool(spawned) == bool(self._winlogon_mode)
+
     def _start_persistent_helper(self, accept_timeout: Optional[float] = None) -> bool:
         target = self._target_session_id
         if not target:
             self._last_helper_fail_phase = "token"
             self._last_helper_fail_detail = "no_target_session"
             return False
-        if self._persistent_helper_connected():
+        if self._persistent_helper_matches_mode():
             return True
         self._stop_persistent_helper()
         self._last_helper_token_source = ""
@@ -3770,6 +3806,7 @@ class RemoteDesktopStreamer:
                 helper.stop()
                 return False
             self._session_helper = helper
+            self._helper_spawned_winlogon = bool(self._winlogon_mode)
             self._helper_frame_id = 0
             self._helper_frame_misses = 0
             self._helper_spawn_session_id = int(target)
@@ -3970,6 +4007,7 @@ class RemoteDesktopStreamer:
     def _stop_persistent_helper(self) -> None:
         helper = self._session_helper
         self._session_helper = None
+        self._helper_spawned_winlogon = None
         self._helper_frame_id = 0
         self._helper_frame_misses = 0
         if helper is not None:
