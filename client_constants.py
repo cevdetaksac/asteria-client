@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.102"  # PIX-3: lock with listed user → Winlogon helper, not user GDI black
+VERSION = "4.9.103"  # PIX-4: Default follow DXGI, no 8fps cap, no CREATE_NO_WINDOW helper
 
 
 

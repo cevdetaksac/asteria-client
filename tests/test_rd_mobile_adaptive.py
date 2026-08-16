@@ -308,6 +308,14 @@ class TestEncodeSizeLock(unittest.TestCase):
         self.assertEqual(first, (1280, 720))
         self.assertEqual(second, (1280, 720))
 
+    def test_upgrades_lock_when_real_monitor_appears(self):
+        rd = RemoteDesktopStreamer()
+        rd._winlogon_mode = False
+        first = rd._resolve_encode_size(1024, 768, 1920)
+        self.assertEqual(first, (1024, 768))
+        second = rd._resolve_encode_size(1920, 1080, 1920)
+        self.assertEqual(second, (1920, 1080))
+
     def test_min_floor_1280x720_when_source_allows(self):
         rd = RemoteDesktopStreamer()
         w, h = rd._compute_encode_size(1920, 1080, 800)

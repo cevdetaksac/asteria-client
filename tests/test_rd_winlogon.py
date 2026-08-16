@@ -296,6 +296,22 @@ class TestWinlogonStartContract(unittest.TestCase):
         rd._desktop_name = "Winlogon"
         self.assertTrue(rd._should_promote_follow_to_winlogon())
 
+    def test_unlocked_default_does_not_promote_to_winlogon(self):
+        rd = self._make_rd()
+        rd._follow_console = True
+        rd._winlogon_mode = False
+        rd._target_session_id = 3
+        rd._capture_method = "persistent-user-helper:gdi+black"
+        rd._desktop_name = "Default"
+        with mock.patch(
+            "client_rd_winlogon.session_has_logonui", return_value=False
+        ), mock.patch(
+            "client_rd_winlogon.session_lock_state", return_value=False
+        ), mock.patch(
+            "client_rd_winlogon.session_has_process", return_value=True
+        ):
+            self.assertFalse(rd._should_promote_follow_to_winlogon())
+
     def test_healthy_frame_blocks_black_webrtc(self):
         rd = self._make_rd()
         rd._capture_method = "gdi+black"

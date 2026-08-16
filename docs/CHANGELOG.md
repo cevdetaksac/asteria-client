@@ -2,6 +2,14 @@
 
 Removed `docs/ux-review` screenshots, duplicate resilience/alert plan MDs. Contract **1.4.64** cloud checklist is SoT for dashboard work.
 
+# v4.9.103
+
+## C-RD-PIX-4 + SMOOTH: unlocked console must be DXGI at Start knobs
+- Drop `CREATE_NO_WINDOW` on Default session helpers (DXGI/DWM never came up)
+- Remove the 8 fps helper-reconnect cap; helper floors 24 fps / q55 / 1280
+- DXGI grab retries without clipping to a 1024×768 region; encode lock can grow
+- Unlocked explorer + WTS unlocked: do not promote GDI black to Winlogon
+
 # v4.9.102
 
 ## C-RD-PIX-3: listed username is not an unlocked desktop

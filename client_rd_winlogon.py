@@ -1276,7 +1276,7 @@ def attach_console_desktop(
     elif prefer_winlogon:
         names = ("Winlogon", "Default")
     else:
-        names = ("Default", "Winlogon")
+        names = ("Default",)
 
     OpenDesktopW = _user32.OpenDesktopW
     OpenDesktopW.argtypes = [

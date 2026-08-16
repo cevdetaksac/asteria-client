@@ -1157,21 +1157,25 @@ class RemoteDesktopStreamer:
             self._running = True
             self._transport = "http"
             self._stream_started_at = time.time()
-            if self._use_user_helper:
-                if not self._persistent_helper_connected():
-                    # Legacy CreateProcessAsUser-per-frame is expensive —
-                    # keep a usable floor (not 2 fps) until persistent reconnects.
-                    self._fps = min(self._fps, 8.0)
-                elif self._webrtc_available():
-                    # Warm helper for H.264: raw RGB + media FPS from the start.
-                    self._session_helper.update_config({
-                        "fps": self._media_fps,
-                        "quality": self._media_quality,
-                        "max_width": self._max_width,
-                        "monitor": self._monitor_index,
-                        "prefer_raw": True,
-                        "winlogon": bool(self._winlogon_mode),
-                    })
+            if self._use_user_helper and self._persistent_helper_connected():
+                cfg = {
+                    "fps": max(
+                        float(self._requested_fps),
+                        JPEG_FALLBACK_FPS_WHILE_NEGOTIATING,
+                    ),
+                    "quality": max(int(self._requested_quality), DEFAULT_QUALITY),
+                    "max_width": max(int(self._requested_max_width), 1280),
+                    "monitor": self._monitor_index,
+                    "prefer_raw": bool(self._webrtc_available()),
+                    "winlogon": bool(self._winlogon_mode),
+                }
+                if self._webrtc_available():
+                    cfg["fps"] = self._media_fps
+                    cfg["quality"] = max(
+                        int(self._media_quality), DEFAULT_QUALITY
+                    )
+                    cfg["prefer_raw"] = True
+                self._session_helper.update_config(cfg)
 
             self._thread = threading.Thread(
                 target=self._capture_loop,
@@ -2389,7 +2393,15 @@ class RemoteDesktopStreamer:
         if src_w <= 0 or src_h <= 0:
             return None
         if self._locked_encode_w > 0 and self._locked_encode_h > 0:
-            return self._locked_encode_w, self._locked_encode_h
+            if (
+                not self._winlogon_mode
+                and src_w >= MIN_ENCODE_WIDTH
+                and src_w > int(self._locked_encode_w)
+            ):
+                self._locked_encode_w = 0
+                self._locked_encode_h = 0
+            else:
+                return self._locked_encode_w, self._locked_encode_h
         tw, th = self._compute_encode_size(src_w, src_h, max_width)
         self._locked_encode_w = tw
         self._locked_encode_h = th
@@ -2398,6 +2410,44 @@ class RemoteDesktopStreamer:
             f"(src={src_w}x{src_h} max_w={max_width})"
         )
         return tw, th
+
+    def _grab_dxgi(self):
+        """Desktop Duplication in the helper session (C-RD-PIX-4 / FOLLOW-5)."""
+        try:
+            import dxcam  # type: ignore
+            from PIL import Image
+        except Exception as exc:
+            now = time.time()
+            if now - float(getattr(self, "_dxgi_warn_ts", 0) or 0) > 8:
+                self._dxgi_warn_ts = now
+                log(f"[REMOTE-DESKTOP] DXGI unavailable: {exc}")
+            return None
+        idx = max(0, int(self._monitor_index or 0))
+        cam = self._dxcam
+        try:
+            if cam is None:
+                cam = dxcam.create(
+                    output_idx=idx, output_color="RGB"
+                ) or dxcam.create(output_color="RGB")
+                self._dxcam = cam
+            if cam is None:
+                return None
+            frame = None
+            for _ in range(8):
+                frame = cam.grab()
+                if frame is not None:
+                    break
+                time.sleep(0.03)
+            if frame is None:
+                return None
+            return Image.fromarray(frame)
+        except Exception as exc:
+            self._dxcam = None
+            now = time.time()
+            if now - float(getattr(self, "_dxgi_warn_ts", 0) or 0) > 8:
+                self._dxgi_warn_ts = now
+                log(f"[REMOTE-DESKTOP] DXGI grab failed: {exc}")
+            return None
 
     def _capture_screen_image(self):
         """Capture primary screen → PIL RGB Image (no encode). Returns (img, method)."""
@@ -2417,27 +2467,14 @@ class RemoteDesktopStreamer:
         method = "none"
         # DXGI/NVENC path after Default follow (C-RD-FOLLOW-5) and WebRTC media.
         try_dxgi = (not self._winlogon_mode) and (
-            self._media_ready()
-            or self._prefer_dxgi
+            self._prefer_dxgi
             or self._in_session_helper
+            or self._media_ready()
         )
         if try_dxgi:
-            try:
-                import dxcam  # type: ignore
-                if self._dxcam is None:
-                    self._dxcam = dxcam.create(output_color="RGB")
-                frame = self._dxcam.grab(region=(
-                    origin_x,
-                    origin_y,
-                    origin_x + native_w,
-                    origin_y + native_h,
-                ))
-                if frame is not None:
-                    img = Image.fromarray(frame)
-                    method = "dxgi-desktop-duplication"
-            except Exception:
-                # Optional capability: no warning spam on hosts without dxcam.
-                self._dxcam = None
+            img = self._grab_dxgi()
+            if img is not None:
+                method = "dxgi-desktop-duplication"
         # Prefer GDI BitBlt (more reliable than ImageGrab under elevation / DPI)
         if img is None:
             try:
@@ -3252,9 +3289,35 @@ class RemoteDesktopStreamer:
         return None
 
     def _should_promote_follow_to_winlogon(self) -> bool:
-        """Lock/LogonUI with a listed username → user-helper GDI black (C-RD-PIX-3)."""
+        """Lock/LogonUI with a listed username → user-helper GDI black (C-RD-PIX-3).
+
+        Unlocked Default (explorer + WTS unlocked) is PIX-4: do **not** jump to
+        Winlogon because GDI was black — retry DXGI instead.
+        """
         if not self._follow_console or self._winlogon_mode or self._force_secure_desktop:
             return False
+        try:
+            from client_rd_winlogon import (
+                session_has_logonui,
+                session_has_process,
+                session_lock_state,
+            )
+            sid = int(self._target_session_id or 0)
+            logonui = bool(session_has_logonui(sid)) if sid > 0 else False
+            locked = session_lock_state(sid) if sid > 0 else None
+            explorer = (
+                session_has_process(sid, "explorer.exe") if sid > 0 else None
+            )
+            if (
+                explorer is True
+                and locked is False
+                and not logonui
+            ):
+                return False
+            if logonui or locked is True:
+                return True
+        except Exception:
+            pass
         method = str(self._capture_method or "").lower()
         desk = str(self._desktop_name or "").lower()
         if "winlogon" in desk:
@@ -3263,12 +3326,6 @@ class RemoteDesktopStreamer:
             return False
         if "dxgi" in method or "nvenc" in method:
             return False
-        try:
-            from client_rd_winlogon import session_has_logonui
-            if session_has_logonui(int(self._target_session_id or 0)):
-                return True
-        except Exception:
-            pass
         return "gdi" in method or "helper" in method
 
     def _fallback_user_helper_to_winlogon(
@@ -3776,17 +3833,19 @@ class RemoteDesktopStreamer:
                 log=log,
             )
             config = {
-                "fps": self._fps,
-                "quality": self._quality,
-                "max_width": self._max_width,
+                "fps": max(
+                    float(self._requested_fps or self._fps),
+                    JPEG_FALLBACK_FPS_WHILE_NEGOTIATING,
+                ),
+                "quality": max(int(self._requested_quality or self._quality), DEFAULT_QUALITY),
+                "max_width": max(int(self._requested_max_width or self._max_width), 1280),
                 "monitor": self._monitor_index,
                 "winlogon": bool(self._winlogon_mode),
-                # Prefer raw RGB over loopback whenever WebRTC runtime exists.
                 "prefer_raw": bool(self._webrtc_available()),
             }
             if self._webrtc_available():
                 config["fps"] = self._media_fps
-                config["quality"] = self._media_quality
+                config["quality"] = max(int(self._media_quality), DEFAULT_QUALITY)
                 config["prefer_raw"] = True
             if not helper.start(config, timeout=timeout):
                 err = str(helper.error or "helper start failed")
@@ -3870,11 +3929,12 @@ class RemoteDesktopStreamer:
         """
         meta = meta if isinstance(meta, dict) else {}
         method = str(meta.get("method") or "capture")
-        prefix = (
-            "persistent-winlogon-helper"
-            if self._winlogon_mode
-            else "persistent-user-helper"
-        )
+        if self._winlogon_mode:
+            prefix = "persistent-winlogon-helper"
+        elif "dxgi" in method.lower() or "nvenc" in method.lower():
+            prefix = "dxgi"
+        else:
+            prefix = "persistent-user-helper"
         prev_method = self._capture_method or ""
         var = meta.get("frame_variance")
         chrome_meta = meta.get("chrome_detected")
@@ -4244,8 +4304,6 @@ class RemoteDesktopStreamer:
             # Winlogon desktop helpers need a real desktop environment; avoid
             # CREATE_NO_WINDOW which can prevent attach on secure desktops.
             flags = CREATE_UNICODE_ENVIRONMENT
-            if not winlogon_desk:
-                flags |= CREATE_NO_WINDOW
             cmd_buf = ctypes.create_unicode_buffer(command)
 
             ok = adv.CreateProcessAsUserW(

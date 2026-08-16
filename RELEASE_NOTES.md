@@ -1,5 +1,15 @@
 # Release notes
 
+# Asteria Client 4.9.103 — Default follow is DXGI, not 8 fps GDI black
+
+Derin-Web 4.9.102 Run C (unlocked administrator console) still spawned a
+`CREATE_NO_WINDOW` user helper, BitBlt 1024×768 black, and capped JPEG at
+8 fps. Default helpers now keep a visible desktop so DXGI can attach, Start
+knobs stay at 30/72/1920, encode size can grow off 1024×768, and an unlocked
+explorer session is not promoted to Winlogon because GDI was black.
+
+---
+
 # Asteria Client 4.9.102 — lock screen is Winlogon pixels, not user GDI black
 
 Follow Connect with a listed console username was still spawning

@@ -504,9 +504,9 @@ def run_session_helper(
     # WebRTC-first: parent may request raw RGB over loopback (prefer_raw).
     prefer_raw = bool(config.get("prefer_raw"))
     # JPEG fallback normally stays lower; WebRTC/media can request 30–60 fps.
-    rd._fps = max(1.0, min(float(config.get("fps", 24.0)), 60.0))
-    rd._quality = max(20, min(int(config.get("quality", 35)), 85))
-    rd._max_width = max(800, min(int(config.get("max_width", 1280)), 1920))
+    rd._fps = max(24.0, min(float(config.get("fps", 30.0)), 60.0))
+    rd._quality = max(55, min(int(config.get("quality", 72)), 90))
+    rd._max_width = max(1280, min(int(config.get("max_width", 1920)), 1920))
     rd._monitor_index = max(0, int(config.get("monitor", 0)))
     stop = threading.Event()
 
@@ -646,8 +646,8 @@ def run_session_helper(
                         rd._invalidate_desktop_bind()
                     except Exception:
                         pass
-                rd._fps = max(1.0, min(float(header.get("fps", rd._fps)), 60.0))
-                rd._quality = max(20, min(int(header.get("quality", rd._quality)), 85))
+                rd._fps = max(24.0, min(float(header.get("fps", rd._fps)), 60.0))
+                rd._quality = max(55, min(int(header.get("quality", rd._quality)), 90))
                 try:
                     from client_remote_desktop import MIN_ENCODE_WIDTH
                     floor_w = int(MIN_ENCODE_WIDTH)
