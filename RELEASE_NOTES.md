@@ -1,5 +1,15 @@
 # Release notes
 
+# Asteria Client 4.9.106 — follow the live console like Chrome Remote Desktop
+
+Google Remote Desktop does not guess from a listed username: it captures
+whatever the console input desktop is. This build continuously resolves
+lock/LogonUI vs unlocked shell and respawns the helper with the matching
+desktop + token (including SID Start). Default helpers follow
+OpenInputDesktop so they never BitBlt a black Default while Winlogon is up.
+
+---
+
 # Asteria Client 4.9.105 — console pixels (PIX), not gdi+black
 
 Derin-Web lab on 4.9.103 still showed `persistent-user-helper` + black at

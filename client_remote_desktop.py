@@ -2504,8 +2504,10 @@ class RemoteDesktopStreamer:
 
         img = None
         method = "none"
-        # DXGI/NVENC path after Default follow (C-RD-FOLLOW-5) and WebRTC media.
+        # DXGI only on Default. Secure input desktop → GDI / PrintWindow.
         try_dxgi = (not self._winlogon_mode) and (
+            str(self._desktop_name or "").lower() != "winlogon"
+        ) and (
             self._prefer_dxgi
             or self._in_session_helper
             or self._media_ready()
@@ -3077,8 +3079,10 @@ class RemoteDesktopStreamer:
                     close_previous=None,
                 )
             else:
+                # Never bind named Default while input is Winlogon (BitBlt black).
+                # Follow OpenInputDesktop like Chrome Remote Desktop.
                 ok, name, hdesk = attach_console_desktop(
-                    prefer_winlogon=False,
+                    follow_input=True,
                     close_previous=self._input_desktop if force else None,
                 )
             if ok and hdesk:
@@ -3091,6 +3095,14 @@ class RemoteDesktopStreamer:
                     self._winlogon_mode = False
                     self._prefer_dxgi = True
                     log("[REMOTE-DESKTOP] desktop switched Winlogon→Default (post-logon)")
+                elif name.lower() == "winlogon" and not self._winlogon_mode:
+                    # Spawned as user/Default helper but console input is secure.
+                    # Parent must respawn with winlogon token — do not claim Default.
+                    self._prefer_dxgi = False
+                    log(
+                        "[REMOTE-DESKTOP] input desktop=Winlogon while "
+                        "helper mode=Default — need secure respawn"
+                    )
                 return True
             if self._winlogon_mode and not force:
                 # C-RD-CON-4: do not silently capture Default while claiming Winlogon.
@@ -3457,9 +3469,10 @@ class RemoteDesktopStreamer:
         w: int,
         h: int,
         phase: str,
+        force: bool = False,
     ):
         """Follow + listed user but lock screen: switch to Winlogon helper."""
-        if not self._should_promote_follow_to_winlogon():
+        if not force and not self._should_promote_follow_to_winlogon():
             return None
         sid = int(self._target_session_id or 0)
         log(
@@ -3476,6 +3489,7 @@ class RemoteDesktopStreamer:
         self._target_username = ""
         self._desktop_name = "Winlogon"
         self._prefer_dxgi = False
+        self._follow_console = True
         self._stop_persistent_helper()
         if not self._start_persistent_helper(accept_timeout=WINLOGON_HELPER_ACCEPT_SEC):
             log(
@@ -3520,9 +3534,20 @@ class RemoteDesktopStreamer:
         )
 
     def _maybe_follow_console_desktop(self) -> None:
-        """Follow Default after logon; Winlogon after lock/logoff (same stream)."""
-        if self._follow_busy or not self._running or not self._follow_console:
+        """Chrome Remote Desktop model: always match console input desktop.
+
+        Lock/logoff → Winlogon helper. Unlock/logon → Default DXGI. Same stream_id.
+        Runs for follow **and** SID Start (listed username ≠ Default live).
+        """
+        if self._follow_busy or not self._running:
             return
+        if self._force_secure_desktop and self._winlogon_mode:
+            # Lock-row Start stays on Winlogon unless helper reports Default.
+            desk = str(self._desktop_name or "").lower()
+            if desk == "default":
+                pass  # fall through to Default follow below
+            else:
+                return
         now = time.time()
         if (now - float(self._last_follow_check or 0)) < FOLLOW_CHECK_SEC:
             return
@@ -3530,65 +3555,65 @@ class RemoteDesktopStreamer:
         try:
             from client_rd_winlogon import (
                 console_session_id,
-                decide_console_follow,
-                decide_console_secure,
-                session_has_logonui,
+                resolve_console_capture_mode,
                 session_username,
             )
             csid = int(console_session_id() or 0)
-            user = session_username(csid) if csid else ""
-            spawn = int(
-                self._helper_spawn_session_id
-                or (self._session_helper.session_id if self._session_helper else 0)
-                or (self._target_session_id or 0)
-            )
-            logonui = bool(session_has_logonui(csid or int(self._target_session_id or 0)))
+            target = int(self._target_session_id or 0)
+            sid = csid if (self._follow_console or target <= 0) else target
+            if sid <= 0:
+                sid = csid or target
+            if sid <= 0:
+                return
+            user = session_username(sid) if sid else ""
+            desired = resolve_console_capture_mode(sid)
+            # Helper already on Winlogon input while we think Default?
+            reported = str(self._desktop_name or "").strip().lower()
+            if reported == "winlogon":
+                desired = "winlogon"
+            want_wl = desired == "winlogon"
+            if self._force_secure_desktop and reported != "default":
+                want_wl = True
             black = "+black" in str(self._capture_method or "")
-            secure = decide_console_secure(
-                follow_console=True,
-                winlogon_mode=bool(self._winlogon_mode),
-                helper_desktop=str(self._desktop_name or ""),
-                logonui_present=logonui,
-                console_username=user,
-                black_frame=black,
+            helper_wl = bool(self._helper_spawned_winlogon)
+            connected = bool(self._persistent_helper_connected())
+            mode_mismatch = bool(self._winlogon_mode) != want_wl
+            helper_mismatch = connected and (helper_wl != want_wl)
+            # Sustained black on wrong path → force resync
+            need_black_fix = black and (
+                (want_wl and not self._winlogon_mode)
+                or (not want_wl and self._winlogon_mode)
+                or helper_mismatch
+                or reported == "winlogon" and not self._winlogon_mode
             )
-            if secure:
+            if not (mode_mismatch or helper_mismatch or need_black_fix):
+                # Already correct mode — still allow unlock follow via desktop name
+                if (
+                    self._winlogon_mode
+                    and reported == "default"
+                    and not want_wl
+                ):
+                    pass
+                else:
+                    return
+            if want_wl:
+                if self._winlogon_mode and connected and helper_wl and not black:
+                    return
+                self._follow_console = True
                 self._fallback_user_helper_to_winlogon(
-                    jpeg=None, w=0, h=0, phase=secure
+                    jpeg=None, w=0, h=0, phase=f"auto_{desired}", force=True
                 )
                 return
-            if (
-                not self._winlogon_mode
-                and str(self._desktop_name or "").lower() != "winlogon"
-            ):
-                return
-            reason = decide_console_follow(
-                follow_console=bool(self._follow_console),
-                winlogon_mode=bool(self._winlogon_mode),
-                spawn_session_id=spawn,
-                console_sid=csid,
-                console_username=user,
-                helper_desktop=str(self._desktop_name or ""),
-                logonui_hwnd=int(self._logonui_hwnd_count or 0),
-                chrome_detected=bool(self._chrome_detected),
+            # Desired Default (unlocked shell)
+            self._follow_console = True
+            self._execute_console_follow(
+                f"auto_{desired}",
+                sid,
+                user,
             )
-            if (
-                not reason
-                and user
-                and self._winlogon_mode
-                and str(self._desktop_name or "").lower() == "default"
-                and int(getattr(self, "_helper_frame_misses", 0) or 0) >= 2
-            ):
-                reason = "stale_winlogon_no_frames"
         except Exception as exc:
-            log(f"[REMOTE-DESKTOP] follow decide error: {exc}")
+            log(f"[REMOTE-DESKTOP] auto desktop sync error: {exc}")
             return
-        if not reason:
-            return
-        new_sid = csid if csid > 0 else int(self._target_session_id or 0)
-        if new_sid <= 0:
-            return
-        self._execute_console_follow(reason, new_sid, user)
 
     def _execute_console_follow(self, reason: str, new_sid: int, username: str) -> None:
         """Tear Winlogon helper, rebind Default, keep stream_id (C-RD-FOLLOW-1/2/4)."""

@@ -400,6 +400,29 @@ class TestWinlogonStartContract(unittest.TestCase):
             )
         )
 
+    def test_resolve_console_capture_mode(self):
+        from client_rd_winlogon import resolve_console_capture_mode
+        with mock.patch(
+            "client_rd_winlogon.session_username", return_value="administrator"
+        ), mock.patch(
+            "client_rd_winlogon.session_has_logonui", return_value=False
+        ), mock.patch(
+            "client_rd_winlogon.session_lock_state", return_value=False
+        ), mock.patch(
+            "client_rd_winlogon.session_has_process", return_value=True
+        ):
+            self.assertEqual(resolve_console_capture_mode(3), "default")
+        with mock.patch(
+            "client_rd_winlogon.session_username", return_value="administrator"
+        ), mock.patch(
+            "client_rd_winlogon.session_has_logonui", return_value=True
+        ), mock.patch(
+            "client_rd_winlogon.session_lock_state", return_value=True
+        ), mock.patch(
+            "client_rd_winlogon.session_has_process", return_value=True
+        ):
+            self.assertEqual(resolve_console_capture_mode(3), "winlogon")
+
     def test_lock_flags_and_helper_mode_mismatch(self):
         from client_rd_winlogon import interpret_session_lock_flags
         self.assertTrue(interpret_session_lock_flags(0))

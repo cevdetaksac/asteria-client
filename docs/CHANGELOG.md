@@ -2,6 +2,14 @@
 
 Removed `docs/ux-review` screenshots, duplicate resilience/alert plan MDs. Contract **1.4.64** cloud checklist is SoT for dashboard work.
 
+# v4.9.106
+
+## Auto-follow console input desktop (Chrome Remote Desktop model)
+- Continuously resolve lock/LogonUI vs unlocked shell (`resolve_console_capture_mode`)
+- Mismatch → respawn helper with matching `lpDesktop` + token (SID Start included)
+- Default helper uses `OpenInputDesktop` follow — never BitBlt named Default while input is Winlogon
+- Force Winlogon respawn when auto-sync decides secure desktop
+
 # v4.9.105
 
 ## C-RD-PIX: black screen on follow + SID Start

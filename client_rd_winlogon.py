@@ -322,6 +322,41 @@ def console_start_secure_desktop(
     return True
 
 
+def resolve_console_capture_mode(session_id: int) -> str:
+    """Chrome Remote Desktop model: which desktop is live on the console now?
+
+    Returns ``\"winlogon\"`` (lock / logoff / empty) or ``\"default\"`` (unlocked
+    shell). Decision uses LogonUI + WTS lock + explorer — **not** a listed
+    username alone.
+    """
+    try:
+        sid = int(session_id or 0)
+    except (TypeError, ValueError):
+        sid = 0
+    if sid <= 0:
+        return "winlogon"
+    user = ""
+    logonui = False
+    locked = None
+    explorer = None
+    try:
+        user = session_username(sid)
+        logonui = bool(session_has_logonui(sid))
+        locked = session_lock_state(sid)
+        explorer = session_has_process(sid, "explorer.exe")
+    except Exception:
+        return "winlogon"
+    if console_start_secure_desktop(
+        username=user,
+        logonui_present=logonui,
+        session_locked=locked,
+        explorer_present=explorer,
+        input_desktop="",
+    ):
+        return "winlogon"
+    return "default"
+
+
 def enable_process_privileges(*names: str) -> None:
     """Best-effort enable SeDebugPrivilege / SeAssignPrimaryTokenPrivilege etc."""
     try:

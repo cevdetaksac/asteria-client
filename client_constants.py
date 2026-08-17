@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.105"  # PIX: SID secure probe + DXGI retry + honest method; auth-fail 4.9.104
+VERSION = "4.9.106"  # Auto-follow console input desktop (Winlogon↔Default) like CRD
 
 
 
