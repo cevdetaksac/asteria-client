@@ -312,6 +312,62 @@ class TestWinlogonStartContract(unittest.TestCase):
         ):
             self.assertFalse(rd._should_promote_follow_to_winlogon())
 
+    def test_sid_start_locked_uses_winlogon_probe(self):
+        """Administrator SID Start while locked must not skip secure probe."""
+        rd = self._make_rd()
+        rd._target_session_id = 3
+        rd._follow_console = False
+        rd._force_secure_desktop = False
+        with mock.patch.object(
+            rd, "_console_interactive_username", return_value="administrator"
+        ), mock.patch(
+            "client_rd_winlogon.session_has_logonui", return_value=True
+        ), mock.patch(
+            "client_rd_winlogon.session_lock_state", return_value=True
+        ), mock.patch(
+            "client_rd_winlogon.session_has_process", return_value=True
+        ):
+            rd._apply_follow_secure_or_default()
+        self.assertTrue(rd._winlogon_mode)
+        self.assertEqual(rd._target_username, "")
+        self.assertFalse(rd._prefer_dxgi)
+
+    def test_sid_start_unlocked_prefers_dxgi(self):
+        rd = self._make_rd()
+        rd._target_session_id = 3
+        rd._follow_console = False
+        rd._force_secure_desktop = False
+        with mock.patch.object(
+            rd, "_console_interactive_username", return_value="administrator"
+        ), mock.patch(
+            "client_rd_winlogon.session_has_logonui", return_value=False
+        ), mock.patch(
+            "client_rd_winlogon.session_lock_state", return_value=False
+        ), mock.patch(
+            "client_rd_winlogon.session_has_process", return_value=True
+        ):
+            rd._apply_follow_secure_or_default()
+        self.assertFalse(rd._winlogon_mode)
+        self.assertTrue(rd._prefer_dxgi)
+        self.assertEqual((rd._desktop_name or "").lower(), "default")
+
+    def test_promote_works_without_follow_flag(self):
+        """SID Start lock: promote to Winlogon even if follow_console was false."""
+        rd = self._make_rd()
+        rd._follow_console = False
+        rd._winlogon_mode = False
+        rd._target_session_id = 3
+        rd._capture_method = "persistent-user-helper:gdi+black"
+        rd._desktop_name = "Winlogon"
+        with mock.patch(
+            "client_rd_winlogon.session_has_logonui", return_value=True
+        ), mock.patch(
+            "client_rd_winlogon.session_lock_state", return_value=True
+        ), mock.patch(
+            "client_rd_winlogon.session_has_process", return_value=True
+        ):
+            self.assertTrue(rd._should_promote_follow_to_winlogon())
+
     def test_healthy_frame_blocks_black_webrtc(self):
         rd = self._make_rd()
         rd._capture_method = "gdi+black"

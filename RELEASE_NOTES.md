@@ -1,5 +1,28 @@
 # Release notes
 
+# Asteria Client 4.9.105 — console pixels (PIX), not gdi+black
+
+Derin-Web lab on 4.9.103 still showed `persistent-user-helper` + black at
+~1024×768 / ~8 fps for Default Connect and administrator SID Start. This build
+runs the secure-desktop probe on **every** Start (including SID), attaches
+Winlogon+winlogon token when locked, prefers DXGI on unlocked Default with a
+real DXGI retry after gdi+black, brands healthy frames as `dxgi+…`, and never
+pushes a solid-black probe as Live. Helper knobs stay floored at 30/72/1920.
+
+Also includes 4.9.104: real EventLog auth fails report/block without honeypot.
+
+---
+
+# Asteria Client 4.9.104 — real-port RDP attacks without honeypot
+
+RDP with NLA was logged as Security 4625 LogonType **3**, so the agent labeled
+it **Network** and never hit RDP block rules (threshold 3). Failures now
+classify as RDP (Negotiate/User32, TerminalServices 1149 hint, or type 10),
+count only against matching `protection.block_rules`, and POST `/api/attack`
+with password `<failed_logon>` even when honeypot listen is off.
+
+---
+
 # Asteria Client 4.9.103 — Default follow is DXGI, not 8 fps GDI black
 
 Derin-Web 4.9.102 Run C (unlocked administrator console) still spawned a

@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.103"  # PIX-4: Default follow DXGI, no 8fps cap, no CREATE_NO_WINDOW helper
+VERSION = "4.9.105"  # PIX: SID secure probe + DXGI retry + honest method; auth-fail 4.9.104
 
 
 

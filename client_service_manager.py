@@ -347,6 +347,53 @@ class ServiceManager:
             except Exception as e:
                 log(f"[ServiceManager] ThreatEngine feed error: {e}")
 
+    def enqueue_attack_report(self, entry: dict) -> bool:
+        """Queue a real EventLog auth-fail (or similar) for POST /api/attack.
+
+        Same batch path as honeypot credentials — honeypot listen state irrelevant.
+        ``entry`` keys: attacker_ip, username, password, service, port [, timestamp].
+        """
+        if not isinstance(entry, dict):
+            return False
+        attacker_ip = str(entry.get("attacker_ip") or "").strip()
+        service = str(entry.get("service") or "").strip().upper()
+        if not attacker_ip or not service:
+            return False
+        try:
+            port = int(entry.get("port") or 0)
+        except (TypeError, ValueError):
+            port = 0
+        payload = {
+            "attacker_ip": attacker_ip,
+            "username": str(entry.get("username") or "unknown"),
+            "password": str(entry.get("password") or "<failed_logon>"),
+            "service": service,
+            "port": port,
+            "timestamp": float(entry.get("timestamp") or time.time()),
+        }
+        try:
+            self._attack_queue.put_nowait(payload)
+        except queue.Full:
+            log(f"[ServiceManager] Attack queue dolu — auth-fail atılıyor ({service})")
+            return False
+
+        with self._stats_lock:
+            s = self.session_stats
+            s["total_credentials"] += 1
+            s["per_service"][service] = s["per_service"].get(service, 0) + 1
+            s["last_attack_ts"] = time.time()
+            s["last_attacker_ip"] = attacker_ip
+            s["last_service"] = service
+            ips = s["unique_ips"]
+            if attacker_ip not in ips:
+                if len(ips) >= self._unique_ips_max:
+                    drop = list(ips)[: len(ips) // 2]
+                    for old in drop:
+                        ips.discard(old)
+                    s["unique_ips_overflow"] = int(s.get("unique_ips_overflow") or 0) + len(drop)
+                ips.add(attacker_ip)
+        return True
+
     def trim_unique_ips(self, max_ips: int = 5000) -> int:
         """MemoryGuard hook — keep unique_ips set bounded."""
         with self._stats_lock:

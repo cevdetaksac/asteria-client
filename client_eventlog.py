@@ -62,6 +62,42 @@ IGNORED_LOGON_TYPES: Set[int] = {5, 7}
 # Prefixes for machine/DWM accounts to skip
 IGNORED_ACCOUNT_PREFIXES = ("DWM-", "UMFD-", "IUSR")
 
+# Recent TerminalServices 1149 IPs — promote LogonType-3 NLA fails to RDP.
+_RDP_IP_HINTS: Dict[str, float] = {}
+_RDP_HINT_TTL_SEC = 180.0
+_RDP_HINT_LOCK = threading.Lock()
+
+
+def note_rdp_source_ip(ip: str) -> None:
+    """Remember an IP that just hit TerminalServices (Event 1149)."""
+    addr = (ip or "").strip()
+    if not addr or addr in ("-", "::1", "127.0.0.1"):
+        return
+    now = time.time()
+    with _RDP_HINT_LOCK:
+        _RDP_IP_HINTS[addr] = now
+        if len(_RDP_IP_HINTS) > 2048:
+            cutoff = now - _RDP_HINT_TTL_SEC
+            stale = [k for k, ts in _RDP_IP_HINTS.items() if ts < cutoff]
+            for k in stale:
+                _RDP_IP_HINTS.pop(k, None)
+
+
+def _rdp_hint_recent(ip: str) -> bool:
+    addr = (ip or "").strip()
+    if not addr:
+        return False
+    now = time.time()
+    with _RDP_HINT_LOCK:
+        ts = _RDP_IP_HINTS.get(addr)
+        if ts is None:
+            return False
+        if now - float(ts) > _RDP_HINT_TTL_SEC:
+            _RDP_IP_HINTS.pop(addr, None)
+            return False
+        return True
+
+
 # Map Event ID → human-readable event type for ThreatEngine
 EVENT_TYPE_MAP: Dict[int, str] = {
     # Auth
@@ -547,10 +583,20 @@ class EventLogWatcher:
 
     @staticmethod
     def _detect_service(event_id: int, channel: str, data: dict) -> str:
-        """Infer which service is being targeted based on event source."""
+        """Infer which service is being targeted based on event source.
+
+        RDP with NLA/CredSSP writes Security 4624/4625 as **LogonType 3**
+        (Network), not type 10. Classifying those as ``Network`` made RDP
+        block rules never fire while honeypot was optional/off. Prefer RDP
+        when NLA fingerprints or a recent TerminalServices 1149 exist.
+        """
         if event_id in (18453, 18456, 15457, 17135):
             return "MSSQL"
-        if event_id in (1149, 21, 24, 25) or "TerminalServices" in channel:
+        if event_id in (1149, 21, 24, 25) or "TerminalServices" in (channel or ""):
+            if event_id == 1149:
+                note_rdp_source_ip(
+                    str(data.get("Param3") or data.get("IpAddress") or "")
+                )
             return "RDP"
         if event_id in (4624, 4625):
             logon_type = data.get("LogonType", "")
@@ -561,6 +607,32 @@ class EventLogWatcher:
             if lt == 10:
                 return "RDP"
             if lt == 3:
+                ip = str(data.get("IpAddress") or "")
+                if _rdp_hint_recent(ip):
+                    return "RDP"
+                auth = str(
+                    data.get("AuthenticationPackageName")
+                    or data.get("AuthenticationPackage")
+                    or ""
+                ).strip().lower()
+                proc = str(
+                    data.get("LogonProcessName") or data.get("LogonProcess") or ""
+                ).strip().lower()
+                # NLA / CredSSP: Negotiate + User32/Advapi (not NtLmSsp SMB).
+                if "negotiate" in auth:
+                    return "RDP"
+                if (
+                    proc in ("user32", "advapi")
+                    or proc.startswith("user32")
+                    or proc.startswith("advapi")
+                ):
+                    return "RDP"
+                if "ntlmssp" in proc.replace(" ", ""):
+                    return "Network"
+                # External type-3 with NTLM and no workstation often RDP NLA scanners.
+                workstation = str(data.get("WorkstationName") or "").strip()
+                if "ntlm" in auth and (not workstation or workstation == "-"):
+                    return "RDP"
                 return "Network"
         return "System"
 
@@ -572,13 +644,12 @@ class EventLogWatcher:
         if event_id in (1149, 21, 24, 25):
             return 3389
         if event_id in (4624, 4625):
-            logon_type = data.get("LogonType", "")
-            try:
-                lt = int(logon_type) if logon_type else 0
-            except (ValueError, TypeError):
-                lt = 0
-            if lt == 10:
+            # Same NLA heuristics as _detect_service — type 3 can still be RDP:3389.
+            svc = EventLogWatcher._detect_service(event_id, "", data)
+            if svc == "RDP":
                 return 3389
+            if svc == "MSSQL":
+                return 1433
         return 0
 
     @staticmethod

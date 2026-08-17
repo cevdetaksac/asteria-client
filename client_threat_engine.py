@@ -371,6 +371,9 @@ class IPContext:
             "event_id": event.get("event_id", 0),
             "timestamp": now,
             "score": score,
+            "target_service": (
+                event.get("target_service", "") or event.get("service", "") or ""
+            ),
         })
 
         # Update counters
@@ -411,12 +414,17 @@ class ThreatEngine:
         engine.stop()
     """
 
-    def __init__(self, on_alert: Optional[Callable] = None):
+    def __init__(self, on_alert: Optional[Callable] = None,
+                 on_auth_fail_report: Optional[Callable] = None):
         """
         Args:
             on_alert:  Callback receiving (alert_dict, ip_context) when threshold hit.
+            on_auth_fail_report: Optional callback for real EventLog failed auth
+                (honeypot optional). Receives a dict with attacker_ip, username,
+                password placeholder, service, port — same shape as honeypot queue.
         """
         self.on_alert = on_alert
+        self.on_auth_fail_report = on_auth_fail_report
         self._ip_pool: Dict[str, IPContext] = {}
         self._lock = threading.Lock()
         self._running = False
@@ -437,6 +445,10 @@ class ThreatEngine:
         self._rdp_grace: Dict[str, float] = {}
         self._RDP_GRACE_WINDOW = 300  # 5 dakika grace süresi
 
+        # Real auth-fail → /api/attack rate limit: (ip, service, user) → last ts
+        self._auth_fail_report_ts: Dict[str, float] = {}
+        self._AUTH_FAIL_REPORT_INTERVAL = 15.0
+
         # Urgent alert dedup: "ip:event_type" → last emit (başarılı logon spam engeli)
         self._urgent_dedup: Dict[str, float] = {}
         # Ring of recent alerts for Control Center (dashboard-parity detail).
@@ -448,6 +460,7 @@ class ThreatEngine:
             "alerts_generated": 0,
             "correlations_matched": 0,
             "rule_blocks": 0,
+            "auth_fail_reports": 0,
             "active_ips": 0,
             "highest_threat_ip": "",
             "highest_threat_score": 0,
@@ -583,6 +596,9 @@ class ThreatEngine:
                     or event_type == "failed_logon_single"
                     or event_type == "honeypot_credential"):
                 self._check_block_rules(ip_key, ctx, event)
+                # Real EventLog fails → dashboard Attacks (honeypot on/off irrelevant)
+                if event_type != "honeypot_credential":
+                    self._maybe_report_auth_fail(event)
 
             # 2c. Silent hours + logon challenge (successful logons)
             if event_type in LOGON_EVENT_TYPES:
@@ -915,11 +931,113 @@ class ThreatEngine:
         FAILED_LOGON_TYPES | {"failed_logon_single", "honeypot_credential"}
     )
 
+    # Default ports when EventLog omits target_port
+    _SERVICE_DEFAULT_PORTS: Dict[str, int] = {
+        "RDP": 3389,
+        "MSSQL": 1433,
+        "MYSQL": 3306,
+        "SSH": 22,
+        "FTP": 21,
+        "Network": 445,
+    }
+
+    @staticmethod
+    def _rule_service_set(rule: dict) -> Optional[Set[str]]:
+        """None = match all services; else uppercased service names."""
+        raw = rule.get("services", "") or rule.get("service", "")
+        if not raw or str(raw).strip() in ("*", ""):
+            return None
+        return {s.strip().upper() for s in str(raw).split(",") if s.strip()}
+
+    @staticmethod
+    def _fail_matches_services(event_svc: str, rule_services: Optional[Set[str]]) -> bool:
+        if rule_services is None:
+            return True
+        svc = (event_svc or "").strip().upper()
+        if not svc:
+            return False
+        return svc in rule_services
+
+    def _service_has_enabled_rule(self, service: str) -> bool:
+        """True if any enabled block rule covers this service (or all services)."""
+        svc = (service or "").strip().upper()
+        if not svc:
+            return False
+        with self._block_rules_lock:
+            rules = list(self._block_rules)
+        for rule in rules:
+            if not rule.get("enabled", True):
+                continue
+            rule_svcs = self._rule_service_set(rule)
+            if rule_svcs is None or svc in rule_svcs:
+                return True
+        return False
+
+    def _maybe_report_auth_fail(self, event: dict) -> None:
+        """Report real Windows auth fails to /api/attack when block rules cover the service.
+
+        Honeypot may be off — EventLog + protection.block_rules still feed Attacks UI
+        and cloud notification counters. Rate-limited; password is a placeholder.
+        """
+        cb = self.on_auth_fail_report
+        if not cb:
+            return
+        source_ip = (event.get("source_ip") or "").strip()
+        if not source_ip or source_ip in ("local", "127.0.0.1", "::1", "-"):
+            return
+        if source_ip in self._whitelist_ips:
+            return
+        service = (
+            event.get("target_service", "") or event.get("service", "") or ""
+        ).strip().upper()
+        if not service or service == "SYSTEM":
+            return
+        if not self._service_has_enabled_rule(service):
+            return
+
+        username = (event.get("username") or "").strip() or "unknown"
+        dedup_key = f"{source_ip}|{service}|{username.lower()}"
+        now = time.time()
+        last = self._auth_fail_report_ts.get(dedup_key, 0.0)
+        if now - last < self._AUTH_FAIL_REPORT_INTERVAL:
+            return
+        self._auth_fail_report_ts[dedup_key] = now
+        # Bound map under scan floods
+        if len(self._auth_fail_report_ts) > 4096:
+            cutoff = now - 600.0
+            self._auth_fail_report_ts = {
+                k: ts for k, ts in self._auth_fail_report_ts.items() if ts >= cutoff
+            }
+
+        try:
+            port = int(event.get("target_port") or event.get("port") or 0)
+        except (TypeError, ValueError):
+            port = 0
+        if port <= 0:
+            port = self._SERVICE_DEFAULT_PORTS.get(service, 0)
+
+        try:
+            cb({
+                "attacker_ip": source_ip,
+                "username": username,
+                "password": "<failed_logon>",
+                "service": service,
+                "port": port,
+                "timestamp": now,
+                "source": "eventlog",
+            })
+            self._stats["auth_fail_reports"] = int(
+                self._stats.get("auth_fail_reports") or 0
+            ) + 1
+        except Exception as e:
+            log(f"[THREAT] auth_fail report callback error: {e}")
+
     def _check_block_rules(self, ip: str, ctx: IPContext, event: dict):
         """
         Dashboard'dan gelen (veya varsayılan) blok kurallarını kontrol et.
         Örnek kural: RDP servisi, eşik=3, pencere=30dk → 3 failed login = anında blokla.
         Honeypot credential'lar da failed auth olarak sayılır.
+        Fail sayacı **servis bilinçli** — Network fail'leri RDP eşiğini doldurmaz.
         """
         if ip in ("local", "", "127.0.0.1", "::1"):
             return
@@ -960,10 +1078,9 @@ class ThreatEngine:
                 continue
 
             # Servis eşleştirmesi (contract: service / services; empty / * = all)
-            rule_services_raw = rule.get("services", "") or rule.get("service", "")
-            if rule_services_raw and str(rule_services_raw).strip() not in ("*", ""):
-                rule_services = {s.strip().upper() for s in str(rule_services_raw).split(",") if s.strip()}
-                if event_service and event_service not in rule_services:
+            rule_services = self._rule_service_set(rule)
+            if rule_services is not None:
+                if not event_service or event_service not in rule_services:
                     continue
 
             # Contract event filter (default failed_auth)
@@ -988,11 +1105,14 @@ class ThreatEngine:
                     actions_str = f"email,{actions_str}"
             actions = {a.strip().lower() for a in str(actions_str).split(",") if a.strip()}
 
-            # Pencere içindeki failed login sayısı (honeypot credential dahil)
+            # Pencere içindeki failed login — yalnızca bu kuralın servisine uyanlar
             recent = ctx.get_recent_events(window_sec)
             fail_count = sum(
                 1 for e in recent
                 if e["event_type"] in self._BLOCK_RULE_FAIL_TYPES
+                and self._fail_matches_services(
+                    e.get("target_service", ""), rule_services
+                )
             )
 
             if fail_count < threshold:

@@ -300,7 +300,8 @@ class CloudHoneypotClient:
                     machine_name=SERVER_NAME,
                 )
                 self.threat_engine = ThreatEngine(
-                    on_alert=self.alert_pipeline.handle_alert
+                    on_alert=self.alert_pipeline.handle_alert,
+                    on_auth_fail_report=self.service_manager.enqueue_attack_report,
                 )
                 self.event_watcher = EventLogWatcher(
                     on_event=self.threat_engine.process_event,

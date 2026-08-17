@@ -684,13 +684,15 @@ class RemoteDesktopStreamer:
             self._winlogon_mode = bool(force_secure)
             if self._winlogon_mode:
                 self._target_username = ""
-            elif self._follow_console:
-                self._apply_follow_secure_or_default()
             elif (
                 match_meta.get("pre_logon")
                 and not str(self._target_username or "").strip()
             ):
                 self._winlogon_mode = True
+            else:
+                # Follow **and** SID Start: decide from input desktop / lock /
+                # LogonUI — not from WTS username alone (lab 4.9.103 SID FAIL).
+                self._apply_follow_secure_or_default()
             # C-RD-FOLLOW: omit-sid live Default must not spawn Winlogon helper.
             if self._follow_console and not self._force_secure_desktop:
                 self._maybe_skip_winlogon_for_live_console()
@@ -1038,23 +1040,32 @@ class RemoteDesktopStreamer:
                         blackish = "+black" in (self._capture_method or "")
                         flattish = "+flat" in (self._capture_method or "")
                     elif blackish:
-                        err = "winlogon_capture_black"
-                        msg = (
-                            "Follow Default helper painted gdi+black "
-                            f"(method={self._capture_method}, "
-                            f"desk={self._desktop_name or '?'}); "
-                            "Winlogon helper retry also failed"
-                        )
-                        log(f"[REMOTE-DESKTOP] ✖ {err}: {msg}")
-                        self._running = False
-                        self._transport = "idle"
-                        self.emit_stream_progress("failed", msg, error=err, force=True)
-                        return {
-                            "success": False,
-                            "error": err,
-                            "message": msg,
-                            "data": self.get_status(),
-                        }
+                        # PIX-4: unlocked Default + gdi black → retry DXGI, do not
+                        # declare winlogon_capture_black (lab 4.9.103 Run C).
+                        retried = self._retry_unlocked_dxgi_capture()
+                        if retried:
+                            jpeg, w, h = retried
+                            blackish = "+black" in (self._capture_method or "")
+                        if blackish or not jpeg:
+                            err = "winlogon_capture_black"
+                            msg = (
+                                "Follow Default helper painted gdi+black "
+                                f"(method={self._capture_method}, "
+                                f"desk={self._desktop_name or '?'}); "
+                                "DXGI retry also failed"
+                            )
+                            log(f"[REMOTE-DESKTOP] ✖ {err}: {msg}")
+                            self._running = False
+                            self._transport = "idle"
+                            self.emit_stream_progress(
+                                "failed", msg, error=err, force=True
+                            )
+                            return {
+                                "success": False,
+                                "error": err,
+                                "message": msg,
+                                "data": self.get_status(),
+                            }
             else:
                 # Capture thread-less probe: attach input desktop first (RDP/elevated)
                 self._attach_input_desktop()
@@ -1196,10 +1207,18 @@ class RemoteDesktopStreamer:
             )
             self._input_poll_thread.start()
 
-            # Push probe frame immediately so dashboard is not blank for 1s
+            # Push first frame only when it is real chrome (never solid black).
             try:
                 token = self.token_getter()
-                if token and jpeg:
+                method_now = str(self._capture_method or "")
+                healthy_probe = bool(
+                    jpeg
+                    and w > 0
+                    and h > 0
+                    and "+black" not in method_now
+                    and "+flat" not in method_now
+                )
+                if token and healthy_probe:
                     self._last_good_jpeg = jpeg
                     self._last_good_wh = (w, h)
                     self._enqueue_ws_frame(jpeg, w, h, 0)
@@ -1207,14 +1226,16 @@ class RemoteDesktopStreamer:
                         self._stats["frames_sent"] = 1
                         self._stats["bytes_sent"] = len(jpeg)
                         self._last_activity = time.time()
-                    if "+black" not in (self._capture_method or "") and "+flat" not in (
-                        self._capture_method or ""
-                    ):
-                        self.emit_stream_progress(
-                            "live",
-                            "First real frame on the wire",
-                            force=True,
-                        )
+                    self.emit_stream_progress(
+                        "live",
+                        "First real frame on the wire",
+                        force=True,
+                    )
+                elif jpeg and ("+black" in method_now or "+flat" in method_now):
+                    log(
+                        "[REMOTE-DESKTOP] probe JPEG withheld "
+                        f"(method={method_now} {w}x{h}) — not Live"
+                    )
             except Exception:
                 pass
 
@@ -2430,17 +2451,35 @@ class RemoteDesktopStreamer:
                     output_idx=idx, output_color="RGB"
                 ) or dxcam.create(output_color="RGB")
                 self._dxcam = cam
+                if cam is not None:
+                    try:
+                        # Some dxcam builds need an explicit start for first frames.
+                        start = getattr(cam, "start", None)
+                        if callable(start):
+                            start(target_fps=max(30, int(self._fps or 30)), video_mode=True)
+                    except TypeError:
+                        try:
+                            cam.start()
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
             if cam is None:
                 return None
             frame = None
-            for _ in range(8):
+            # Unlocked Default can take a few duplication ticks after helper spawn.
+            for _ in range(16):
                 frame = cam.grab()
                 if frame is not None:
                     break
-                time.sleep(0.03)
+                time.sleep(0.02)
             if frame is None:
                 return None
-            return Image.fromarray(frame)
+            img = Image.fromarray(frame)
+            # Reject solid-black DXGI (wrong output / secure desktop).
+            if self._is_mostly_black(img):
+                return None
+            return img
         except Exception as exc:
             self._dxcam = None
             now = time.time()
@@ -3141,7 +3180,7 @@ class RemoteDesktopStreamer:
         return str(self._target_username or "").strip()
 
     def _apply_follow_secure_or_default(self) -> None:
-        """Follow Connect: Winlogon unless Default input desktop is proven live."""
+        """Follow / SID Start: Winlogon unless Default input desktop is proven live."""
         sid = int(self._target_session_id or 0)
         user = self._console_interactive_username()
         logonui = False
@@ -3173,21 +3212,25 @@ class RemoteDesktopStreamer:
             secure = True
         if secure:
             self._winlogon_mode = True
+            self._prefer_dxgi = False
             self._target_username = ""
+            self._desktop_name = "Winlogon"
             log(
-                f"[REMOTE-DESKTOP] follow -> Winlogon "
+                f"[REMOTE-DESKTOP] secure desktop -> Winlogon "
                 f"(logonui={logonui} locked={locked} explorer={explorer} "
                 f"user={user!r} session={sid})"
             )
             return
         self._winlogon_mode = False
         self._prefer_dxgi = True
-        self._follow_console = True
+        # Keep follow_console if already set; SID Start also gets DXGI Default.
+        if not self._force_secure_desktop:
+            self._follow_console = True
         if user:
             self._target_username = user
         self._desktop_name = "Default"
         log(
-            f"[REMOTE-DESKTOP] follow -> Default DXGI "
+            f"[REMOTE-DESKTOP] unlocked Default -> DXGI "
             f"session={sid} user={user!r} locked={locked} — skip Winlogon helper"
         )
 
@@ -3255,6 +3298,12 @@ class RemoteDesktopStreamer:
             logonui = False
         if logonui:
             return None
+        try:
+            from client_rd_winlogon import session_lock_state
+            if session_lock_state(sid) is True:
+                return None
+        except Exception:
+            pass
         if not user:
             return None
         log(
@@ -3293,8 +3342,9 @@ class RemoteDesktopStreamer:
 
         Unlocked Default (explorer + WTS unlocked) is PIX-4: do **not** jump to
         Winlogon because GDI was black — retry DXGI instead.
+        Applies to follow **and** SID Start (lab 4.9.103 Active username FAIL).
         """
-        if not self._follow_console or self._winlogon_mode or self._force_secure_desktop:
+        if self._winlogon_mode or self._force_secure_desktop:
             return False
         try:
             from client_rd_winlogon import (
@@ -3327,6 +3377,78 @@ class RemoteDesktopStreamer:
         if "dxgi" in method or "nvenc" in method:
             return False
         return "gdi" in method or "helper" in method
+
+    def _retry_unlocked_dxgi_capture(self):
+        """PIX-4: reset DXGI and re-grab Default; never treat as Winlogon success."""
+        if self._winlogon_mode or self._force_secure_desktop:
+            return None
+        try:
+            from client_rd_winlogon import (
+                session_has_logonui,
+                session_has_process,
+                session_lock_state,
+            )
+            sid = int(self._target_session_id or 0)
+            if sid > 0 and (
+                session_has_logonui(sid)
+                or session_lock_state(sid) is True
+            ):
+                return None
+            if sid > 0 and session_has_process(sid, "explorer.exe") is False:
+                return None
+        except Exception:
+            pass
+        log(
+            "[REMOTE-DESKTOP] PIX-4 DXGI retry after gdi+black "
+            f"method={self._capture_method} desk={self._desktop_name}"
+        )
+        self._prefer_dxgi = True
+        self._desktop_name = "Default"
+        self._desktop_attached = False
+        try:
+            if self._dxcam is not None:
+                try:
+                    self._dxcam.stop()
+                except Exception:
+                    pass
+            self._dxcam = None
+        except Exception:
+            self._dxcam = None
+        # Drop encode lock so 1024×768 black does not stick.
+        self._locked_encode_w = 0
+        self._locked_encode_h = 0
+        self._attach_input_desktop()
+        if self._persistent_helper_connected():
+            try:
+                self._session_helper.update_config({
+                    "fps": max(float(self._fps or DEFAULT_FPS), 30.0),
+                    "quality": max(int(self._quality or DEFAULT_QUALITY), 72),
+                    "max_width": max(int(self._max_width or DEFAULT_MAX_WIDTH), 1920),
+                    "monitor": self._monitor_index,
+                    "winlogon": False,
+                    "prefer_raw": bool(self._webrtc_available()),
+                })
+            except Exception:
+                pass
+            jpeg, w, h = self._grab_via_persistent_helper(1.2)
+            if (not jpeg or len(jpeg) < MIN_JPEG_BYTES) and self._last_helper_raw:
+                jpeg, w, h = self._encode_helper_raw_jpeg()
+        else:
+            jpeg, w, h = self._grab_jpeg()
+        method = str(self._capture_method or "")
+        if (
+            jpeg
+            and w > 0
+            and h > 0
+            and len(jpeg) >= MIN_JPEG_BYTES
+            and "+black" not in method
+            and "+flat" not in method
+        ):
+            if "dxgi" not in method.lower():
+                self._capture_method = f"dxgi:{method or 'desktop-duplication'}"
+                self._stats["capture_method"] = self._capture_method
+            return jpeg, w, h
+        return None
 
     def _fallback_user_helper_to_winlogon(
         self,
@@ -3836,9 +3958,18 @@ class RemoteDesktopStreamer:
                 "fps": max(
                     float(self._requested_fps or self._fps),
                     JPEG_FALLBACK_FPS_WHILE_NEGOTIATING,
+                    30.0,
                 ),
-                "quality": max(int(self._requested_quality or self._quality), DEFAULT_QUALITY),
-                "max_width": max(int(self._requested_max_width or self._max_width), 1280),
+                "quality": max(
+                    int(self._requested_quality or self._quality),
+                    DEFAULT_QUALITY,
+                    72,
+                ),
+                "max_width": max(
+                    int(self._requested_max_width or self._max_width),
+                    DEFAULT_MAX_WIDTH,
+                    1920,
+                ),
                 "monitor": self._monitor_index,
                 "winlogon": bool(self._winlogon_mode),
                 "prefer_raw": bool(self._webrtc_available()),
@@ -3870,17 +4001,19 @@ class RemoteDesktopStreamer:
             self._helper_frame_misses = 0
             self._helper_spawn_session_id = int(target)
             self._last_helper_fail_phase = ""
-            method = (
-                "persistent-winlogon-helper"
-                if self._winlogon_mode
-                else "persistent-user-helper"
-            )
+            # Stamp provisional method; first healthy DXGI frame rebrands to dxgi:…
+            if self._winlogon_mode:
+                method = "persistent-winlogon-helper"
+            elif self._prefer_dxgi:
+                method = "dxgi:pending"
+            else:
+                method = "persistent-user-helper"
             self._capture_method = method
             self._stats["capture_method"] = self._capture_method
             log(
                 f"[REMOTE-DESKTOP] persistent helper connected session={target} "
                 f"desktop={desktop} token={self._last_helper_token_source or '?'} "
-                f"accept≤{timeout:.1f}s"
+                f"accept≤{timeout:.1f}s method={method}"
             )
             return True
         except Exception as e:
@@ -3929,9 +4062,10 @@ class RemoteDesktopStreamer:
         """
         meta = meta if isinstance(meta, dict) else {}
         method = str(meta.get("method") or "capture")
+        method_l = method.lower()
         if self._winlogon_mode:
             prefix = "persistent-winlogon-helper"
-        elif "dxgi" in method.lower() or "nvenc" in method.lower():
+        elif "dxgi" in method_l or "nvenc" in method_l:
             prefix = "dxgi"
         else:
             prefix = "persistent-user-helper"
@@ -3997,6 +4131,10 @@ class RemoteDesktopStreamer:
         base = method.split("+")[0] if method else "capture"
         if str(fmt).lower() == "rgb":
             self._capture_method = f"{prefix}:raw{bad_tag}"
+        elif "dxgi" in method.lower() and not bad_tag:
+            # Honest live method for PIX-4 / SMOOTH dashboards.
+            enc = "nvenc" if self._media_ready() else "desktop-duplication"
+            self._capture_method = f"dxgi+{enc}"
         else:
             self._capture_method = f"{prefix}:{base}{bad_tag}"
         self._stats["capture_method"] = self._capture_method
@@ -4299,11 +4437,31 @@ class RemoteDesktopStreamer:
             si.cb = ctypes.sizeof(STARTUPINFO)
             si.lpDesktop = desk
             pi = PROCESS_INFORMATION()
-            CREATE_NO_WINDOW = 0x08000000
             CREATE_UNICODE_ENVIRONMENT = 0x00000400
-            # Winlogon desktop helpers need a real desktop environment; avoid
-            # CREATE_NO_WINDOW which can prevent attach on secure desktops.
-            flags = CREATE_UNICODE_ENVIRONMENT
+            # Do NOT use CREATE_NO_WINDOW — DXGI/DWM need a real desktop process.
+            # CREATE_UNICODE_ENVIRONMENT requires a non-NULL environment block;
+            # passing None with that flag yields a broken helper env (black GDI).
+            flags = 0
+            env_block = None
+            try:
+                if not winlogon_desk:
+                    CreateEnvironmentBlock = adv.CreateEnvironmentBlock
+                    CreateEnvironmentBlock.argtypes = [
+                        ctypes.POINTER(ctypes.c_void_p),
+                        wintypes.HANDLE,
+                        wintypes.BOOL,
+                    ]
+                    CreateEnvironmentBlock.restype = wintypes.BOOL
+                    DestroyEnvironmentBlock = adv.DestroyEnvironmentBlock
+                    DestroyEnvironmentBlock.argtypes = [ctypes.c_void_p]
+                    DestroyEnvironmentBlock.restype = wintypes.BOOL
+                    env_ptr = ctypes.c_void_p()
+                    if CreateEnvironmentBlock(ctypes.byref(env_ptr), h_token, False):
+                        env_block = env_ptr
+                        flags |= CREATE_UNICODE_ENVIRONMENT
+            except Exception:
+                env_block = None
+                flags = 0
             cmd_buf = ctypes.create_unicode_buffer(command)
 
             ok = adv.CreateProcessAsUserW(
@@ -4314,12 +4472,17 @@ class RemoteDesktopStreamer:
                 None,
                 False,
                 flags,
-                None,
+                env_block.value if env_block else None,
                 None,
                 ctypes.byref(si),
                 ctypes.byref(pi),
             )
             last_err = int(kernel.GetLastError() or 0)
+            if env_block and env_block.value:
+                try:
+                    adv.DestroyEnvironmentBlock(env_block)
+                except Exception:
+                    pass
             kernel.CloseHandle(h_token)
             if not ok:
                 self._last_helper_fail_phase = "create"

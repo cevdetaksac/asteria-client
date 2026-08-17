@@ -2,6 +2,23 @@
 
 Removed `docs/ux-review` screenshots, duplicate resilience/alert plan MDs. Contract **1.4.64** cloud checklist is SoT for dashboard work.
 
+# v4.9.105
+
+## C-RD-PIX: black screen on follow + SID Start
+- Secure-desktop probe runs for **SID Start** as well as `topology=follow` (lab 4.9.103 Active username FAIL)
+- Unlocked Default + gdi+black → DXGI retry (encode lock cleared); do not claim Winlogon success
+- Promote lock/LogonUI → Winlogon helper even when `follow_console` was false
+- Helper spawn: CreateEnvironmentBlock (no CREATE_UNICODE_ENVIRONMENT+NULL); stamp `dxgi:pending`
+- Healthy DXGI frames brand `dxgi+nvenc` / `dxgi+desktop-duplication`; never push black probe as Live
+- Helper knobs floor 30/72/1920; winlogon probe JPEG quality 72
+
+# v4.9.104
+
+## Real-port auth fails without honeypot
+- RDP NLA/CredSSP (Security 4625 LogonType 3) classifies as **RDP**, not Network
+- Block-rule fail counters are **service-aware** (Network fails no longer fill RDP threshold)
+- Real EventLog fails matching enabled `protection.block_rules` → `/api/attack` (password `<failed_logon>`); honeypot on/off irrelevant
+
 # v4.9.103
 
 ## C-RD-PIX-4 + SMOOTH: unlocked console must be DXGI at Start knobs

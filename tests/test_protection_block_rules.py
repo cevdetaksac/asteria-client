@@ -11,11 +11,18 @@ from client_protection_store import normalize_block_rule, apply_block_rules
 class TestProtectionBlockRules(unittest.TestCase):
     def setUp(self):
         self.alerts = []
+        self.reports = []
 
         def _on_alert(alert, ctx=None):
             self.alerts.append(alert)
 
-        self.engine = ThreatEngine(on_alert=_on_alert)
+        def _on_report(entry):
+            self.reports.append(entry)
+
+        self.engine = ThreatEngine(
+            on_alert=_on_alert,
+            on_auth_fail_report=_on_report,
+        )
 
     def test_normalize_contract_rdp_fail_3(self):
         raw = {
@@ -66,6 +73,10 @@ class TestProtectionBlockRules(unittest.TestCase):
             any("block_ip" in (a.get("auto_response") or []) for a in self.alerts)
             or any(a.get("severity") == "critical" for a in self.alerts)
         )
+        # Real fails reported to /api/attack path (honeypot optional)
+        self.assertGreaterEqual(len(self.reports), 1)
+        self.assertEqual(self.reports[0]["service"], "RDP")
+        self.assertEqual(self.reports[0]["password"], "<failed_logon>")
 
     def test_two_fails_do_not_block(self):
         apply_block_rules(
@@ -92,6 +103,77 @@ class TestProtectionBlockRules(unittest.TestCase):
                 }
             )
         self.assertNotIn(ip, self.engine._rule_blocked_ips)
+
+    def test_network_fails_do_not_fill_rdp_threshold(self):
+        """Service-aware: Network auth fails must not trigger RDP-only rule."""
+        apply_block_rules(
+            self.engine,
+            [
+                {
+                    "id": "rdp-fail-3",
+                    "service": "RDP",
+                    "threshold": 3,
+                    "window_seconds": 1800,
+                    "action": "block_ip",
+                    "alert": True,
+                }
+            ],
+            source="unit",
+        )
+        ip = "203.0.113.52"
+        for _ in range(5):
+            self.engine.process_event(
+                {
+                    "event_type": "failed_logon",
+                    "source_ip": ip,
+                    "target_service": "Network",
+                }
+            )
+        self.assertNotIn(ip, self.engine._rule_blocked_ips)
+        # One RDP fail still under threshold
+        self.engine.process_event(
+            {
+                "event_type": "failed_logon",
+                "source_ip": ip,
+                "target_service": "RDP",
+            }
+        )
+        self.assertNotIn(ip, self.engine._rule_blocked_ips)
+
+    def test_mixed_services_only_rdp_counts(self):
+        apply_block_rules(
+            self.engine,
+            [
+                {
+                    "id": "rdp-fail-3",
+                    "service": "RDP",
+                    "threshold": 3,
+                    "window_seconds": 1800,
+                    "action": "block_ip",
+                    "alert": True,
+                }
+            ],
+            source="unit",
+        )
+        ip = "203.0.113.53"
+        for _ in range(2):
+            self.engine.process_event(
+                {
+                    "event_type": "failed_logon",
+                    "source_ip": ip,
+                    "target_service": "Network",
+                }
+            )
+        for _ in range(3):
+            self.engine.process_event(
+                {
+                    "event_type": "failed_logon",
+                    "source_ip": ip,
+                    "target_service": "RDP",
+                    "username": "admin",
+                }
+            )
+        self.assertIn(ip, self.engine._rule_blocked_ips)
 
 
 if __name__ == "__main__":

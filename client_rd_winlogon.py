@@ -1409,7 +1409,7 @@ def probe_winlogon_capture(max_width: int = 1280) -> dict:
             img = img.resize((max_width, nh), resample)
             w, h = img.size
         buf = io.BytesIO()
-        img.convert("RGB").save(buf, format="JPEG", quality=40, optimize=False)
+        img.convert("RGB").save(buf, format="JPEG", quality=72, optimize=False)
         jpeg = buf.getvalue()
         return {
             "ok": True,
