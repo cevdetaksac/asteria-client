@@ -3537,65 +3537,91 @@ class RemoteDesktopStreamer:
         """Chrome Remote Desktop model: always match console input desktop.
 
         Lock/logoff → Winlogon helper. Unlock/logon → Default DXGI. Same stream_id.
-        Runs for follow **and** SID Start (listed username ≠ Default live).
+        Runs for follow, SID Start, **and** lock-row (`force_secure`) after
+        credentials — otherwise the viewer freezes on Welcome (FOLLOW-4).
         """
         if self._follow_busy or not self._running:
             return
-        if self._force_secure_desktop and self._winlogon_mode:
-            # Lock-row Start stays on Winlogon unless helper reports Default.
-            desk = str(self._desktop_name or "").lower()
-            if desk == "default":
-                pass  # fall through to Default follow below
-            else:
-                return
         now = time.time()
-        if (now - float(self._last_follow_check or 0)) < FOLLOW_CHECK_SEC:
+        # Poll faster while still on Winlogon so post-password switch ≤2s.
+        min_gap = 0.12 if self._winlogon_mode else FOLLOW_CHECK_SEC
+        stale = False
+        try:
+            if self._winlogon_mode and self._last_send_mono > 0:
+                stale = (time.monotonic() - float(self._last_send_mono)) >= 1.2
+        except Exception:
+            stale = False
+        if not stale and (now - float(self._last_follow_check or 0)) < min_gap:
             return
         self._last_follow_check = now
         try:
             from client_rd_winlogon import (
                 console_session_id,
+                decide_console_follow,
                 resolve_console_capture_mode,
+                session_has_logonui,
+                session_has_process,
+                session_lock_state,
                 session_username,
             )
             csid = int(console_session_id() or 0)
             target = int(self._target_session_id or 0)
-            sid = csid if (self._follow_console or target <= 0) else target
+            # After any Start that can unlock, follow the physical console.
+            sid = csid if (self._follow_console or self._force_secure_desktop or target <= 0) else target
             if sid <= 0:
                 sid = csid or target
             if sid <= 0:
                 return
             user = session_username(sid) if sid else ""
-            desired = resolve_console_capture_mode(sid)
-            # Helper already on Winlogon input while we think Default?
+            logonui = bool(session_has_logonui(sid)) if sid else False
+            locked = session_lock_state(sid) if sid else None
+            explorer = session_has_process(sid, "explorer.exe") if sid else None
             reported = str(self._desktop_name or "").strip().lower()
-            if reported == "winlogon":
-                desired = "winlogon"
+            # Live OpenInputDesktop name when known; do NOT sticky-force Winlogon
+            # from a stale _desktop_name (that froze post-logon streams).
+            input_desk = reported if reported in ("winlogon", "default") else ""
+            desired = resolve_console_capture_mode(sid, input_desktop=input_desk)
+            follow_reason = decide_console_follow(
+                follow_console=True,
+                winlogon_mode=bool(self._winlogon_mode),
+                spawn_session_id=int(
+                    self._helper_spawn_session_id
+                    or self._target_session_id
+                    or 0
+                ),
+                console_sid=sid,
+                console_username=user,
+                helper_desktop=reported,
+                logonui_hwnd=int(getattr(self, "_logonui_hwnd_count", 0) or 0),
+                chrome_detected=bool(self._chrome_detected),
+                session_locked=locked,
+                explorer_present=explorer,
+                logonui_present=logonui,
+            )
+            if follow_reason:
+                desired = "default"
             want_wl = desired == "winlogon"
-            if self._force_secure_desktop and reported != "default":
-                want_wl = True
             black = "+black" in str(self._capture_method or "")
             helper_wl = bool(self._helper_spawned_winlogon)
             connected = bool(self._persistent_helper_connected())
             mode_mismatch = bool(self._winlogon_mode) != want_wl
             helper_mismatch = connected and (helper_wl != want_wl)
-            # Sustained black on wrong path → force resync
             need_black_fix = black and (
                 (want_wl and not self._winlogon_mode)
                 or (not want_wl and self._winlogon_mode)
                 or helper_mismatch
-                or reported == "winlogon" and not self._winlogon_mode
             )
-            if not (mode_mismatch or helper_mismatch or need_black_fix):
-                # Already correct mode — still allow unlock follow via desktop name
-                if (
-                    self._winlogon_mode
-                    and reported == "default"
-                    and not want_wl
-                ):
-                    pass
-                else:
-                    return
+            need_stale_unlock = bool(
+                stale and self._winlogon_mode and not want_wl
+            )
+            if not (
+                mode_mismatch
+                or helper_mismatch
+                or need_black_fix
+                or need_stale_unlock
+                or follow_reason
+            ):
+                return
             if want_wl:
                 if self._winlogon_mode and connected and helper_wl and not black:
                     return
@@ -3604,13 +3630,12 @@ class RemoteDesktopStreamer:
                     jpeg=None, w=0, h=0, phase=f"auto_{desired}", force=True
                 )
                 return
-            # Desired Default (unlocked shell)
+            # Desired Default (unlocked / post-logon shell)
             self._follow_console = True
-            self._execute_console_follow(
-                f"auto_{desired}",
-                sid,
-                user,
-            )
+            reason = follow_reason or f"auto_{desired}"
+            if need_stale_unlock:
+                reason = f"stale_{reason}"
+            self._execute_console_follow(reason, sid, user)
         except Exception as exc:
             log(f"[REMOTE-DESKTOP] auto desktop sync error: {exc}")
             return
@@ -3634,6 +3659,11 @@ class RemoteDesktopStreamer:
                 f"Following console to Default (session {new_sid})",
                 force=True,
             )
+            self._enqueue_capture_diag(
+                phase="switching",
+                reason=str(reason or "follow"),
+                detail=f"sid {prev_sid}→{new_sid}",
+            )
             self._last_raw_hash = b""
             self._idle_skip_streak = 0
             spawn = int(
@@ -3642,10 +3672,12 @@ class RemoteDesktopStreamer:
                 or (prev_sid or 0)
             )
             same_sid = int(new_sid) == int(spawn)
-            desk = str(self._desktop_name or "").lower()
-            # Wrong SID or still on Winlogon → tear helper and spawn on Default.
-            respawn = (not same_sid) or desk != "default"
+            # Always leave Winlogon helper after unlock — stale desk name must not skip respawn.
+            respawn = (not same_sid) or bool(self._winlogon_mode) or bool(
+                self._helper_spawned_winlogon
+            ) or str(self._desktop_name or "").lower() != "default"
             self._winlogon_mode = False
+            self._force_secure_desktop = False  # unlock clears lock-row pin
             self._prefer_dxgi = True
             self._target_session_id = int(new_sid)
             self._target_username = str(username or "").strip()
@@ -3660,6 +3692,17 @@ class RemoteDesktopStreamer:
                         f"phase={self._last_helper_fail_phase} "
                         f"detail={self._last_helper_fail_detail}"
                     )
+                    self.emit_stream_progress(
+                        "degraded",
+                        "Post-logon Default helper spawn failed — retrying",
+                        error="FOLLOW_HELPER_SPAWN_FAILED",
+                        force=True,
+                    )
+                    self._enqueue_capture_diag(
+                        phase="degraded",
+                        reason="follow_spawn_failed",
+                        detail=str(self._last_helper_fail_detail or ""),
+                    )
                     return
             elif self._persistent_helper_connected():
                 fps, quality, max_width = self._effective_capture_settings()
@@ -3672,12 +3715,62 @@ class RemoteDesktopStreamer:
                     "monitor": self._monitor_index,
                 })
             self._stream_id = stream_id
+            # Probe Default pixels before claiming Live (FOLLOW-4 / PIX-1).
+            jpeg2, w2, h2 = None, 0, 0
+            deadline = time.time() + 2.0
+            while time.time() < deadline:
+                jpeg2, w2, h2 = self._grab_via_persistent_helper(0.35)
+                if (not jpeg2 or len(jpeg2) < MIN_JPEG_BYTES) and self._last_helper_raw:
+                    jpeg2, w2, h2 = self._encode_helper_raw_jpeg()
+                method = str(self._capture_method or "")
+                if (
+                    jpeg2
+                    and w2 > 0
+                    and h2 > 0
+                    and len(jpeg2) >= MIN_JPEG_BYTES
+                    and "+black" not in method
+                    and "+flat" not in method
+                ):
+                    break
+                time.sleep(0.08)
             self._enqueue_meta(force=True)
-            self.emit_stream_progress(
-                "live",
-                f"Console follow complete desktop=Default session={new_sid}",
-                force=True,
+            method = str(self._capture_method or "")
+            healthy = bool(
+                jpeg2
+                and w2 > 0
+                and h2 > 0
+                and len(jpeg2) >= MIN_JPEG_BYTES
+                and "+black" not in method
+                and "+flat" not in method
             )
+            if healthy:
+                try:
+                    self._seq += 1
+                    self._enqueue_ws_frame(jpeg2, w2, h2, self._seq)
+                except Exception:
+                    pass
+                self.emit_stream_progress(
+                    "live",
+                    f"Console follow complete desktop=Default session={new_sid}",
+                    force=True,
+                )
+                self._enqueue_capture_diag(
+                    phase="live",
+                    reason=str(reason or "follow"),
+                    detail=f"default {w2}x{h2} method={method}",
+                )
+            else:
+                self.emit_stream_progress(
+                    "degraded",
+                    "Switched to Default but no healthy desktop frame yet",
+                    error="FOLLOW_NO_DEFAULT_FRAME",
+                    force=True,
+                )
+                self._enqueue_capture_diag(
+                    phase="degraded",
+                    reason="follow_no_frame",
+                    detail=f"method={method} jpeg={0 if not jpeg2 else len(jpeg2)}B",
+                )
         except Exception as exc:
             log(f"[REMOTE-DESKTOP] C-RD-FOLLOW error: {exc}")
         finally:
@@ -4836,8 +4929,64 @@ class RemoteDesktopStreamer:
             "desktop": self._desktop_name or "",
             "inputs_applied": int(self._stats.get("inputs_applied") or 0),
             "last_input_event": getattr(self, "_last_input_event", "") or "",
+            "follow_console": bool(self._follow_console),
+            "force_secure_desktop": bool(self._force_secure_desktop),
+            "capture_diag": self._capture_diag_snapshot(),
         }
         self._q_put_text(json.dumps(meta))
+
+    def _capture_diag_snapshot(self) -> dict:
+        """Structured capture health for dashboard host comparison (Derin vs PASS)."""
+        method = str(self._capture_method or "")
+        return {
+            "desktop": str(self._desktop_name or ""),
+            "capture_method": method,
+            "winlogon_mode": bool(self._winlogon_mode),
+            "helper_winlogon": bool(self._helper_spawned_winlogon),
+            "helper_connected": bool(self._persistent_helper_connected()),
+            "helper_token": str(self._last_helper_token_source or ""),
+            "helper_fail_phase": str(self._last_helper_fail_phase or ""),
+            "helper_fail_detail": str(self._last_helper_fail_detail or "")[:240],
+            "session_id": int(self._target_session_id or 0),
+            "username": str(self._target_username or ""),
+            "black_frame": bool("+black" in method or self._black_streak_started > 0),
+            "flat_frame": bool("+flat" in method),
+            "frame_variance": float(self._last_frame_variance or 0.0),
+            "bright_ratio": float(self._last_frame_bright_ratio or 0.0),
+            "logonui_hwnd_count": int(getattr(self, "_logonui_hwnd_count", 0) or 0),
+            "chrome_detected": bool(self._chrome_detected),
+            "follow_console": bool(self._follow_console),
+            "force_secure": bool(self._force_secure_desktop),
+            "seq": int(self._seq or 0),
+            "frames_sent": int(self._stats.get("frames_sent") or 0),
+        }
+
+    def _enqueue_capture_diag(
+        self,
+        *,
+        phase: str = "",
+        reason: str = "",
+        detail: str = "",
+    ) -> None:
+        """Emit ``t:capture_diag`` so cloud can show Capture health without SSH."""
+        try:
+            payload = {
+                "t": "capture_diag",
+                "protocol": 2,
+                "stream_id": self._stream_id,
+                "phase": str(phase or ""),
+                "reason": str(reason or ""),
+                "detail": str(detail or "")[:320],
+                **self._capture_diag_snapshot(),
+            }
+            self._q_put_text(json.dumps(payload))
+            log(
+                f"[REMOTE-DESKTOP] capture_diag phase={phase} reason={reason} "
+                f"desk={payload.get('desktop')} method={payload.get('capture_method')} "
+                f"token={payload.get('helper_token')} var={payload.get('frame_variance')}"
+            )
+        except Exception as exc:
+            log(f"[REMOTE-DESKTOP] capture_diag emit failed: {exc}")
 
     def _enqueue_ws_frame(self, jpeg: bytes, w: int, h: int, seq: int) -> bool:
         """Buffer latest JPEG + meta for the WS thread. Queueing is NOT a send.

@@ -2,6 +2,15 @@
 
 Removed `docs/ux-review` screenshots, duplicate resilience/alert plan MDs. Contract **1.4.64** cloud checklist is SoT for dashboard work.
 
+# v4.9.107
+
+## Post-logon Default follow + capture_diag (contract 1.4.74)
+- Unlock after password: leave Winlogon even if `_desktop_name` still says Winlogon
+- Lock-row `force_secure` clears on unlock; same `stream_id` → Default DXGI helper
+- Do not require explorer.exe before follow (Welcome / shell start)
+- Probe healthy Default frame before `phase=live`; else `degraded` + retry
+- Emit `t:capture_diag` / `meta.capture_diag` for host-to-host compare
+
 # v4.9.106
 
 ## Auto-follow console input desktop (Chrome Remote Desktop model)

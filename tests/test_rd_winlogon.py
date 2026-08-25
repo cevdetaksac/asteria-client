@@ -312,6 +312,48 @@ class TestWinlogonStartContract(unittest.TestCase):
         ):
             self.assertFalse(rd._should_promote_follow_to_winlogon())
 
+    def test_follow_unlock_clears_force_secure(self):
+        """Lock-row Start must still follow Default after password (FOLLOW-4)."""
+        rd = self._make_rd()
+        rd._running = True
+        rd._winlogon_mode = True
+        rd._force_secure_desktop = True
+        rd._follow_console = False
+        rd._desktop_name = "Winlogon"
+        rd._helper_spawned_winlogon = True
+        rd._target_session_id = 3
+        rd._helper_spawn_session_id = 3
+        rd._last_follow_check = 0.0
+        called = {}
+
+        def _exec(reason, sid, user):
+            called["reason"] = reason
+            called["sid"] = sid
+            called["user"] = user
+            rd._force_secure_desktop = False
+            rd._winlogon_mode = False
+
+        with mock.patch(
+            "client_rd_winlogon.console_session_id", return_value=3
+        ), mock.patch(
+            "client_rd_winlogon.session_username", return_value="administrator"
+        ), mock.patch(
+            "client_rd_winlogon.session_has_logonui", return_value=False
+        ), mock.patch(
+            "client_rd_winlogon.session_lock_state", return_value=False
+        ), mock.patch(
+            "client_rd_winlogon.session_has_process", return_value=True
+        ), mock.patch.object(
+            rd, "_execute_console_follow", side_effect=_exec
+        ), mock.patch.object(
+            rd, "_persistent_helper_connected", return_value=True
+        ):
+            rd._maybe_follow_console_desktop()
+        self.assertIn("sid", called)
+        self.assertEqual(called.get("sid"), 3)
+        self.assertFalse(rd._force_secure_desktop)
+        self.assertFalse(rd._winlogon_mode)
+
     def test_sid_start_locked_uses_winlogon_probe(self):
         """Administrator SID Start while locked must not skip secure probe."""
         rd = self._make_rd()
@@ -660,6 +702,7 @@ class TestDecideConsoleFollow(unittest.TestCase):
     def test_user_active_same_sid_stays_until_default_desktop(self):
         from client_rd_winlogon import decide_console_follow
 
+        # Lock-like: username listed but no unlock signals → stay on Winlogon.
         self.assertIsNone(
             decide_console_follow(
                 follow_console=True,
@@ -672,6 +715,53 @@ class TestDecideConsoleFollow(unittest.TestCase):
                 chrome_detected=False,
             )
         )
+
+    def test_post_logon_leaves_winlogon_before_explorer(self):
+        from client_rd_winlogon import decide_console_follow
+
+        self.assertEqual(
+            decide_console_follow(
+                follow_console=True,
+                winlogon_mode=True,
+                spawn_session_id=3,
+                console_sid=3,
+                console_username="administrator",
+                helper_desktop="Winlogon",
+                logonui_hwnd=0,
+                session_locked=False,
+                explorer_present=None,
+                logonui_present=False,
+            ),
+            "post_logon",
+        )
+        self.assertEqual(
+            decide_console_follow(
+                follow_console=True,
+                winlogon_mode=True,
+                spawn_session_id=3,
+                console_sid=3,
+                console_username="administrator",
+                helper_desktop="Winlogon",
+                session_locked=False,
+                explorer_present=True,
+                logonui_present=False,
+            ),
+            "unlocked_explorer",
+        )
+
+    def test_resolve_unlocked_without_explorer_is_default(self):
+        from client_rd_winlogon import resolve_console_capture_mode
+
+        with mock.patch(
+            "client_rd_winlogon.session_username", return_value="administrator"
+        ), mock.patch(
+            "client_rd_winlogon.session_has_logonui", return_value=False
+        ), mock.patch(
+            "client_rd_winlogon.session_lock_state", return_value=False
+        ), mock.patch(
+            "client_rd_winlogon.session_has_process", return_value=False
+        ):
+            self.assertEqual(resolve_console_capture_mode(3), "default")
 
     def test_lock_promotes_user_helper_to_winlogon(self):
         from client_rd_winlogon import decide_console_secure

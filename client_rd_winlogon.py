@@ -105,12 +105,19 @@ def decide_console_follow(
     helper_desktop: str = "",
     logonui_hwnd: int = 0,
     chrome_detected: bool = False,
+    session_locked: Optional[bool] = None,
+    explorer_present: Optional[bool] = None,
+    logonui_present: Optional[bool] = None,
 ) -> Optional[str]:
     """C-RD-FOLLOW: reason to leave Winlogon on the same stream, else None.
 
     ``follow_console`` is True when start omitted ``session_id`` (physical
     console). Shortcut starts (explicit SID) still follow Winlogon→Default
     on that SID but do not jump to a different console SID.
+
+    Unlock after credentials: LogonUI gone + not locked (+ optional explorer)
+    must leave Winlogon even while helper_desktop is still named Winlogon —
+    otherwise the stream freezes on "Windows is getting ready" (FOLLOW-4).
     """
     if not winlogon_mode and str(helper_desktop or "").strip().lower() != "winlogon":
         return None
@@ -125,9 +132,22 @@ def decide_console_follow(
         return "console_sid_changed"
     if desk == "default":
         return "desktop_default"
-    # Stay on Winlogon until the helper reports Default. A listed username with
-    # hwnd=0 is the lock screen (lab: user-helper gdi+black). Do not "follow"
-    # to Default while input desktop is still Winlogon.
+    # Explicit unlock signals beat a stale Winlogon desktop label.
+    hwnd_gone = int(logonui_hwnd or 0) <= 0
+    if logonui_present is False:
+        hwnd_gone = True
+    if logonui_present is True:
+        hwnd_gone = False
+    unlocked = session_locked is False
+    if user and unlocked and hwnd_gone and desk != "winlogon":
+        return "unlocked_shell"
+    if user and unlocked and hwnd_gone and explorer_present is True:
+        return "unlocked_explorer"
+    if user and unlocked and hwnd_gone and explorer_present is not False:
+        # Shell starting after password ("Windows is getting ready") — leave
+        # Winlogon helper before frames freeze on the welcome surface.
+        return "post_logon"
+    # Stay on Winlogon while lock/LogonUI is still the interactive surface.
     return None
 
 
@@ -308,7 +328,16 @@ def console_start_secure_desktop(
         return True
     if not str(username or "").strip():
         return True
-    if explorer_present is False:
+    # Post-password Welcome / shell start: unlocked + no LogonUI → Default even
+    # before explorer.exe exists. Waiting for explorer kept capture on a dead
+    # Winlogon helper (frozen "Windows is getting ready", FOLLOW-4).
+    if (
+        session_locked is False
+        and not logonui_present
+        and desk != "winlogon"
+    ):
+        return False
+    if explorer_present is False and session_locked is not False:
         return True
     if desk == "default" and session_locked is not True and not logonui_present:
         return False
@@ -322,12 +351,16 @@ def console_start_secure_desktop(
     return True
 
 
-def resolve_console_capture_mode(session_id: int) -> str:
+def resolve_console_capture_mode(
+    session_id: int,
+    *,
+    input_desktop: str = "",
+) -> str:
     """Chrome Remote Desktop model: which desktop is live on the console now?
 
     Returns ``\"winlogon\"`` (lock / logoff / empty) or ``\"default\"`` (unlocked
     shell). Decision uses LogonUI + WTS lock + explorer — **not** a listed
-    username alone.
+    username alone. Optional ``input_desktop`` is the live OpenInputDesktop name.
     """
     try:
         sid = int(session_id or 0)
@@ -346,12 +379,13 @@ def resolve_console_capture_mode(session_id: int) -> str:
         explorer = session_has_process(sid, "explorer.exe")
     except Exception:
         return "winlogon"
+    desk = str(input_desktop or "").strip()
     if console_start_secure_desktop(
         username=user,
         logonui_present=logonui,
         session_locked=locked,
         explorer_present=explorer,
-        input_desktop="",
+        input_desktop=desk,
     ):
         return "winlogon"
     return "default"

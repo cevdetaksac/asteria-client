@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.106"  # Auto-follow console input desktop (Winlogon↔Default) like CRD
+VERSION = "4.9.107"  # Post-logon Default follow + capture_diag (no frozen Welcome)
 
 
 

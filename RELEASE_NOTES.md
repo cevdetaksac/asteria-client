@@ -1,5 +1,18 @@
 # Release notes
 
+# Asteria Client 4.9.107 — post-logon Default follow + capture_diag
+
+Password on LogonUI used to freeze on “Windows hazırlanıyor” with the dashboard
+banner “Yayın durdu / konsol takibi”. Sticky `_desktop_name=Winlogon` and
+lock-row `force_secure` blocked unlock. This build follows Default on the same
+`stream_id` as soon as LogonUI is gone and the session is unlocked (explorer
+optional), clears force_secure after unlock, probes a healthy Default frame
+before Live, and emits `t:capture_diag` / `meta.capture_diag` for host compare.
+
+Also includes 4.9.106 auto Winlogon↔Default sync and 4.9.105 PIX/DXGI honesty.
+
+---
+
 # Asteria Client 4.9.106 — follow the live console like Chrome Remote Desktop
 
 Google Remote Desktop does not guess from a listed username: it captures
