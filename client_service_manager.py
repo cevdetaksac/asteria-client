@@ -307,6 +307,7 @@ class ServiceManager:
             "service": service,
             "port": port,
             "timestamp": time.time(),
+            "source": "honeypot",
         }
         try:
             self._attack_queue.put_nowait(entry)
@@ -351,7 +352,8 @@ class ServiceManager:
         """Queue a real EventLog auth-fail (or similar) for POST /api/attack.
 
         Same batch path as honeypot credentials — honeypot listen state irrelevant.
-        ``entry`` keys: attacker_ip, username, password, service, port [, timestamp].
+        ``entry`` keys: attacker_ip, username, password, service, port [, timestamp,
+        source, logon_type, auth_package, logon_process, status, substatus, workstation].
         """
         if not isinstance(entry, dict):
             return False
@@ -363,6 +365,17 @@ class ServiceManager:
             port = int(entry.get("port") or 0)
         except (TypeError, ValueError):
             port = 0
+        # Known services must not stay at port 0 (contract ≥1.4.75)
+        if port <= 0:
+            port = {
+                "RDP": 3389,
+                "MSSQL": 1433,
+                "MYSQL": 3306,
+                "SSH": 22,
+                "FTP": 21,
+                "NETWORK": 445,
+                "SMB": 445,
+            }.get(service, 0)
         payload = {
             "attacker_ip": attacker_ip,
             "username": str(entry.get("username") or "unknown"),
@@ -370,7 +383,14 @@ class ServiceManager:
             "service": service,
             "port": port,
             "timestamp": float(entry.get("timestamp") or time.time()),
+            "source": str(entry.get("source") or "eventlog"),
         }
+        for key in (
+            "logon_type", "auth_package", "logon_process",
+            "status", "substatus", "workstation",
+        ):
+            if entry.get(key) is not None and entry.get(key) != "":
+                payload[key] = entry[key]
         try:
             self._attack_queue.put_nowait(payload)
         except queue.Full:
@@ -454,6 +474,13 @@ class ServiceManager:
                         password=entry["password"],
                         service=entry["service"],
                         port=entry["port"],
+                        source=entry.get("source"),
+                        logon_type=entry.get("logon_type"),
+                        auth_package=entry.get("auth_package"),
+                        logon_process=entry.get("logon_process"),
+                        status=entry.get("status"),
+                        substatus=entry.get("substatus"),
+                        workstation=entry.get("workstation"),
                     )
                     if ok:
                         sent += 1

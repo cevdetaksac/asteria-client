@@ -175,6 +175,83 @@ def decide_console_secure(
     return None
 
 
+def console_capture_env(session_id: int = 0) -> dict:
+    """Host fingerprint for Capture health compare (PASS host vs Derin FAIL).
+
+    Explains *why* resolve picked Winlogon vs Default — not just the outcome.
+    """
+    try:
+        sid = int(session_id or 0)
+    except (TypeError, ValueError):
+        sid = 0
+    if sid <= 0:
+        try:
+            sid = int(console_session_id() or 0)
+        except Exception:
+            sid = 0
+    user = ""
+    logonui = False
+    locked = None
+    explorer = None
+    try:
+        if sid > 0:
+            user = session_username(sid) or ""
+            logonui = bool(session_has_logonui(sid))
+            locked = session_lock_state(sid)
+            explorer = session_has_process(sid, "explorer.exe")
+    except Exception:
+        pass
+    screen_cx = screen_cy = 0
+    monitor_count = 0
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        screen_cx = int(user32.GetSystemMetrics(0) or 0)  # SM_CXSCREEN
+        screen_cy = int(user32.GetSystemMetrics(1) or 0)
+        # SM_CMONITORS
+        monitor_count = int(user32.GetSystemMetrics(80) or 0)
+    except Exception:
+        pass
+    winlogon_pids = 0
+    logonui_pids = 0
+    try:
+        if sid > 0:
+            for pid in _pids_named("winlogon.exe"):
+                if _session_of_pid(pid) == sid:
+                    winlogon_pids += 1
+            for image in ("LogonUI.exe", "logonui.exe", "LockApp.exe"):
+                for pid in _pids_named(image):
+                    if _session_of_pid(pid) == sid:
+                        logonui_pids += 1
+    except Exception:
+        pass
+    resolve = "winlogon"
+    try:
+        resolve = resolve_console_capture_mode(sid)
+    except Exception:
+        resolve = "error"
+    out = {
+        "console_sid": int(sid or 0),
+        "username": str(user or ""),
+        "logonui": bool(logonui),
+        "logonui_pids": int(logonui_pids),
+        "winlogon_pids": int(winlogon_pids),
+        "locked": locked,
+        "explorer": explorer,
+        "resolve_mode": str(resolve),
+        "screen_cx": int(screen_cx),
+        "screen_cy": int(screen_cy),
+        "monitor_count": int(monitor_count),
+        "headless_hint": bool(
+            monitor_count <= 0
+            or screen_cx <= 0
+            or screen_cy <= 0
+        ),
+    }
+    out["decision"] = console_capture_env_decision_note(out)
+    return out
+
+
 def session_has_logonui(session_id: int) -> bool:
     """True when LogonUI / LockApp is running in the console session.
 
@@ -389,6 +466,26 @@ def resolve_console_capture_mode(
     ):
         return "winlogon"
     return "default"
+
+
+def console_capture_env_decision_note(env: dict) -> str:
+    """One-line why Winlogon vs Default was chosen (for logs / Capture health)."""
+    if not isinstance(env, dict):
+        return ""
+    mode = str(env.get("resolve_mode") or "")
+    if mode == "winlogon":
+        if env.get("logonui"):
+            return "winlogon_because_logonui"
+        if env.get("locked") is True:
+            return "winlogon_because_locked"
+        if not str(env.get("username") or "").strip():
+            return "winlogon_because_no_user"
+        if env.get("explorer") is False:
+            return "winlogon_because_no_explorer"
+        return "winlogon_secure_default"
+    if env.get("headless_hint"):
+        return "default_but_headless_hint"
+    return "default_unlocked_shell"
 
 
 def enable_process_privileges(*names: str) -> None:

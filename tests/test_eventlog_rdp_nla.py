@@ -38,6 +38,7 @@ class TestEventLogRdpNla(unittest.TestCase):
         self.assertEqual(
             EventLogWatcher._detect_service(4625, "Security", data), "Network"
         )
+        self.assertEqual(EventLogWatcher._detect_port(4625, data), 445)
 
     def test_1149_hint_promotes_type3(self):
         ip = "203.0.113.99"

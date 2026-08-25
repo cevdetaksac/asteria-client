@@ -3355,6 +3355,9 @@ class RemoteDesktopStreamer:
         Unlocked Default (explorer + WTS unlocked) is PIX-4: do **not** jump to
         Winlogon because GDI was black — retry DXGI instead.
         Applies to follow **and** SID Start (lab 4.9.103 Active username FAIL).
+
+        Exception: if LogonUI is present, prefer Winlogon even when explorer is
+        listed Active (Derin: Default+user-helper black while lock UI is live).
         """
         if self._winlogon_mode or self._force_secure_desktop:
             return False
@@ -3370,14 +3373,14 @@ class RemoteDesktopStreamer:
             explorer = (
                 session_has_process(sid, "explorer.exe") if sid > 0 else None
             )
+            if logonui or locked is True:
+                return True
             if (
                 explorer is True
                 and locked is False
                 and not logonui
             ):
                 return False
-            if logonui or locked is True:
-                return True
         except Exception:
             pass
         method = str(self._capture_method or "").lower()
@@ -4938,6 +4941,12 @@ class RemoteDesktopStreamer:
     def _capture_diag_snapshot(self) -> dict:
         """Structured capture health for dashboard host comparison (Derin vs PASS)."""
         method = str(self._capture_method or "")
+        env = {}
+        try:
+            from client_rd_winlogon import console_capture_env
+            env = console_capture_env(int(self._target_session_id or 0))
+        except Exception:
+            env = {}
         return {
             "desktop": str(self._desktop_name or ""),
             "capture_method": method,
@@ -4959,6 +4968,7 @@ class RemoteDesktopStreamer:
             "force_secure": bool(self._force_secure_desktop),
             "seq": int(self._seq or 0),
             "frames_sent": int(self._stats.get("frames_sent") or 0),
+            "env": env,
         }
 
     def _enqueue_capture_diag(

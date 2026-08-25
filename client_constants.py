@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.107"  # Post-logon Default follow + capture_diag (no frozen Welcome)
+VERSION = "4.9.108"  # 4625 RDP NLA vs NETWORK:445; attack enrich; port:0 fix
 
 
 

@@ -931,14 +931,20 @@ class ThreatEngine:
         FAILED_LOGON_TYPES | {"failed_logon_single", "honeypot_credential"}
     )
 
-    # Default ports when EventLog omits target_port
+    # Default ports when EventLog omits target_port (keys upper — lookup is casefold)
     _SERVICE_DEFAULT_PORTS: Dict[str, int] = {
         "RDP": 3389,
         "MSSQL": 1433,
         "MYSQL": 3306,
         "SSH": 22,
         "FTP": 21,
-        "Network": 445,
+        "NETWORK": 445,
+        "SMB": 445,
+    }
+
+    # Noise usernames — do not flood Attacks UI (still may score locally)
+    _AUTH_FAIL_NOISE_USERS: Set[str] = {
+        "", "-", "ANONYMOUS LOGON", "ANONYMOUS", "GUEST",
     }
 
     @staticmethod
@@ -973,6 +979,18 @@ class ThreatEngine:
                 return True
         return False
 
+    def _default_port_for_service(self, service: str) -> int:
+        """Case-insensitive default listen port (NETWORK→445, never leave known svc at 0)."""
+        key = (service or "").strip().upper()
+        if not key:
+            return 0
+        return int(self._SERVICE_DEFAULT_PORTS.get(key, 0))
+
+    @classmethod
+    def _is_auth_fail_noise_user(cls, username: str) -> bool:
+        u = (username or "").strip().upper()
+        return u in cls._AUTH_FAIL_NOISE_USERS
+
     def _maybe_report_auth_fail(self, event: dict) -> None:
         """Report real Windows auth fails to /api/attack when block rules cover the service.
 
@@ -996,6 +1014,10 @@ class ThreatEngine:
             return
 
         username = (event.get("username") or "").strip() or "unknown"
+        # Empty / anonymous Network noise — do not spam Attacks (RDP admin spray still reports)
+        if self._is_auth_fail_noise_user(username) and service in ("NETWORK", "SMB"):
+            return
+
         dedup_key = f"{source_ip}|{service}|{username.lower()}"
         now = time.time()
         last = self._auth_fail_report_ts.get(dedup_key, 0.0)
@@ -1014,10 +1036,34 @@ class ThreatEngine:
         except (TypeError, ValueError):
             port = 0
         if port <= 0:
-            port = self._SERVICE_DEFAULT_PORTS.get(service, 0)
+            port = self._default_port_for_service(service)
+
+        raw = event.get("raw_data") if isinstance(event.get("raw_data"), dict) else {}
+        auth_package = (
+            event.get("auth_package")
+            or raw.get("AuthenticationPackageName")
+            or raw.get("AuthenticationPackage")
+            or ""
+        )
+        logon_process = (
+            event.get("logon_process")
+            or raw.get("LogonProcessName")
+            or raw.get("LogonProcess")
+            or ""
+        )
+        status = event.get("status") or raw.get("Status") or ""
+        substatus = event.get("substatus") or raw.get("SubStatus") or ""
+        workstation = (
+            event.get("workstation") or raw.get("WorkstationName") or ""
+        )
+        logon_type = event.get("logon_type")
+        try:
+            logon_type = int(logon_type) if logon_type is not None else None
+        except (TypeError, ValueError):
+            logon_type = None
 
         try:
-            cb({
+            payload = {
                 "attacker_ip": source_ip,
                 "username": username,
                 "password": "<failed_logon>",
@@ -1025,7 +1071,15 @@ class ThreatEngine:
                 "port": port,
                 "timestamp": now,
                 "source": "eventlog",
-            })
+                "auth_package": str(auth_package or "")[:64],
+                "logon_process": str(logon_process or "")[:64],
+                "status": str(status or "")[:32],
+                "substatus": str(substatus or "")[:32],
+                "workstation": str(workstation or "")[:128],
+            }
+            if logon_type is not None:
+                payload["logon_type"] = logon_type
+            cb(payload)
             self._stats["auth_fail_reports"] = int(
                 self._stats.get("auth_fail_reports") or 0
             ) + 1

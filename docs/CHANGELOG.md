@@ -2,6 +2,14 @@
 
 Removed `docs/ux-review` screenshots, duplicate resilience/alert plan MDs. Contract **1.4.64** cloud checklist is SoT for dashboard work.
 
+# v4.9.108
+
+## Attack service classification (contract 1.4.75)
+- Fix `NETWORK` + `port:0` — case-insensitive default ports (Network→445)
+- EventLog `target_port` for Network/SMB = 445; RDP NLA remains 3389
+- `/api/attack` enrich: logon_type, auth_package, logon_process, status, workstation, source
+- Skip anonymous/empty Network Attacks spam; bait `source=honeypot` vs `eventlog`
+
 # v4.9.107
 
 ## Post-logon Default follow + capture_diag (contract 1.4.74)

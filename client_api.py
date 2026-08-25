@@ -532,7 +532,8 @@ class AsteriaAPIClient:
             return False
     
     def report_attack(self, token: str, attacker_ip: str, target_ip: str,
-                       username: str, password: str, service: str, port: int) -> bool:
+                       username: str, password: str, service: str, port: int,
+                       **extra) -> bool:
         """Yakalanan saldırı (credential) bilgisini API'ye raporlar.
         
         Args:
@@ -541,8 +542,9 @@ class AsteriaAPIClient:
             target_ip: Hedef (yerel) IP adresi
             username: Yakalanan kullanıcı adı
             password: Yakalanan şifre
-            service: Servis türü (RDP, SSH, FTP, MYSQL, MSSQL)
+            service: Servis türü (RDP, SSH, FTP, MYSQL, MSSQL, NETWORK)
             port: Hedef port numarası
+            **extra: Opsiyonel EventLog zenginleştirme (logon_type, auth_package, …)
             
         Returns:
             bool: Raporlama başarılı ise True
@@ -563,6 +565,14 @@ class AsteriaAPIClient:
                 "service": str(service or "").upper(),
                 "port": int(port),
             }
+            for key in (
+                "source", "logon_type", "auth_package", "logon_process",
+                "status", "substatus", "workstation",
+            ):
+                val = extra.get(key)
+                if val is None or val == "":
+                    continue
+                payload[key] = val
             response = self.api_request("POST", "attack", data=payload)
             if response is not None:
                 if isinstance(response, dict) and response.get("status") not in (

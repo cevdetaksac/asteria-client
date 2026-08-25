@@ -76,7 +76,58 @@ class TestProtectionBlockRules(unittest.TestCase):
         # Real fails reported to /api/attack path (honeypot optional)
         self.assertGreaterEqual(len(self.reports), 1)
         self.assertEqual(self.reports[0]["service"], "RDP")
+        self.assertEqual(self.reports[0]["port"], 3389)
         self.assertEqual(self.reports[0]["password"], "<failed_logon>")
+        self.assertEqual(self.reports[0]["source"], "eventlog")
+
+    def test_network_fail_reports_port_445_not_zero(self):
+        """Regression: uppercased NETWORK must map to 445 (lab port:0 flood)."""
+        apply_block_rules(
+            self.engine,
+            [
+                {
+                    "id": "net-fail",
+                    "service": "Network",
+                    "threshold": 10,
+                    "window_seconds": 1800,
+                    "action": "block_ip",
+                    "alert": True,
+                }
+            ],
+            source="unit",
+        )
+        self.engine.process_event(
+            {
+                "event_type": "failed_logon",
+                "source_ip": "203.0.113.60",
+                "target_service": "Network",
+                "username": "Administrator",
+                "logon_type": 3,
+                "auth_package": "NTLM",
+                "logon_process": "NtLmSsp",
+            }
+        )
+        self.assertEqual(len(self.reports), 1)
+        self.assertEqual(self.reports[0]["service"], "NETWORK")
+        self.assertEqual(self.reports[0]["port"], 445)
+        self.assertEqual(self.reports[0]["logon_type"], 3)
+        self.assertEqual(self.reports[0]["auth_package"], "NTLM")
+
+    def test_anonymous_network_not_reported(self):
+        apply_block_rules(
+            self.engine,
+            [{"id": "net", "service": "Network", "threshold": 10, "action": "block_ip"}],
+            source="unit",
+        )
+        self.engine.process_event(
+            {
+                "event_type": "failed_logon",
+                "source_ip": "203.0.113.61",
+                "target_service": "Network",
+                "username": "ANONYMOUS LOGON",
+            }
+        )
+        self.assertEqual(len(self.reports), 0)
 
     def test_two_fails_do_not_block(self):
         apply_block_rules(

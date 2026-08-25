@@ -453,6 +453,19 @@ class EventLogWatcher:
                 "logon_type": self._extract_logon_type(event_data, event_id),
                 "target_service": self._detect_service(event_id, channel, event_data),
                 "target_port": self._detect_port(event_id, event_data),
+                "auth_package": (
+                    event_data.get("AuthenticationPackageName")
+                    or event_data.get("AuthenticationPackage")
+                    or ""
+                ),
+                "logon_process": (
+                    event_data.get("LogonProcessName")
+                    or event_data.get("LogonProcess")
+                    or ""
+                ),
+                "status": event_data.get("Status", ""),
+                "substatus": event_data.get("SubStatus", ""),
+                "workstation": event_data.get("WorkstationName", ""),
                 "process_name": event_data.get("NewProcessName", event_data.get("ProcessName", "")),
                 "service_name": event_data.get("ServiceName", ""),
                 # Local correlation only — identity events use a whitelist.
@@ -650,6 +663,8 @@ class EventLogWatcher:
                 return 3389
             if svc == "MSSQL":
                 return 1433
+            if svc in ("Network", "SMB", "NETWORK"):
+                return 445
         return 0
 
     @staticmethod
