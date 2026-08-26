@@ -1345,6 +1345,7 @@ class RemoteCommandExecutor:
             desktop=desktop,
             pre_logon=pre_logon,
             topology=topology,
+            preferred_transport=params.get("preferred_transport"),
             command_id=cmd_id or None,
         )
         if result.get("success"):

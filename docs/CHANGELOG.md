@@ -2,11 +2,19 @@
 
 Removed `docs/ux-review` screenshots, duplicate resilience/alert plan MDs. Contract **1.4.64** cloud checklist is SoT for dashboard work.
 
+# v4.9.111
+
+## Remote Desktop — honor cloud websocket-primary Start
+- `preferred_transport: websocket` (default) keeps JPEG-WS while WebRTC ICE connects
+- Suppress JPEG on agent WS only when Start asks `preferred_transport: webrtc` **and** media is truly ready
+- `hello.capabilities.preferred_transport` / transport order match Start
+- Contract **1.4.77** cloud Live MUST
+
 # v4.9.110
 
 ## Remote Desktop — JPEG-WS primary video (contract 1.4.77)
 - Unknown lock (`session_locked is None`) must not unlock Default → Winlogon helper (fixes Derin `persistent-user-helper` + black)
-- Follow Start prefers live `resolve_console_capture_mode` desktop over stale stamp
+- Follow Start prefers live unlock probe over stale stamp
 - Never stamp provisional `dxgi:pending`; provisional methods are honest helper names
 - `prefer_raw` / media fps only after WebRTC ICE+DTLS ready; until then JPEG-WS ≥30 in-helper
 - Input remains immediate on agent WS (`t:input`); HTTP poll is backup only

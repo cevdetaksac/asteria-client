@@ -254,6 +254,7 @@ class TestFallbackAndMailbox(unittest.TestCase):
         )
         rd._running = True
         rd._ws_ok = True
+        rd._preferred_transport = "webrtc"
         rd._last_capture_mono = 5.0
         rd._dispatch_frame("token", JPEG, 1280, 720, 1)
         self.assertEqual(rd._transport, "webrtc")

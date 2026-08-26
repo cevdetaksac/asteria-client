@@ -192,6 +192,8 @@ class RemoteDesktopStreamer:
         self._requested_fps = DEFAULT_FPS
         self._requested_quality = DEFAULT_QUALITY
         self._requested_max_width = DEFAULT_MAX_WIDTH
+        # Cloud Start preferred_transport (default websocket / JPEG-WS primary).
+        self._preferred_transport = "websocket"
         # WebRTC capture pacing is independent from JPEG-era stream knobs.
         self._media_fps = MEDIA_CAPTURE_FPS
         self._media_quality = MEDIA_CAPTURE_QUALITY
@@ -440,6 +442,7 @@ class RemoteDesktopStreamer:
               desktop: Optional[str] = None,
               pre_logon: Optional[bool] = None,
               topology: Optional[str] = None,
+              preferred_transport: Optional[str] = None,
               command_id: Optional[str] = None) -> dict:
         """Start capture + WS (with HTTP fallback).
 
@@ -450,6 +453,10 @@ class RemoteDesktopStreamer:
         ``topology=follow`` (default Connect, omit session_id): live Default
         skips Winlogon helper. ``topology=winlogon`` (lock/logon row) forces it.
         Legacy ``prefer=winlogon`` without SID is treated as follow (1.4.59).
+
+        ``preferred_transport=websocket`` (cloud default): keep JPEG-WS alive
+        even while WebRTC ICE connects. ``webrtc`` may suppress JPEG only after
+        media is truly ready (healthy frame + ICE/DTLS connected).
         """
         prefer_l = str(prefer or "").strip().lower()
         desktop_l = str(desktop or "").strip().lower()
@@ -477,6 +484,9 @@ class RemoteDesktopStreamer:
                 "running",
                 "remote_stream_start received",
                 force=True,
+            )
+            self._preferred_transport = self._normalize_preferred_transport(
+                preferred_transport
             )
             self._requested_fps, self._requested_quality, self._requested_max_width = (
                 normalize_stream_knobs(fps, quality, max_width)
@@ -1697,6 +1707,22 @@ class RemoteDesktopStreamer:
 
     # ── Capture loop ──────────────────────────────────────────────
 
+    def _normalize_preferred_transport(self, value) -> str:
+        raw = str(value or "").strip().lower()
+        if raw in ("webrtc", "rtc"):
+            return "webrtc"
+        # websocket | jpeg-ws | ws | omitted → JPEG-WS primary (cloud 1.4.77+)
+        return "websocket"
+
+    def _jpeg_ws_primary(self) -> bool:
+        return self._preferred_transport != "webrtc"
+
+    def _should_send_jpeg_ws(self) -> bool:
+        """Keep JPEG-WS when websocket-primary, or until WebRTC media is ready."""
+        if self._jpeg_ws_primary():
+            return True
+        return not self._media_ready()
+
     def _webrtc_available(self) -> bool:
         try:
             return bool(self._media.capabilities().get("webrtc"))
@@ -1729,10 +1755,10 @@ class RemoteDesktopStreamer:
             return False
 
     def _effective_capture_settings(self) -> Tuple[float, int, int]:
-        if self._media_ready():
+        if self._media_ready() and not self._jpeg_ws_primary():
             return self._media_fps, self._media_quality, self._max_width
         # Tunnel video = JPEG-WS at Start knobs (≥30). Do not burn CPU on raw RGB
-        # while WebRTC ICE is still negotiating.
+        # while WebRTC ICE is still negotiating (or when websocket-primary).
         return (
             max(float(self._fps or DEFAULT_FPS), JPEG_FALLBACK_FPS_WHILE_NEGOTIATING),
             max(int(self._quality or DEFAULT_QUALITY), DEFAULT_QUALITY),
@@ -1740,7 +1766,7 @@ class RemoteDesktopStreamer:
         )
 
     def _sync_media_capture_mode(self) -> None:
-        ready = self._media_ready()
+        ready = self._media_ready() and not self._jpeg_ws_primary()
         if ready == self._media_mode_applied:
             return
         self._media_mode_applied = ready
@@ -2134,8 +2160,11 @@ class RemoteDesktopStreamer:
                 self._capture_w, self._capture_h = int(w), int(h)
                 self._last_activity = time.time()
                 self._stats["frames_sent"] += 1
-                with self._out_lock:
-                    self._pending_frame = None
+                # WebRTC-primary only: drop JPEG so dual bandwidth stops.
+                # Websocket-primary keeps JPEG-WS alive (cloud Live MUST).
+                if not self._jpeg_ws_primary():
+                    with self._out_lock:
+                        self._pending_frame = None
                 if self._seq % META_EVERY_N_FRAMES == 0:
                     self._enqueue_meta(force=True)
                 return True
@@ -2184,11 +2213,12 @@ class RemoteDesktopStreamer:
             ):
                 self._transport = "webrtc"
                 self._last_activity = time.time()
-                # A stale JPEG may already be waiting from pre-connect. Remove
-                # it so the WS sender cannot compete with connected WebRTC.
-                with self._out_lock:
-                    self._pending_frame = None
-                return
+                if not self._jpeg_ws_primary():
+                    # WebRTC-primary: drop stale JPEG so WS cannot compete.
+                    with self._out_lock:
+                        self._pending_frame = None
+                    return
+                # Websocket-primary: also push JPEG-WS (viewer paints this path).
         except Exception as exc:
             self._on_media_fallback(str(exc))
 
@@ -3442,7 +3472,9 @@ class RemoteDesktopStreamer:
                     "max_width": max(int(self._max_width or DEFAULT_MAX_WIDTH), 1920),
                     "monitor": self._monitor_index,
                     "winlogon": False,
-                    "prefer_raw": bool(self._media_ready()),
+                    "prefer_raw": bool(
+                        self._media_ready() and not self._jpeg_ws_primary()
+                    ),
                 })
             except Exception:
                 pass
@@ -3712,7 +3744,9 @@ class RemoteDesktopStreamer:
                 fps, quality, max_width = self._effective_capture_settings()
                 self._session_helper.update_config({
                     "winlogon": False,
-                    "prefer_raw": bool(self._media_ready()),
+                    "prefer_raw": bool(
+                        self._media_ready() and not self._jpeg_ws_primary()
+                    ),
                     "fps": max(float(fps), 15.0),
                     "quality": quality,
                     "max_width": max_width,
@@ -4097,7 +4131,7 @@ class RemoteDesktopStreamer:
                 # JPEG-WS primary until ICE/DTLS ready — no raw RGB tax during connect.
                 "prefer_raw": False,
             }
-            if self._media_ready():
+            if self._media_ready() and not self._jpeg_ws_primary():
                 config["fps"] = self._media_fps
                 config["quality"] = max(int(self._media_quality), DEFAULT_QUALITY)
                 config["prefer_raw"] = True
@@ -4638,14 +4672,19 @@ class RemoteDesktopStreamer:
                 codecs.append(name)
         transports = ["jpeg-ws", "jpeg-http"]
         if media.get("webrtc"):
-            transports.insert(0, "webrtc")
+            if self._jpeg_ws_primary():
+                transports.append("webrtc")
+            else:
+                transports.insert(0, "webrtc")
         return {
             "input_protocols": [1, 2],
             "input_v2": True,
             "winlogon": True,
             "pre_logon": True,
-            "preferred_transport": "webrtc",
-            "preferred_codec": "h264",
+            "preferred_transport": (
+                "websocket" if self._jpeg_ws_primary() else "webrtc"
+            ),
+            "preferred_codec": "jpeg" if self._jpeg_ws_primary() else "h264",
             "transports": transports,
             "fallback": "jpeg-ws",
             "codecs": codecs,
@@ -5044,11 +5083,11 @@ class RemoteDesktopStreamer:
             with self._out_lock:
                 if self._pending_text:
                     payload = self._pending_text.popleft()
-                elif self._pending_frame is not None and not self._media_ready():
+                elif self._pending_frame is not None and self._should_send_jpeg_ws():
                     frame = self._pending_frame
                     self._pending_frame = None
                 elif self._pending_frame is not None:
-                    # Connected WebRTC owns video. Drop stale JPEG rather than
+                    # WebRTC-primary owns video. Drop stale JPEG rather than
                     # queueing/sending duplicate bandwidth.
                     self._pending_frame = None
                     self._stats["frames_coalesced"] += 1

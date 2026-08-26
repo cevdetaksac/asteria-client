@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.110"  # RD: JPEG-WS primary video; unknown lock→Winlogon; no dxgi:pending
+VERSION = "4.9.111"  # RD: honor preferred_transport=websocket; never suppress JPEG for ICE
 
 
 

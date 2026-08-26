@@ -106,7 +106,7 @@ class TestTransportSelection(unittest.TestCase):
         self.assertEqual(rd._adaptive.requested["fps"], 30.0)
         self.assertEqual(rd._fps, 30.0)
 
-    def test_connected_media_drops_pending_jpeg_and_skips_ws_http(self):
+    def test_connected_media_keeps_jpeg_ws_when_websocket_primary(self):
         api = FakeApi()
         media = FakeConnectedMedia()
         rd = RemoteDesktopStreamer(
@@ -114,6 +114,22 @@ class TestTransportSelection(unittest.TestCase):
         )
         rd._running = True
         rd._ws_ok = True
+        rd._preferred_transport = "websocket"
+        rd._pending_frame = b"stale-jpeg"
+        rd._dispatch_frame("tok", JPEG, 1280, 720, 1)
+        self.assertEqual(len(media.frames), 1)
+        self.assertEqual(rd._pending_frame, JPEG)  # JPEG-WS still buffered
+        self.assertEqual(api.uploads, [])
+
+    def test_webrtc_primary_drops_pending_jpeg_when_media_connected(self):
+        api = FakeApi()
+        media = FakeConnectedMedia()
+        rd = RemoteDesktopStreamer(
+            api_client=api, token_getter=lambda: "tok", media_transport=media
+        )
+        rd._running = True
+        rd._ws_ok = True
+        rd._preferred_transport = "webrtc"
         rd._pending_frame = b"stale-jpeg"
         rd._dispatch_frame("tok", JPEG, 1280, 720, 1)
         self.assertEqual(len(media.frames), 1)
@@ -121,13 +137,29 @@ class TestTransportSelection(unittest.TestCase):
         self.assertEqual(api.uploads, [])
         self.assertEqual(rd._transport, "webrtc")
 
-    def test_ws_flush_never_sends_binary_while_media_connected(self):
+    def test_ws_flush_sends_jpeg_while_media_connected_websocket_primary(self):
         rd = RemoteDesktopStreamer(
             api_client=FakeApi(),
             token_getter=lambda: "tok",
             media_transport=FakeConnectedMedia(),
         )
         rd._running = True
+        rd._preferred_transport = "websocket"
+        rd._q_put_text('{"t":"meta"}')
+        rd._q_put_frame(JPEG)
+        ws = FakeWS()
+        rd._ws_flush_out(ws)
+        self.assertTrue(any(opcode is not None for _payload, opcode in ws.sent))
+        self.assertEqual(ws.sent[-1][0], JPEG)
+
+    def test_ws_flush_drops_jpeg_while_media_connected_webrtc_primary(self):
+        rd = RemoteDesktopStreamer(
+            api_client=FakeApi(),
+            token_getter=lambda: "tok",
+            media_transport=FakeConnectedMedia(),
+        )
+        rd._running = True
+        rd._preferred_transport = "webrtc"
         rd._q_put_text('{"t":"meta"}')
         rd._q_put_frame(JPEG)
         ws = FakeWS()
@@ -142,6 +174,7 @@ class TestTransportSelection(unittest.TestCase):
             token_getter=lambda: "tok",
             media_transport=FakeConnectedMedia(),
         )
+        rd._preferred_transport = "webrtc"
         rd._fps = 4.0
         rd._quality = 25
         fps, quality, _width = rd._effective_capture_settings()
