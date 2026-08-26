@@ -1169,6 +1169,8 @@ class RemoteDesktopStreamer:
             self._transport = "http"
             self._stream_started_at = time.time()
             if self._use_user_helper and self._persistent_helper_connected():
+                # JPEG-WS is the live video path until WebRTC ICE actually connects.
+                # Prefer JPEG encode in-helper (no RGB loopback tax during ICE wait).
                 cfg = {
                     "fps": max(
                         float(self._requested_fps),
@@ -1177,15 +1179,9 @@ class RemoteDesktopStreamer:
                     "quality": max(int(self._requested_quality), DEFAULT_QUALITY),
                     "max_width": max(int(self._requested_max_width), 1280),
                     "monitor": self._monitor_index,
-                    "prefer_raw": bool(self._webrtc_available()),
+                    "prefer_raw": False,
                     "winlogon": bool(self._winlogon_mode),
                 }
-                if self._webrtc_available():
-                    cfg["fps"] = self._media_fps
-                    cfg["quality"] = max(
-                        int(self._media_quality), DEFAULT_QUALITY
-                    )
-                    cfg["prefer_raw"] = True
                 self._session_helper.update_config(cfg)
 
             self._thread = threading.Thread(
@@ -1735,14 +1731,13 @@ class RemoteDesktopStreamer:
     def _effective_capture_settings(self) -> Tuple[float, int, int]:
         if self._media_ready():
             return self._media_fps, self._media_quality, self._max_width
-        # Capture at media fps whenever WebRTC exists so handover is video-smooth.
-        if self._webrtc_available() and self._running:
-            return (
-                max(float(self._media_fps), JPEG_FALLBACK_FPS_WHILE_NEGOTIATING),
-                max(int(self._quality), MEDIA_CAPTURE_QUALITY),
-                self._max_width,
-            )
-        return self._fps, self._quality, self._max_width
+        # Tunnel video = JPEG-WS at Start knobs (≥30). Do not burn CPU on raw RGB
+        # while WebRTC ICE is still negotiating.
+        return (
+            max(float(self._fps or DEFAULT_FPS), JPEG_FALLBACK_FPS_WHILE_NEGOTIATING),
+            max(int(self._quality or DEFAULT_QUALITY), DEFAULT_QUALITY),
+            self._max_width,
+        )
 
     def _sync_media_capture_mode(self) -> None:
         ready = self._media_ready()
@@ -1755,7 +1750,7 @@ class RemoteDesktopStreamer:
                 "fps": fps,
                 "quality": quality,
                 "max_width": max_width,
-                "prefer_raw": bool(self._webrtc_available()),
+                "prefer_raw": bool(ready),
                 "winlogon": bool(self._winlogon_mode),
             }
             if ready:
@@ -3198,6 +3193,7 @@ class RemoteDesktopStreamer:
         logonui = False
         locked = None
         explorer = None
+        desk_hint = ""
         try:
             from client_rd_winlogon import (
                 console_start_secure_desktop,
@@ -3210,13 +3206,18 @@ class RemoteDesktopStreamer:
             explorer = (
                 session_has_process(sid, "explorer.exe") if sid > 0 else None
             )
+            # Proven unlock/lock beats a stale Start desktop stamp (FOLLOW-4 / Derin).
+            if logonui or locked is True:
+                desk_hint = "winlogon"
+            elif locked is False and not logonui:
+                desk_hint = "default"
             secure = bool(
                 console_start_secure_desktop(
                     username=user,
                     logonui_present=logonui,
                     session_locked=locked,
                     explorer_present=explorer,
-                    input_desktop=str(self._desktop_name or ""),
+                    input_desktop=desk_hint,
                 )
             )
         except Exception as exc:
@@ -3230,7 +3231,7 @@ class RemoteDesktopStreamer:
             log(
                 f"[REMOTE-DESKTOP] secure desktop -> Winlogon "
                 f"(logonui={logonui} locked={locked} explorer={explorer} "
-                f"user={user!r} session={sid})"
+                f"user={user!r} session={sid} desk={desk_hint or '?'})"
             )
             return
         self._winlogon_mode = False
@@ -3441,7 +3442,7 @@ class RemoteDesktopStreamer:
                     "max_width": max(int(self._max_width or DEFAULT_MAX_WIDTH), 1920),
                     "monitor": self._monitor_index,
                     "winlogon": False,
-                    "prefer_raw": bool(self._webrtc_available()),
+                    "prefer_raw": bool(self._media_ready()),
                 })
             except Exception:
                 pass
@@ -3711,7 +3712,7 @@ class RemoteDesktopStreamer:
                 fps, quality, max_width = self._effective_capture_settings()
                 self._session_helper.update_config({
                     "winlogon": False,
-                    "prefer_raw": True,
+                    "prefer_raw": bool(self._media_ready()),
                     "fps": max(float(fps), 15.0),
                     "quality": quality,
                     "max_width": max_width,
@@ -4093,9 +4094,10 @@ class RemoteDesktopStreamer:
                 ),
                 "monitor": self._monitor_index,
                 "winlogon": bool(self._winlogon_mode),
-                "prefer_raw": bool(self._webrtc_available()),
+                # JPEG-WS primary until ICE/DTLS ready — no raw RGB tax during connect.
+                "prefer_raw": False,
             }
-            if self._webrtc_available():
+            if self._media_ready():
                 config["fps"] = self._media_fps
                 config["quality"] = max(int(self._media_quality), DEFAULT_QUALITY)
                 config["prefer_raw"] = True
@@ -4122,13 +4124,11 @@ class RemoteDesktopStreamer:
             self._helper_frame_misses = 0
             self._helper_spawn_session_id = int(target)
             self._last_helper_fail_phase = ""
-            # Stamp provisional method; first healthy DXGI frame rebrands to dxgi:…
+            # Honest provisional method — never advertise dxgi:pending (lab Derin stall).
             if self._winlogon_mode:
                 method = "persistent-winlogon-helper"
-            elif self._prefer_dxgi:
-                method = "dxgi:pending"
             else:
-                method = "persistent-user-helper"
+                method = "helper"
             self._capture_method = method
             self._stats["capture_method"] = self._capture_method
             log(

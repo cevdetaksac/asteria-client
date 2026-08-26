@@ -441,6 +441,25 @@ class TestWinlogonStartContract(unittest.TestCase):
                 explorer_present=True,
             )
         )
+        # Unknown lock + stamped Default must stay secure (Derin user-helper black).
+        self.assertTrue(
+            console_start_secure_desktop(
+                username="administrator",
+                logonui_present=False,
+                session_locked=None,
+                explorer_present=True,
+                input_desktop="default",
+            )
+        )
+        self.assertFalse(
+            console_start_secure_desktop(
+                username="administrator",
+                logonui_present=False,
+                session_locked=False,
+                explorer_present=True,
+                input_desktop="default",
+            )
+        )
 
     def test_resolve_console_capture_mode(self):
         from client_rd_winlogon import resolve_console_capture_mode

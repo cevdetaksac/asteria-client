@@ -416,7 +416,8 @@ def console_start_secure_desktop(
         return False
     if explorer_present is False and session_locked is not False:
         return True
-    if desk == "default" and session_locked is not True and not logonui_present:
+    # Unknown lock (None) must NOT unlock Default — Derin user-helper black.
+    if desk == "default" and session_locked is False and not logonui_present:
         return False
     if (
         explorer_present is True

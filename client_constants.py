@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.109"  # Dual-channel real+bait; OpenSSH/MySQL/FTP logs; relocate ports
+VERSION = "4.9.110"  # RD: JPEG-WS primary video; unknown lock→Winlogon; no dxgi:pending
 
 
 

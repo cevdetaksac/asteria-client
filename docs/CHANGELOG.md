@@ -2,6 +2,15 @@
 
 Removed `docs/ux-review` screenshots, duplicate resilience/alert plan MDs. Contract **1.4.64** cloud checklist is SoT for dashboard work.
 
+# v4.9.110
+
+## Remote Desktop — JPEG-WS primary video (contract 1.4.77)
+- Unknown lock (`session_locked is None`) must not unlock Default → Winlogon helper (fixes Derin `persistent-user-helper` + black)
+- Follow Start prefers live `resolve_console_capture_mode` desktop over stale stamp
+- Never stamp provisional `dxgi:pending`; provisional methods are honest helper names
+- `prefer_raw` / media fps only after WebRTC ICE+DTLS ready; until then JPEG-WS ≥30 in-helper
+- Input remains immediate on agent WS (`t:input`); HTTP poll is backup only
+
 # v4.9.109
 
 ## Dual-channel real-port + bait Attacks (contract 1.4.76)

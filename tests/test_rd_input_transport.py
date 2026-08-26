@@ -148,6 +148,38 @@ class TestTransportSelection(unittest.TestCase):
         self.assertEqual(fps, 60.0)
         self.assertEqual(quality, 85)
 
+    def test_jpeg_ws_primary_while_webrtc_negotiating(self):
+        """WebRTC object exists ≠ media ready; keep JPEG-WS ≥30 fps / Start quality."""
+        class FakeNegotiating:
+            def status(self):
+                return {
+                    "available": True,
+                    "active": True,
+                    "connection_state": "connecting",
+                    "ice_state": "checking",
+                    "codec": "",
+                }
+
+            def capabilities(self):
+                return {"webrtc": True, "codecs": ["H264"]}
+
+            def stop(self):
+                return None
+
+        rd = RemoteDesktopStreamer(
+            api_client=FakeApi(),
+            token_getter=lambda: "tok",
+            media_transport=FakeNegotiating(),
+        )
+        rd._running = True
+        rd._fps = 30.0
+        rd._quality = 72
+        rd._capture_method = "persistent-winlogon-helper"
+        fps, quality, _width = rd._effective_capture_settings()
+        self.assertGreaterEqual(fps, 30.0)
+        self.assertGreaterEqual(quality, 72)
+        self.assertFalse(rd._media_ready())
+
     def test_ws_healthy_sends_no_http(self):
         api = FakeApi()
         rd = _make(api=api)
