@@ -11,6 +11,7 @@ Watched events:
   System     — 1074/6005/6006/7045/7040
   Application — 18453/18456/15457/17135 (MSSQL)
   RDP        — 1149/21/24/25
+  OpenSSH    — Operational Event 4 (Failed / Invalid user password)
 
 Each parsed event is forwarded to ThreatEngine.process_event().
 
@@ -48,6 +49,8 @@ WATCHED_CHANNELS: Dict[str, List[int]] = {
     "Application": [18453, 18456, 15457, 17135],
     "Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational": [1149],
     "Microsoft-Windows-TerminalServices-LocalSessionManager/Operational": [21, 24, 25],
+    # Real OpenSSH (sshd) — fail soft if feature not installed
+    "OpenSSH/Operational": [4],
 }
 
 # Accounts to ignore (machine accounts, system accounts)
@@ -131,6 +134,30 @@ EVENT_TYPE_MAP: Dict[int, str] = {
     25:   "rdp_session_reconnect",
 }
 
+# OpenSSH Operational Event 4 message patterns
+_SSH_FAILED_RE = None
+_SSH_INVALID_RE = None
+_SSH_ACCEPTED_RE = None
+
+
+def _ssh_regexes():
+    global _SSH_FAILED_RE, _SSH_INVALID_RE, _SSH_ACCEPTED_RE
+    import re
+    if _SSH_FAILED_RE is None:
+        _SSH_FAILED_RE = re.compile(
+            r"Failed password for (?:invalid user )?(\S+) from (\S+) port (\d+)",
+            re.IGNORECASE,
+        )
+        _SSH_INVALID_RE = re.compile(
+            r"Invalid user (\S+) from (\S+) port (\d+)",
+            re.IGNORECASE,
+        )
+        _SSH_ACCEPTED_RE = re.compile(
+            r"Accepted (?:password|publickey) for (\S+) from (\S+) port (\d+)",
+            re.IGNORECASE,
+        )
+    return _SSH_FAILED_RE, _SSH_INVALID_RE, _SSH_ACCEPTED_RE
+
 # Logon type descriptions (for Event 4624)
 LOGON_TYPE_NAMES: Dict[int, str] = {
     2:  "Interactive",
@@ -182,6 +209,7 @@ class EventLogWatcher:
             "system": True,
             "application": True,
             "rdp": True,
+            "ssh": True,
         }
 
         # Stats
@@ -252,6 +280,8 @@ class EventLogWatcher:
             return self._channel_flags.get("application", True)
         if "terminalservices" in cl or "rdp" in cl:
             return self._channel_flags.get("rdp", True)
+        if "openssh" in cl:
+            return self._channel_flags.get("ssh", True)
         return True
 
     def update_monitored_channels(self, channels: dict):
@@ -259,7 +289,7 @@ class EventLogWatcher:
         if not isinstance(channels, dict):
             return
         changed = False
-        for key in ("security", "system", "application", "rdp"):
+        for key in ("security", "system", "application", "rdp", "ssh"):
             if key in channels:
                 val = bool(channels.get(key))
                 if self._channel_flags.get(key) != val:
@@ -422,14 +452,29 @@ class EventLogWatcher:
             event_data = {}
             data_section = root.find("e:EventData", ns)
             if data_section is not None:
+                anon_parts = []
                 for data_el in data_section.findall("e:Data", ns):
                     name = data_el.get("Name", "")
                     value = data_el.text or ""
                     if name:
                         event_data[name] = value
+                    elif value:
+                        anon_parts.append(value)
+                if anon_parts and "Message" not in event_data:
+                    event_data["Message"] = " ".join(anon_parts)
 
-            # Build structured result
-            event_type = EVENT_TYPE_MAP.get(event_id, f"unknown_{event_id}")
+            # OpenSSH Operational: Event 4 text is Failed/Accepted/Invalid user
+            ssh_parsed = None
+            if "OpenSSH" in (channel or "") or "OpenSSH" in (provider or ""):
+                ssh_parsed = self._parse_openssh_message(
+                    event_data.get("Message") or event_data.get("param1") or ""
+                )
+                if not ssh_parsed:
+                    return None  # ignore noise (server start, etc.)
+                event_type = ssh_parsed["event_type"]
+            else:
+                event_type = EVENT_TYPE_MAP.get(event_id, f"unknown_{event_id}")
+
             safe_raw = self._sanitize_event_data(event_data, event_id)
 
             result = {
@@ -452,7 +497,7 @@ class EventLogWatcher:
                 "result": self._extract_result(event_data, event_id),
                 "logon_type": self._extract_logon_type(event_data, event_id),
                 "target_service": self._detect_service(event_id, channel, event_data),
-                "target_port": self._detect_port(event_id, event_data),
+                "target_port": self._detect_port(event_id, event_data, channel),
                 "auth_package": (
                     event_data.get("AuthenticationPackageName")
                     or event_data.get("AuthenticationPackage")
@@ -466,11 +511,26 @@ class EventLogWatcher:
                 "status": event_data.get("Status", ""),
                 "substatus": event_data.get("SubStatus", ""),
                 "workstation": event_data.get("WorkstationName", ""),
-                "process_name": event_data.get("NewProcessName", event_data.get("ProcessName", "")),
+                "process_name": event_data.get(
+                    "NewProcessName", event_data.get("ProcessName", "")
+                ),
                 "service_name": event_data.get("ServiceName", ""),
                 # Local correlation only — identity events use a whitelist.
                 "raw_data": safe_raw,
             }
+
+            if ssh_parsed:
+                result["source_ip"] = ssh_parsed.get("source_ip") or result["source_ip"]
+                result["username"] = ssh_parsed.get("username") or result["username"]
+                result["target_service"] = "SSH"
+                result["target_port"] = int(
+                    ssh_parsed.get("port") or result.get("target_port") or 22
+                )
+                result["auth_package"] = "sshd"
+                result["logon_process"] = "sshd"
+                result["result"] = (
+                    "success" if "successful" in event_type else "failure"
+                )
 
             return result
 
@@ -605,6 +665,8 @@ class EventLogWatcher:
         """
         if event_id in (18453, 18456, 15457, 17135):
             return "MSSQL"
+        if "OpenSSH" in (channel or ""):
+            return "SSH"
         if event_id in (1149, 21, 24, 25) or "TerminalServices" in (channel or ""):
             if event_id == 1149:
                 note_rdp_source_ip(
@@ -650,21 +712,78 @@ class EventLogWatcher:
         return "System"
 
     @staticmethod
-    def _detect_port(event_id: int, data: dict) -> int:
-        """Infer target port if possible."""
+    def _parse_openssh_message(message: str) -> Optional[dict]:
+        """Parse OpenSSH Operational Event 4 text → fail/success fields."""
+        text = (message or "").strip()
+        if not text:
+            return None
+        failed_re, invalid_re, accepted_re = _ssh_regexes()
+        m = failed_re.search(text)
+        if m:
+            return {
+                "event_type": "failed_logon",
+                "username": m.group(1),
+                "source_ip": m.group(2),
+                "port": int(m.group(3)),
+            }
+        m = invalid_re.search(text)
+        if m:
+            return {
+                "event_type": "failed_logon",
+                "username": m.group(1),
+                "source_ip": m.group(2),
+                "port": int(m.group(3)),
+            }
+        m = accepted_re.search(text)
+        if m:
+            return {
+                "event_type": "successful_logon",
+                "username": m.group(1),
+                "source_ip": m.group(2),
+                "port": int(m.group(3)),
+            }
+        return None
+
+    @staticmethod
+    def _detect_port(event_id: int, data: dict, channel: str = "") -> int:
+        """Infer target port; prefer real listen port (relocate-aware)."""
+        try:
+            from client_service_ports import get_listen_port
+        except Exception:
+            get_listen_port = None  # type: ignore
+
+        def _port(svc: str, fallback: int) -> int:
+            if get_listen_port:
+                try:
+                    p = int(get_listen_port(svc, fallback) or 0)
+                    if p > 0:
+                        return p
+                except Exception:
+                    pass
+            return int(fallback)
+
+        if "OpenSSH" in (channel or ""):
+            try:
+                p = int(data.get("port") or 0)
+                if p > 0:
+                    return p
+            except (TypeError, ValueError):
+                pass
+            return _port("SSH", 22)
         if event_id in (18453, 18456, 15457, 17135):
-            return 1433
-        if event_id in (1149, 21, 24, 25):
-            return 3389
+            return _port("MSSQL", 1433)
+        if event_id in (1149, 21, 24, 25) or "TerminalServices" in (channel or ""):
+            return _port("RDP", 3389)
         if event_id in (4624, 4625):
-            # Same NLA heuristics as _detect_service — type 3 can still be RDP:3389.
-            svc = EventLogWatcher._detect_service(event_id, "", data)
+            svc = EventLogWatcher._detect_service(event_id, channel or "", data)
             if svc == "RDP":
-                return 3389
+                return _port("RDP", 3389)
             if svc == "MSSQL":
-                return 1433
+                return _port("MSSQL", 1433)
             if svc in ("Network", "SMB", "NETWORK"):
-                return 445
+                return _port("NETWORK", 445)
+            if svc == "SSH":
+                return _port("SSH", 22)
         return 0
 
     @staticmethod

@@ -980,10 +980,17 @@ class ThreatEngine:
         return False
 
     def _default_port_for_service(self, service: str) -> int:
-        """Case-insensitive default listen port (NETWORK→445, never leave known svc at 0)."""
+        """Case-insensitive default listen port (NETWORK→445; relocate-aware)."""
         key = (service or "").strip().upper()
         if not key:
             return 0
+        try:
+            from client_service_ports import get_listen_port
+            p = int(get_listen_port(key, 0) or 0)
+            if p > 0:
+                return p
+        except Exception:
+            pass
         return int(self._SERVICE_DEFAULT_PORTS.get(key, 0))
 
     @classmethod

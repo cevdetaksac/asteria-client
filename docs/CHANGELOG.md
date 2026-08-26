@@ -2,6 +2,16 @@
 
 Removed `docs/ux-review` screenshots, duplicate resilience/alert plan MDs. Contract **1.4.64** cloud checklist is SoT for dashboard work.
 
+# v4.9.109
+
+## Dual-channel real-port + bait Attacks (contract 1.4.76)
+- Honeypot on/off irrelevant for real RDP/MSSQL/SSH/MYSQL/Network fails → `/api/attack`
+- OpenSSH/Operational Event 4 Failed/Invalid → SSH
+- MySQL/MariaDB error-log “Access denied” watcher → MYSQL
+- IIS FTP W3C logs sc-status 530 → FTP
+- Listen-port cache (RDP registry + open_ports) so relocated RDP reports real port
+- Bait credential rows remain separate (`source=honeypot`)
+
 # v4.9.108
 
 ## Attack service classification (contract 1.4.75)

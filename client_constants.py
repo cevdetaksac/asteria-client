@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.108"  # 4625 RDP NLA vs NETWORK:445; attack enrich; port:0 fix
+VERSION = "4.9.109"  # Dual-channel real+bait; OpenSSH/MySQL/FTP logs; relocate ports
 
 
 

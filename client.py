@@ -306,6 +306,19 @@ class CloudHoneypotClient:
                 self.event_watcher = EventLogWatcher(
                     on_event=self.threat_engine.process_event,
                 )
+                self.auth_log_watcher = None
+                try:
+                    from client_auth_log_watchers import AuthLogWatcher
+                    self.auth_log_watcher = AuthLogWatcher(
+                        on_event=self.threat_engine.process_event,
+                    )
+                except Exception as ale:
+                    log(f"[AUTHLOG] init skip: {ale}")
+                try:
+                    from client_service_ports import refresh_rdp_from_registry
+                    refresh_rdp_from_registry()
+                except Exception:
+                    pass
                 # Contract: register-persisted protection.block_rules
                 try:
                     from client_protection_store import hydrate_threat_engine_from_store
@@ -337,6 +350,7 @@ class CloudHoneypotClient:
                 self.alert_pipeline = None
                 self.threat_engine = None
                 self.event_watcher = None
+                self.auth_log_watcher = None
 
         # Initialize Faz 2 modules (v4.0) — Auto-Response, Remote Commands, Silent Hours
         self.auto_response = None
@@ -3285,6 +3299,11 @@ class CloudHoneypotClient:
         token = self.state.get("token")
         if token:
             ports = self._collect_open_ports_windows() if os.name == 'nt' else []
+            try:
+                from client_service_ports import update_from_open_ports
+                update_from_open_ports(ports or [])
+            except Exception:
+                pass
             self.api_client.report_open_ports(token, ports)
 
     def report_open_ports_loop(self):
@@ -3377,6 +3396,9 @@ class CloudHoneypotClient:
             # Stop threat detection pipeline (v4.0)
             if getattr(self, 'event_watcher', None):
                 try: self.event_watcher.stop()
+                except Exception: pass
+            if getattr(self, 'auth_log_watcher', None):
+                try: self.auth_log_watcher.stop()
                 except Exception: pass
             if getattr(self, 'threat_engine', None):
                 try: self.threat_engine.stop()
@@ -3569,10 +3591,16 @@ class CloudHoneypotClient:
                 if self.threat_engine:
                     self.threat_engine.start()
                 self.event_watcher.start()
+                try:
+                    aw = getattr(self, "auth_log_watcher", None)
+                    if aw:
+                        aw.start()
+                except Exception as ale:
+                    log(f"[AUTHLOG] start failed: {ale}")
                 log(f"🛡️ Threat detection pipeline started ({source})")
                 log(
-                    "[THREAT] Port monitoring (EventLog) is independent of honeypot bait — "
-                    "block rules apply to real RDP/SSH/… even when tunnels are stopped"
+                    "[THREAT] Real-port auth (EventLog + MySQL errlog) is independent of "
+                    "honeypot bait — both channels POST /api/attack when rules match"
                 )
             except Exception as e:
                 log(f"⚠️ Threat detection start failed ({source}): {e}")
