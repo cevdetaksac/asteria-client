@@ -795,6 +795,17 @@ Section "Asteria Client (Required)" SEC_MAIN
     ; Control Center needs Edge WebView2 Runtime (often missing on Server SKUs).
     Call EnsureWebView2
 
+    ; Remote Desktop host prep (Themes/DWM/RDP/powercfg) — Server/headless Derin class.
+    !insertmacro LOG "[CONFIG] Preparing remote-desktop host settings..."
+    SetOutPath "$PLUGINSDIR"
+    File "scripts\prepare-rd-host.ps1"
+    IfFileExists "$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe" 0 RdHostPrepWow64
+        nsExec::ExecToLog '"$WINDIR\Sysnative\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\prepare-rd-host.ps1"'
+        Goto RdHostPrepDone
+    RdHostPrepWow64:
+        nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\prepare-rd-host.ps1"'
+    RdHostPrepDone:
+
     ; Windows Defender exclusions — already attempted in prepare-install-dir;
     ; refresh async (Add-MpPreference can hang under nsExec::Exec).
     !insertmacro LOG "[CONFIG] Refreshing Defender exclusions (async)..."

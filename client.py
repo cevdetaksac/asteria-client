@@ -686,8 +686,13 @@ class CloudHoneypotClient:
             try:
                 from client_update_ui import maybe_mark_done_on_startup
                 maybe_mark_done_on_startup(__version__)
-            except Exception:
-                pass
+            except Exception as e:
+                log(f"[LIFECYCLE] update-ui mark error: {e}")
+            try:
+                from client_rd_host_prep import ensure_rd_host_prep_on_boot
+                ensure_rd_host_prep_on_boot()
+            except Exception as e:
+                log(f"[RD-HOST-PREP] startup skip: {e}")
 
         if _gui_fast:
             threading.Thread(

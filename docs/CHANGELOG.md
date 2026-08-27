@@ -2,6 +2,14 @@
 
 Removed `docs/ux-review` screenshots, duplicate resilience/alert plan MDs. Contract **1.4.64** cloud checklist is SoT for dashboard work.
 
+# v4.9.116
+
+## Remote Desktop — Server PrintWindow + Active RDP fallback + host prep
+- PrintWindow: RedrawWindow, child HWND enum, retry; DXGI-on-Winlogon when GDI flat
+- Console Winlogon flat → Active RDP/Console Default (`active-rdp-fallback:*`)
+- Installer `prepare-rd-host.ps1` + daemon `client_rd_host_prep` (Themes/DWM/RDP/powercfg)
+- Contract **1.4.83** (C-RD-HOST-1/2)
+
 # v4.9.115
 
 ## Remote Desktop — fail dumps + password→Default + flat settle
