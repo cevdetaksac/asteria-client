@@ -76,7 +76,9 @@ WINLOGON_HELPER_FRAME_SEC = 5.0       # first non-flat chrome frame (C-RD-CHROME
 WINLOGON_HELPER_RETRY = 1             # one re-spawn; no command-thread attach storm
 WINLOGON_ONESHOT_WAIT_SEC = 3.0
 WINLOGON_HELPER_SETTLE_SEC = 0.35     # brief LogonUI paint; capture thread owns attach
-FOLLOW_ACCEPT_SEC = 3.0               # C-RD-FOLLOW helper respawn after logon
+FOLLOW_ACCEPT_SEC = 8.0               # C-RD-FOLLOW helper respawn after logon (Welcome)
+FOLLOW_DEFAULT_PROBE_SEC = 10.0       # wait for healthy Default pixels after switch
+FOLLOW_HELPER_RETRIES = 3             # spawn retries before DXGI in-process fallback
 FOLLOW_CHECK_SEC = 0.25
 HELPER_ACCEPT_SEC = 5.0               # non-winlogon helper accept (was 12s → 23s stacks)
 HELPER_FRAME_SEC = 5.0
@@ -1959,8 +1961,14 @@ class RemoteDesktopStreamer:
         self._last_helper_raw = None
         if self._use_user_helper:
             if not self._persistent_helper_connected():
-                if not self._start_persistent_helper():
-                    jpeg, w, h = self._grab_via_user_helper()
+                if not self._start_persistent_helper(accept_timeout=FOLLOW_ACCEPT_SEC):
+                    # Post-logon Default: keep JPEG-WS alive via in-process DXGI/GDI
+                    # instead of dropping every frame (FOLLOW-4 freeze).
+                    if not self._winlogon_mode:
+                        self._note_recovery("capture_dxgi_after_helper_miss")
+                        jpeg, w, h = self._grab_jpeg()
+                    else:
+                        jpeg, w, h = self._grab_via_user_helper()
                 else:
                     effective_fps, _quality, _width = self._effective_capture_settings()
                     jpeg, w, h = self._grab_via_persistent_helper(
@@ -1971,6 +1979,15 @@ class RemoteDesktopStreamer:
                 jpeg, w, h = self._grab_via_persistent_helper(
                     max(0.08, 2.0 / max(effective_fps, 1.0))
                 )
+            # Helper connected but empty/black during Welcome → bridge with DXGI.
+            if (
+                (not jpeg or w <= 0 or h <= 0 or len(jpeg or b"") < MIN_JPEG_BYTES)
+                and not self._winlogon_mode
+            ):
+                alt = self._grab_jpeg()
+                if alt[0] and alt[1] > 0 and alt[2] > 0:
+                    jpeg, w, h = alt
+                    self._note_recovery("capture_dxgi_bridge")
         else:
             jpeg, w, h = self._grab_jpeg()
             pid_sid, _ = self._session_ids()
@@ -4227,6 +4244,7 @@ class RemoteDesktopStreamer:
                 f"stream={stream_id}"
             )
             self._progress_live_emitted = False
+            self._last_activity = time.time()
             self.emit_stream_progress(
                 "switching",
                 f"Following console to Default (session {new_sid})",
@@ -4239,6 +4257,8 @@ class RemoteDesktopStreamer:
             )
             self._last_raw_hash = b""
             self._idle_skip_streak = 0
+            self._black_streak_started = 0.0
+            self._flat_streak_started = 0.0
             spawn = int(
                 self._helper_spawn_session_id
                 or (self._session_helper.session_id if self._session_helper else 0)
@@ -4256,18 +4276,30 @@ class RemoteDesktopStreamer:
             self._target_username = str(username or "").strip()
             self._desktop_name = "Default"
             self._use_user_helper = True
+            self._note_recovery(f"follow:{reason}")
+
+            started = False
             if respawn or not self._persistent_helper_connected():
-                self._stop_persistent_helper()
-                started = self._start_persistent_helper(accept_timeout=FOLLOW_ACCEPT_SEC)
-                if not started:
+                for attempt in range(1, int(FOLLOW_HELPER_RETRIES) + 1):
+                    self._stop_persistent_helper()
+                    self._note_recovery(f"follow_spawn_try:{attempt}")
+                    started = self._start_persistent_helper(
+                        accept_timeout=FOLLOW_ACCEPT_SEC
+                    )
+                    if started:
+                        self._note_recovery(f"follow_spawn_ok:{attempt}")
+                        break
                     log(
                         "[REMOTE-DESKTOP] C-RD-FOLLOW helper respawn failed "
+                        f"try={attempt}/{FOLLOW_HELPER_RETRIES} "
                         f"phase={self._last_helper_fail_phase} "
                         f"detail={self._last_helper_fail_detail}"
                     )
+                    time.sleep(0.35 * attempt)
+                if not started:
                     self.emit_stream_progress(
                         "degraded",
-                        "Post-logon Default helper spawn failed — retrying",
+                        "Post-logon Default helper spawn failed — DXGI fallback",
                         error="FOLLOW_HELPER_SPAWN_FAILED",
                         force=True,
                     )
@@ -4276,8 +4308,12 @@ class RemoteDesktopStreamer:
                         reason="follow_spawn_failed",
                         detail=str(self._last_helper_fail_detail or ""),
                     )
-                    return
+                    # Keep stream alive: in-process DXGI/GDI on Default.
+                    self._use_user_helper = False
+                    self._prefer_dxgi = True
+                    self._note_recovery("follow_dxgi_fallback")
             elif self._persistent_helper_connected():
+                started = True
                 fps, quality, max_width = self._effective_capture_settings()
                 self._session_helper.update_config({
                     "winlogon": False,
@@ -4290,13 +4326,21 @@ class RemoteDesktopStreamer:
                     "monitor": self._monitor_index,
                 })
             self._stream_id = stream_id
-            # Probe Default pixels before claiming Live (FOLLOW-4 / PIX-1).
+            # Probe Default pixels — Welcome can take several seconds (FOLLOW-4).
             jpeg2, w2, h2 = None, 0, 0
-            deadline = time.time() + 2.0
+            deadline = time.time() + float(FOLLOW_DEFAULT_PROBE_SEC)
             while time.time() < deadline:
-                jpeg2, w2, h2 = self._grab_via_persistent_helper(0.35)
-                if (not jpeg2 or len(jpeg2) < MIN_JPEG_BYTES) and self._last_helper_raw:
-                    jpeg2, w2, h2 = self._encode_helper_raw_jpeg()
+                if self._use_user_helper and self._persistent_helper_connected():
+                    jpeg2, w2, h2 = self._grab_via_persistent_helper(0.4)
+                    if (not jpeg2 or len(jpeg2) < MIN_JPEG_BYTES) and self._last_helper_raw:
+                        jpeg2, w2, h2 = self._encode_helper_raw_jpeg()
+                else:
+                    try:
+                        self._desktop_attached = False
+                        self._attach_input_desktop()
+                    except Exception:
+                        pass
+                    jpeg2, w2, h2 = self._grab_jpeg()
                 method = str(self._capture_method or "")
                 if (
                     jpeg2
@@ -4307,7 +4351,14 @@ class RemoteDesktopStreamer:
                     and "+flat" not in method
                 ):
                     break
-                time.sleep(0.08)
+                # Helper died mid-Welcome — respawn once more then DXGI.
+                if self._use_user_helper and not self._persistent_helper_connected():
+                    self._note_recovery("follow_helper_drop_mid_probe")
+                    if self._start_persistent_helper(accept_timeout=FOLLOW_ACCEPT_SEC):
+                        continue
+                    self._use_user_helper = False
+                    self._prefer_dxgi = True
+                time.sleep(0.12)
             self._enqueue_meta(force=True)
             method = str(self._capture_method or "")
             healthy = bool(
@@ -4322,6 +4373,7 @@ class RemoteDesktopStreamer:
                 try:
                     self._seq += 1
                     self._enqueue_ws_frame(jpeg2, w2, h2, self._seq)
+                    self._last_activity = time.time()
                 except Exception:
                     pass
                 self.emit_stream_progress(
@@ -4335,9 +4387,13 @@ class RemoteDesktopStreamer:
                     detail=f"default {w2}x{h2} method={method}",
                 )
             else:
+                # Do not stop the stream — keep capturing; Welcome may still paint.
+                self._use_user_helper = bool(self._persistent_helper_connected())
+                if not self._use_user_helper:
+                    self._prefer_dxgi = True
                 self.emit_stream_progress(
                     "degraded",
-                    "Switched to Default but no healthy desktop frame yet",
+                    "Switched to Default — waiting for desktop pixels",
                     error="FOLLOW_NO_DEFAULT_FRAME",
                     force=True,
                 )
@@ -4346,6 +4402,7 @@ class RemoteDesktopStreamer:
                     reason="follow_no_frame",
                     detail=f"method={method} jpeg={0 if not jpeg2 else len(jpeg2)}B",
                 )
+                self._note_recovery("follow_no_frame_keep_streaming")
         except Exception as exc:
             log(f"[REMOTE-DESKTOP] C-RD-FOLLOW error: {exc}")
         finally:

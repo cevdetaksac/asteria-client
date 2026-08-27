@@ -787,6 +787,26 @@ class TestDecideConsoleFollow(unittest.TestCase):
             "unlocked_explorer",
         )
 
+    def test_welcome_leaves_even_if_logonui_lingers(self):
+        """FOLLOW-4: unlocked + user → Default even while LogonUI process lingers."""
+        from client_rd_winlogon import decide_console_follow
+
+        self.assertEqual(
+            decide_console_follow(
+                follow_console=True,
+                winlogon_mode=True,
+                spawn_session_id=1,
+                console_sid=1,
+                console_username="administrator",
+                helper_desktop="Winlogon",
+                logonui_hwnd=1,
+                session_locked=False,
+                explorer_present=False,
+                logonui_present=True,
+            ),
+            "post_logon_welcome",
+        )
+
     def test_resolve_unlocked_without_explorer_is_default(self):
         from client_rd_winlogon import resolve_console_capture_mode
 

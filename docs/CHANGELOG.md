@@ -2,6 +2,14 @@
 
 Removed `docs/ux-review` screenshots, duplicate resilience/alert plan MDs. Contract **1.4.64** cloud checklist is SoT for dashboard work.
 
+# v4.9.117
+
+## Remote Desktop — post-logon follow keeps streaming (FOLLOW-4)
+- Leave Winlogon on WTS unlock even if LogonUI process lingers (Welcome)
+- Default helper: longer accept/probe, 3 spawn retries, DXGI in-process bridge
+- Do not stop stream on `follow_no_frame` — keep JPEG-WS alive
+- Contract **1.4.84** (FOLLOW-4 / FOLLOW-10)
+
 # v4.9.116
 
 ## Remote Desktop — Server PrintWindow + Active RDP fallback + host prep

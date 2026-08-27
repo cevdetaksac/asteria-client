@@ -147,6 +147,10 @@ def decide_console_follow(
         # Shell starting after password ("Windows is getting ready") — leave
         # Winlogon helper before frames freeze on the welcome surface.
         return "post_logon"
+    # WTS unlocked + username: LogonUI.exe can linger on Welcome / "getting
+    # ready". Staying on Winlogon freezes the last logon JPEG (FOLLOW-4).
+    if user and unlocked:
+        return "post_logon_welcome"
     # Stay on Winlogon while lock/LogonUI is still the interactive surface.
     return None
 

@@ -42,7 +42,8 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.116"  # RD: Server PrintWindow harden; Active RDP fallback; host prep install/boot
+VERSION = "4.9.117"  # RD: post-logon follow Welcome→Default; helper retry + DXGI bridge
+
 
 
 
