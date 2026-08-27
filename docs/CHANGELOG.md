@@ -2,6 +2,14 @@
 
 Removed `docs/ux-review` screenshots, duplicate resilience/alert plan MDs. Contract **1.4.64** cloud checklist is SoT for dashboard work.
 
+# v4.9.112
+
+## Remote Desktop — rich capture_diag on unhealthy pixels (contract 1.4.79)
+- `capture_diag` adds `healthy`, `layer`, `faults[]`, `root_cause`, `advice`, `blame`
+- Derin-class `LOGONUI_PRESENT_BUT_FLAT` → `blame=client` / `layer=client_capture`
+- Emit on probe withhold, flat/black streak (≥2s), and terminal flat/black fail
+- Same object on `t:meta.capture_diag` and Start result `data.capture_diag`
+
 # v4.9.111
 
 ## Remote Desktop — honor cloud websocket-primary Start

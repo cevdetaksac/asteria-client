@@ -251,6 +251,8 @@ class RemoteDesktopStreamer:
         self._last_helper_fail_phase = ""
         self._last_helper_fail_detail = ""
         self._last_stream_error = ""
+        self._last_unhealthy_jpeg_bytes = 0
+        self._last_diag_emit_mono = 0.0
         self._capture_method = "none"
         self._stream_started_at = 0.0
         self._use_user_helper = False  # Session 0 / other session → CreateProcessAsUser helper
@@ -549,6 +551,8 @@ class RemoteDesktopStreamer:
             self._last_helper_fail_phase = ""
             self._last_helper_fail_detail = ""
             self._last_stream_error = ""
+            self._last_unhealthy_jpeg_bytes = 0
+            self._last_diag_emit_mono = 0.0
             self._last_good_jpeg = None
             self._last_good_wh = (0, 0)
             self._use_user_helper = False
@@ -1242,6 +1246,12 @@ class RemoteDesktopStreamer:
                         "[REMOTE-DESKTOP] probe JPEG withheld "
                         f"(method={method_now} {w}x{h}) — not Live"
                     )
+                    self._maybe_emit_unhealthy_diag(
+                        reason="probe_unhealthy",
+                        detail=f"method={method_now} {w}x{h} jpeg={len(jpeg)}B",
+                        force=True,
+                        jpeg_len=len(jpeg),
+                    )
             except Exception:
                 pass
 
@@ -1367,6 +1377,7 @@ class RemoteDesktopStreamer:
             },
             "media": media,
             "capabilities": self._capabilities(),
+            "capture_diag": self._capture_diag_snapshot(),
             "stats": dict(self._stats),
         }
 
@@ -1931,6 +1942,10 @@ class RemoteDesktopStreamer:
             else:
                 if self._black_streak_started <= 0:
                     self._black_streak_started = now
+            self._maybe_emit_unhealthy_diag(
+                reason="flat_frame" if bad_flat else "black_frame",
+                jpeg_len=len(jpeg) if jpeg else 0,
+            )
             # Session-0 BitBlt cannot recover Winlogon chrome — re-pull helper.
             if self._use_user_helper and self._persistent_helper_connected():
                 try:
@@ -2077,6 +2092,10 @@ class RemoteDesktopStreamer:
             f"unbroken black for ≥{WINLOGON_BLACK_FAIL_SECONDS:.0f}s "
             f"(method={self._capture_method})"
         )
+        self._maybe_emit_unhealthy_diag(
+            reason="winlogon_capture_black",
+            force=True,
+        )
         self.emit_stream_progress(
             "failed",
             f"Unbroken black for ≥{WINLOGON_BLACK_FAIL_SECONDS:.0f}s",
@@ -2121,6 +2140,10 @@ class RemoteDesktopStreamer:
             "[REMOTE-DESKTOP] ✖ winlogon_capture_flat — "
             f"unbroken solid fill for ≥{WINLOGON_FLAT_FAIL_SECONDS:.0f}s "
             f"(var={self._last_frame_variance:.1f} method={self._capture_method})"
+        )
+        self._maybe_emit_unhealthy_diag(
+            reason="winlogon_capture_flat",
+            force=True,
         )
         self.emit_stream_progress(
             "failed",
@@ -4986,6 +5009,41 @@ class RemoteDesktopStreamer:
             env = console_capture_env(int(self._target_session_id or 0))
         except Exception:
             env = {}
+        media = {}
+        try:
+            media = dict(self._media.status() or {})
+        except Exception:
+            media = {}
+        flat = bool("+flat" in method or self._flat_streak_started > 0)
+        black = bool("+black" in method or self._black_streak_started > 0)
+        healthy = bool(
+            not flat
+            and not black
+            and self._chrome_detected
+            and int(self._stats.get("frames_sent") or 0) > 0
+        )
+        analysis = self._analyze_capture_faults(
+            method=method,
+            env=env if isinstance(env, dict) else {},
+            flat=flat,
+            black=black,
+            media=media,
+        )
+        flat_sec = (
+            max(0.0, time.time() - self._flat_streak_started)
+            if self._flat_streak_started > 0
+            else 0.0
+        )
+        black_sec = (
+            max(0.0, time.time() - self._black_streak_started)
+            if self._black_streak_started > 0
+            else 0.0
+        )
+        try:
+            from client_constants import VERSION as _VER
+            agent_ver = str(_VER)
+        except Exception:
+            agent_ver = ""
         return {
             "desktop": str(self._desktop_name or ""),
             "capture_method": method,
@@ -4994,11 +5052,11 @@ class RemoteDesktopStreamer:
             "helper_connected": bool(self._persistent_helper_connected()),
             "helper_token": str(self._last_helper_token_source or ""),
             "helper_fail_phase": str(self._last_helper_fail_phase or ""),
-            "helper_fail_detail": str(self._last_helper_fail_detail or "")[:240],
+            "helper_fail_detail": str(self._last_helper_fail_detail or "")[:320],
             "session_id": int(self._target_session_id or 0),
             "username": str(self._target_username or ""),
-            "black_frame": bool("+black" in method or self._black_streak_started > 0),
-            "flat_frame": bool("+flat" in method),
+            "black_frame": black,
+            "flat_frame": flat,
             "frame_variance": float(self._last_frame_variance or 0.0),
             "bright_ratio": float(self._last_frame_bright_ratio or 0.0),
             "logonui_hwnd_count": int(getattr(self, "_logonui_hwnd_count", 0) or 0),
@@ -5007,8 +5065,176 @@ class RemoteDesktopStreamer:
             "force_secure": bool(self._force_secure_desktop),
             "seq": int(self._seq or 0),
             "frames_sent": int(self._stats.get("frames_sent") or 0),
+            "frames_failed": int(self._stats.get("frames_failed") or 0),
+            "black_frames": int(self._stats.get("black_frames") or 0),
+            "flat_frames": int(self._stats.get("flat_frames") or 0),
+            "unhealthy_jpeg_bytes": int(self._last_unhealthy_jpeg_bytes or 0),
+            "flat_streak_sec": round(float(flat_sec), 2),
+            "black_streak_sec": round(float(black_sec), 2),
+            "healthy": bool(healthy),
+            "layer": analysis["layer"],
+            "faults": analysis["faults"],
+            "root_cause": analysis["root_cause"],
+            "advice": analysis["advice"],
+            "blame": analysis["blame"],
+            "agent_version": agent_ver,
+            "preferred_transport": str(self._preferred_transport or ""),
+            "transport": str(self._transport or ""),
+            "ws_ok": bool(self._ws_ok),
+            "prefer_dxgi": bool(self._prefer_dxgi),
+            "use_user_helper": bool(self._use_user_helper),
+            "in_session_helper": bool(self._in_session_helper),
+            "desktop_attached": bool(self._desktop_attached),
+            "desktop_attach_tid": int(self._desktop_attach_tid or 0) or None,
+            "media": {
+                "available": bool(media.get("available")),
+                "active": bool(media.get("active")),
+                "connection_state": str(media.get("connection_state") or ""),
+                "ice_state": str(media.get("ice_state") or ""),
+                "error": str(media.get("error") or "")[:200],
+                "jpeg_fallback_active": bool(media.get("jpeg_fallback_active", True)),
+            },
             "env": env,
         }
+
+    def _analyze_capture_faults(
+        self,
+        *,
+        method: str,
+        env: dict,
+        flat: bool,
+        black: bool,
+        media: dict,
+    ) -> dict:
+        """Classify unhealthy Live so cloud can separate client vs cloud blame."""
+        faults: list = []
+        helper_ok = bool(self._persistent_helper_connected())
+        phase = str(self._last_helper_fail_phase or "")
+        logonui = bool(env.get("logonui"))
+        hwnd = int(getattr(self, "_logonui_hwnd_count", 0) or 0)
+        frames_sent = int(self._stats.get("frames_sent") or 0)
+
+        if phase in ("spawn", "accept", "token", "create"):
+            faults.append(f"HELPER_{phase.upper()}")
+        if self._use_user_helper and not helper_ok and not phase:
+            faults.append("HELPER_DISCONNECTED")
+        if black:
+            faults.append("PIXEL_BLACK")
+        if flat:
+            faults.append("PIXEL_FLAT")
+        if flat and (logonui or hwnd > 0):
+            faults.append("LOGONUI_PRESENT_BUT_FLAT")
+        if helper_ok and (flat or black) and not self._chrome_detected:
+            faults.append("HELPER_CONNECTED_NO_CHROME")
+        if frames_sent <= 0 and self._running and (flat or black):
+            faults.append("NO_HEALTHY_FRAMES_ON_WIRE")
+        if bool(env.get("headless_hint")):
+            faults.append("HEADLESS_OR_ZERO_SCREEN")
+        if (
+            str(env.get("resolve_mode") or "") == "default"
+            and self._winlogon_mode
+            and not self._force_secure_desktop
+        ):
+            faults.append("RESOLVE_DEFAULT_BUT_WINLOGON_MODE")
+        if (
+            str(env.get("resolve_mode") or "") == "winlogon"
+            and not self._winlogon_mode
+            and str(self._desktop_name or "").lower() == "default"
+        ):
+            faults.append("RESOLVE_WINLOGON_BUT_DEFAULT_CAPTURE")
+        media_err = str(media.get("error") or "")
+        if media_err:
+            faults.append("WEBRTC_PEER_ERROR")
+        if not self._ws_ok and self._running:
+            faults.append("AGENT_WS_DOWN")
+
+        # Primary root cause (client system layer first — matches Derin lab).
+        if "HELPER_SPAWN" in " ".join(faults) or "HELPER_ACCEPT" in " ".join(faults) or "HELPER_TOKEN" in " ".join(faults) or "HELPER_CREATE" in " ".join(faults):
+            layer = "client_helper"
+            root = (
+                f"Session helper failed phase={phase or '?'} "
+                f"detail={str(self._last_helper_fail_detail or '')[:160]}"
+            )
+            advice = "Check SYSTEM privileges, WTS token, CreateProcessAsUser, lpDesktop=winsta0\\Winlogon"
+            blame = "client"
+        elif "LOGONUI_PRESENT_BUT_FLAT" in faults or (
+            flat and self._winlogon_mode and helper_ok
+        ):
+            layer = "client_capture"
+            root = (
+                "Winlogon/LogonUI is present but capture pixels are a solid fill "
+                f"(method={method or '?'}, var={float(self._last_frame_variance or 0):.1f}, "
+                f"hwnd={hwnd}, token={self._last_helper_token_source or '?'}). "
+                "GDI/BitBlt (or helper GDI) is not painting LogonUI chrome."
+            )
+            advice = (
+                "Client capture stack: reattach Winlogon desktop, PrintWindow LogonUI, "
+                "or DXGI on correct input desktop — not a Cloudflare/viewer issue"
+            )
+            blame = "client"
+        elif black and helper_ok:
+            layer = "client_capture"
+            root = (
+                f"Helper connected but frames are black (method={method or '?'} "
+                f"token={self._last_helper_token_source or '?'})"
+            )
+            advice = "Wrong desktop bind or Session-0 GDI; force Winlogon helper + input desktop"
+            blame = "client"
+        elif black or flat:
+            layer = "client_capture"
+            root = f"Unhealthy pixels method={method or '?'} flat={flat} black={black}"
+            advice = "Inspect desktop attach and capture path on the agent host"
+            blame = "client"
+        elif "AGENT_WS_DOWN" in faults:
+            layer = "agent_ws"
+            root = "Agent remote WS is down; JPEG-WS cannot reach the viewer"
+            advice = "Check agent outbound wss://asteria.run connectivity"
+            blame = "network_or_cloud"
+        elif "WEBRTC_PEER_ERROR" in faults and self._jpeg_ws_primary():
+            layer = "webrtc"
+            root = f"WebRTC peer error (non-fatal with websocket-primary): {media_err[:160]}"
+            advice = "Ignore for Live if JPEG-WS healthy; fix TURN/ICE only for WebRTC upgrade"
+            blame = "webrtc_optional"
+        else:
+            layer = "ok" if self._chrome_detected else "unknown"
+            root = ""
+            advice = ""
+            blame = "none" if layer == "ok" else "client"
+
+        return {
+            "layer": layer,
+            "faults": faults,
+            "root_cause": root[:480],
+            "advice": advice[:320],
+            "blame": blame,
+        }
+
+    def _maybe_emit_unhealthy_diag(
+        self,
+        *,
+        reason: str,
+        detail: str = "",
+        force: bool = False,
+        jpeg_len: int = 0,
+    ) -> None:
+        """Push full fault taxonomy to cloud while Live is degraded."""
+        if jpeg_len > 0:
+            self._last_unhealthy_jpeg_bytes = int(jpeg_len)
+        now = time.monotonic()
+        if not force and (now - float(self._last_diag_emit_mono or 0.0)) < 2.0:
+            return
+        snap = self._capture_diag_snapshot()
+        if snap.get("healthy") and not force:
+            return
+        self._last_diag_emit_mono = now
+        # Keep helper_fail_detail informative for Capture health banner.
+        if not self._last_helper_fail_detail and snap.get("root_cause"):
+            self._last_helper_fail_detail = str(snap.get("root_cause") or "")[:240]
+        self._enqueue_capture_diag(
+            phase="degraded" if not snap.get("healthy") else "live",
+            reason=str(reason or "unhealthy"),
+            detail=str(detail or snap.get("root_cause") or "")[:320],
+        )
 
     def _enqueue_capture_diag(
         self,
@@ -5019,6 +5245,7 @@ class RemoteDesktopStreamer:
     ) -> None:
         """Emit ``t:capture_diag`` so cloud can show Capture health without SSH."""
         try:
+            snap = self._capture_diag_snapshot()
             payload = {
                 "t": "capture_diag",
                 "protocol": 2,
@@ -5026,13 +5253,16 @@ class RemoteDesktopStreamer:
                 "phase": str(phase or ""),
                 "reason": str(reason or ""),
                 "detail": str(detail or "")[:320],
-                **self._capture_diag_snapshot(),
+                **snap,
             }
             self._q_put_text(json.dumps(payload))
             log(
                 f"[REMOTE-DESKTOP] capture_diag phase={phase} reason={reason} "
+                f"blame={payload.get('blame')} layer={payload.get('layer')} "
+                f"faults={payload.get('faults')} "
                 f"desk={payload.get('desktop')} method={payload.get('capture_method')} "
-                f"token={payload.get('helper_token')} var={payload.get('frame_variance')}"
+                f"token={payload.get('helper_token')} var={payload.get('frame_variance')} "
+                f"root={str(payload.get('root_cause') or '')[:120]}"
             )
         except Exception as exc:
             log(f"[REMOTE-DESKTOP] capture_diag emit failed: {exc}")

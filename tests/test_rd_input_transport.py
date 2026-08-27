@@ -9,6 +9,7 @@ real Windows desktop session (all injection primitives are stubbed).
 
 import time
 import unittest
+from unittest import mock
 
 from client_remote_desktop import (
     MOVE_RATE_LIMIT,
@@ -212,6 +213,40 @@ class TestTransportSelection(unittest.TestCase):
         self.assertGreaterEqual(fps, 30.0)
         self.assertGreaterEqual(quality, 72)
         self.assertFalse(rd._media_ready())
+
+    def test_capture_diag_blames_client_on_logonui_flat(self):
+        rd = RemoteDesktopStreamer(api_client=FakeApi(), token_getter=lambda: "tok")
+        rd._running = True
+        rd._winlogon_mode = True
+        rd._use_user_helper = True
+        rd._helper_spawned_winlogon = True
+        rd._capture_method = "persistent-winlogon-helper:gdi+flat"
+        rd._chrome_detected = False
+        rd._last_frame_variance = 0.0
+        rd._logonui_hwnd_count = 1
+        rd._session_helper = FakeMailbox()
+        rd._preferred_transport = "websocket"
+        with mock.patch(
+            "client_rd_winlogon.console_capture_env",
+            return_value={
+                "console_sid": 1,
+                "logonui": True,
+                "logonui_pids": 2,
+                "locked": False,
+                "explorer": False,
+                "resolve_mode": "winlogon",
+                "decision": "winlogon_because_logonui",
+                "headless_hint": False,
+            },
+        ):
+            snap = rd._capture_diag_snapshot()
+        self.assertFalse(snap["healthy"])
+        self.assertEqual(snap["blame"], "client")
+        self.assertEqual(snap["layer"], "client_capture")
+        self.assertIn("LOGONUI_PRESENT_BUT_FLAT", snap["faults"])
+        self.assertIn("PIXEL_FLAT", snap["faults"])
+        self.assertTrue(snap["root_cause"])
+        self.assertIn("capture", (snap["advice"] or "").lower())
 
     def test_ws_healthy_sends_no_http(self):
         api = FakeApi()
