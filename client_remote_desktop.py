@@ -53,6 +53,7 @@ HTTP_INPUT_POLL_SEC_WS = 2.0          # WS healthy → poll slowly (compat backu
 CRIT_ACK_TIMEOUT = 0.08              # short synchronous ACK for critical edges only
 OUT_TEXT_MAXLEN = 32                  # retained control/meta frames (latest-frame queue)
 WS_RECONNECT_SEC = 3.0
+WS_KEEPALIVE_SEC = 25.0
 META_EVERY_N_FRAMES = 5
 BLACK_MEAN_THRESHOLD = 6.0            # nearly-black capture → skip send
 # C-RD-CHROME-2: near-zero luma variance + no bright glyphs → solid fill (blue/grey)
@@ -181,10 +182,13 @@ class RemoteDesktopStreamer:
 
         self._lock = threading.Lock()
         self._running = False
+        self._agent_ws_enabled = False
         self._thread: Optional[threading.Thread] = None
         self._ws_thread: Optional[threading.Thread] = None
         self._input_poll_thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
+        self._ws_thread_stop = threading.Event()
+        self._last_ws_keepalive = 0.0
 
         self._fps = DEFAULT_FPS
         self._quality = DEFAULT_QUALITY
@@ -1204,12 +1208,7 @@ class RemoteDesktopStreamer:
                 daemon=True,
             )
             self._thread.start()
-            self._ws_thread = threading.Thread(
-                target=self._ws_loop,
-                name="RemoteDesktopWS",
-                daemon=True,
-            )
-            self._ws_thread.start()
+            self.ensure_agent_ws()
             self._input_poll_thread = threading.Thread(
                 target=self._http_input_poll_loop,
                 name="RemoteDesktopHttpInput",
@@ -1259,16 +1258,34 @@ class RemoteDesktopStreamer:
                 f"[REMOTE-DESKTOP] ▶ Stream started "
                 f"(fps={self._fps} q={self._quality} max_w={self._max_width} "
                 f"session={self._target_session_id} "
-                f"prefer=webrtc webrtc_avail={self._webrtc_available()})"
+                f"prefer={self._preferred_transport} "
+                f"webrtc_avail={self._webrtc_available()} ws={self._ws_ok})"
             )
             return {
                 "success": True,
-                "message": "remote stream started (webrtc preferred; jpeg-ws fallback)",
+                "message": (
+                    "remote stream started (jpeg-ws primary; webrtc optional)"
+                    if self._jpeg_ws_primary()
+                    else "remote stream started (webrtc preferred; jpeg-ws fallback)"
+                ),
                 "data": self.get_status(),
             }
 
+    def ensure_agent_ws(self) -> None:
+        """Keep ``wss://…/ws/remote/agent`` up so cloud status shows websocket:true."""
+        self._agent_ws_enabled = True
+        if self._ws_thread is not None and self._ws_thread.is_alive():
+            return
+        self._ws_thread_stop.clear()
+        self._ws_thread = threading.Thread(
+            target=self._ws_loop,
+            name="RemoteDesktopWS",
+            daemon=True,
+        )
+        self._ws_thread.start()
+
     def stop(self, reason: str = "user") -> dict:
-        """Stop capture + websocket."""
+        """Stop capture; leave agent WS connected (cloud wants websocket:true)."""
         with self._lock:
             was = self._running
             self._running = False
@@ -1294,10 +1311,15 @@ class RemoteDesktopStreamer:
         self._locked_encode_w = 0
         self._locked_encode_h = 0
         self._stop_persistent_helper()
-        self._close_ws()
-        self._transport = "idle"
+        # Keep agent WS — only drain stale video frames.
+        with self._out_lock:
+            self._pending_frame = None
+        if self._ws_ok:
+            self._transport = "websocket"
+        else:
+            self._transport = "idle"
         if was:
-            log(f"[REMOTE-DESKTOP] ⏹ Stream stopped ({reason})")
+            log(f"[REMOTE-DESKTOP] ⏹ Stream stopped ({reason}); agent WS kept up")
         return {
             "success": True,
             "message": f"remote stream stopped ({reason})",
@@ -1319,7 +1341,11 @@ class RemoteDesktopStreamer:
         media.setdefault("encoder", "aiortc" if media.get("available") else "")
         media.setdefault("target_bitrate_bps", None)
         # C-RD-P0-ICE-3: JPEG-WS stays active until ICE+DTLS verified.
-        media["jpeg_fallback_active"] = bool(not media_ready)
+        # Websocket-primary: JPEG is the live path (not a "fallback").
+        media["jpeg_fallback_active"] = bool(
+            self._jpeg_ws_primary() or not media_ready
+        )
+        media["jpeg_primary"] = bool(self._jpeg_ws_primary())
         media["healthy_frame"] = bool(self._frame_is_healthy())
         return {
             "streaming": self._running,
@@ -2054,7 +2080,8 @@ class RemoteDesktopStreamer:
         self._last_good_jpeg = jpeg
         self._last_good_wh = (w, h)
         self._dispatch_frame(token, jpeg, w, h, seq)
-        if not self._progress_live_emitted:
+        # Flat/black must never claim Live (cloud: gdi+flat ≠ Live).
+        if not self._progress_live_emitted and self._frame_is_healthy():
             self.emit_stream_progress(
                 "live",
                 "First real frame on the wire",
@@ -4754,19 +4781,33 @@ class RemoteDesktopStreamer:
         except Exception:
             ice = ""
         self._media_session_id = ""
+        # Peer fail must not tear down JPEG-WS (especially websocket-primary).
+        self._media_mode_applied = False
         if self._transport == "webrtc":
             self._transport = "websocket" if self._ws_ok else "http"
+        err_s = str(error or "")[:160]
         log(
-            f"[REMOTE-DESKTOP] WebRTC fallback to JPEG: {str(error)[:160]} "
-            f"(prev={prev} ice={ice or '?'} media_sid_cleared=1)"
+            f"[REMOTE-DESKTOP] WebRTC peer failed — JPEG-WS continues: {err_s} "
+            f"(prev={prev} ice={ice or '?'} primary={self._preferred_transport})"
         )
         try:
-            self.emit_stream_progress(
-                "webrtc",
-                f"WebRTC failed → JPEG-WS ({str(error)[:80]})",
-                error="WEBRTC_FALLBACK",
-                force=True,
-            )
+            if self._jpeg_ws_primary():
+                self.emit_stream_progress(
+                    "ws",
+                    f"WebRTC optional failed; JPEG-WS continues ({err_s[:80]})",
+                    force=True,
+                )
+            else:
+                self.emit_stream_progress(
+                    "webrtc",
+                    f"WebRTC failed → JPEG-WS ({err_s[:80]})",
+                    error="WEBRTC_FALLBACK",
+                    force=True,
+                )
+        except Exception:
+            pass
+        try:
+            self._sync_media_capture_mode()
         except Exception:
             pass
 
@@ -4853,17 +4894,22 @@ class RemoteDesktopStreamer:
     # ── WebSocket transport (single-thread send+recv) ─────────────
 
     def _ws_loop(self):
-        """Dedicated WS thread: create_connection + drain outbound queue + recv input."""
-        while self._running and not self._stop.is_set():
+        """Dedicated WS thread: create_connection + drain outbound queue + recv input.
+
+        Stays up for the agent lifetime (``ensure_agent_ws``) so cloud sees
+        ``websocket:true`` even between streams.
+        """
+        while self._agent_ws_enabled and not self._ws_thread_stop.is_set():
             token = self.token_getter()
             if not token or not self.api_client:
-                self._stop.wait(WS_RECONNECT_SEC)
+                self._ws_thread_stop.wait(WS_RECONNECT_SEC)
                 continue
             try:
                 import websocket
             except ImportError:
                 log("[REMOTE-DESKTOP] websocket-client missing — HTTP only")
-                self._transport = "http"
+                if self._running:
+                    self._transport = "http"
                 return
 
             api_base = getattr(self.api_client, "base_url", "") or ""
@@ -4895,26 +4941,44 @@ class RemoteDesktopStreamer:
                 self._ws_ok = True
                 self._transport = "websocket"
                 ws.send(json.dumps(self._hello_payload()))
-                self._enqueue_meta(force=True)
-                self.emit_stream_progress("ws", "Agent media WS up", force=True)
-                # Re-push last good frame so viewer is not blank while waiting
-                if (
-                    not self._media_ready()
-                    and self._last_good_jpeg
-                    and self._last_good_wh[0] > 0
-                ):
-                    self._enqueue_ws_frame(
-                        self._last_good_jpeg,
-                        self._last_good_wh[0],
-                        self._last_good_wh[1],
-                        max(1, self._seq),
-                    )
-                log("[REMOTE-DESKTOP] WS connected")
+                if self._running:
+                    self._enqueue_meta(force=True)
+                    self.emit_stream_progress("ws", "Agent media WS up", force=True)
+                    # Re-push last good frame so viewer is not blank while waiting
+                    if (
+                        not self._media_ready()
+                        and self._last_good_jpeg
+                        and self._last_good_wh[0] > 0
+                        and self._frame_is_healthy()
+                    ):
+                        self._enqueue_ws_frame(
+                            self._last_good_jpeg,
+                            self._last_good_wh[0],
+                            self._last_good_wh[1],
+                            max(1, self._seq),
+                        )
+                self._last_ws_keepalive = time.time()
+                log("[REMOTE-DESKTOP] WS connected (persistent agent channel)")
 
                 ws.settimeout(0.15)
-                while self._running and not self._stop.is_set():
+                while self._agent_ws_enabled and not self._ws_thread_stop.is_set():
                     # Drain outbound (meta + binary JPEG) on THIS thread
                     self._ws_flush_out(ws)
+                    now = time.time()
+                    if (
+                        not self._running
+                        and (now - float(self._last_ws_keepalive or 0.0))
+                        >= WS_KEEPALIVE_SEC
+                    ):
+                        self._last_ws_keepalive = now
+                        try:
+                            ws.send(json.dumps({
+                                "t": "ping",
+                                "protocol": 2,
+                                "role": "agent",
+                            }, separators=(",", ":")))
+                        except Exception:
+                            break
                     try:
                         msg = ws.recv()
                         if msg is not None:
@@ -4936,28 +5000,36 @@ class RemoteDesktopStreamer:
                 if self._running:
                     self._transport = "http"
                     self._stats["ws_reconnects"] += 1
+                elif self._agent_ws_enabled:
+                    self._transport = "idle"
+                    self._stats["ws_reconnects"] += 1
                 if ws is not None:
                     try:
                         ws.close()
                     except Exception:
                         pass
-                log("[REMOTE-DESKTOP] WS closed")
-
-            if self._running and not self._stop.is_set():
-                self._stop.wait(WS_RECONNECT_SEC)
+                log("[REMOTE-DESKTOP] WS closed (will reconnect if enabled)")
+            if self._agent_ws_enabled and not self._ws_thread_stop.is_set():
+                self._ws_thread_stop.wait(WS_RECONNECT_SEC)
 
     def _enqueue_meta(self, force: bool = False):
         if not force and self._seq % META_EVERY_N_FRAMES != 0:
             return
         media = self._media.status()
+        media_ready = self._media_ready()
         media["effective_capture_fps"] = (
-            self._media_fps if self._media_ready() else self._fps
+            self._media_fps if media_ready else self._fps
         )
         media["capture_quality"] = (
-            self._media_quality if self._media_ready() else self._quality
+            self._media_quality if media_ready else self._quality
         )
         media.setdefault("encoder", "aiortc" if media.get("available") else "")
         media.setdefault("target_bitrate_bps", None)
+        media["jpeg_fallback_active"] = bool(
+            self._jpeg_ws_primary() or not media_ready
+        )
+        media["jpeg_primary"] = bool(self._jpeg_ws_primary())
+        media["healthy_frame"] = bool(self._frame_is_healthy())
         meta = {
             "t": "meta",
             "protocol": 2,

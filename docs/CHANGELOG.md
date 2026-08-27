@@ -2,6 +2,14 @@
 
 Removed `docs/ux-review` screenshots, duplicate resilience/alert plan MDs. Contract **1.4.64** cloud checklist is SoT for dashboard work.
 
+# v4.9.113
+
+## Remote Desktop — persistent agent WS + JPEG primary honesty
+- `wss://…/ws/remote/agent` stays up (`ensure_agent_ws`); Stop no longer closes it
+- `gdi+flat` / unhealthy never emits `phase=live`
+- WebRTC peer setup failed → JPEG-WS continues; `jpeg_fallback_active` / start message match websocket-primary
+- Contract **1.4.80**
+
 # v4.9.112
 
 ## Remote Desktop — rich capture_diag on unhealthy pixels (contract 1.4.79)

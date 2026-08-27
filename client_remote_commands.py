@@ -1291,6 +1291,11 @@ class RemoteCommandExecutor:
                 )
             except Exception:
                 pass
+            try:
+                # Persistent /ws/remote/agent so cloud sees websocket:true before Start.
+                self._remote_desktop.ensure_agent_ws()
+            except Exception as exc:
+                log(f"[REMOTE-DESKTOP] ensure_agent_ws: {exc}")
         return self._remote_desktop
 
     def _cmd_remote_stream_start(self, params: dict) -> dict:

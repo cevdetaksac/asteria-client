@@ -248,6 +248,33 @@ class TestTransportSelection(unittest.TestCase):
         self.assertTrue(snap["root_cause"])
         self.assertIn("capture", (snap["advice"] or "").lower())
 
+    def test_stop_keeps_agent_ws_enabled(self):
+        rd = RemoteDesktopStreamer(api_client=FakeApi(), token_getter=lambda: "tok")
+        rd._agent_ws_enabled = True
+        rd._ws_ok = True
+        rd._running = True
+        rd._thread = None
+        with mock.patch.object(rd, "_stop_persistent_helper"), mock.patch.object(
+            rd, "_media"
+        ) as media:
+            media.stop = lambda: None
+            rd.stop(reason="test")
+        self.assertTrue(rd._agent_ws_enabled)
+        self.assertFalse(rd._running)
+        self.assertEqual(rd._transport, "websocket")
+
+    def test_jpeg_primary_keeps_fallback_flag_true(self):
+        rd = RemoteDesktopStreamer(
+            api_client=FakeApi(),
+            token_getter=lambda: "tok",
+            media_transport=FakeConnectedMedia(),
+        )
+        rd._preferred_transport = "websocket"
+        rd._capture_method = "persistent-winlogon-helper"
+        st = rd.get_status()
+        self.assertTrue(st["media"]["jpeg_fallback_active"])
+        self.assertTrue(st["media"]["jpeg_primary"])
+
     def test_ws_healthy_sends_no_http(self):
         api = FakeApi()
         rd = _make(api=api)
