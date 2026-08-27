@@ -1336,9 +1336,12 @@ class RemoteCommandExecutor:
             pre_logon=pre_logon,
             session_id_omitted=sid is None,
         )
-        want_winlogon = topo_mode in ("winlogon", "follow")
-        # C-RD-CON-3: cloud strips username; client also refuses bind on this path.
-        username = None if want_winlogon else (params.get("username") or None)
+        want_winlogon = topo_mode == "winlogon"
+        # Strip username only for lock/logon topology or omit-SID follow.
+        # Password prepare → Start with explicit SID + topology=session|follow
+        # must keep username so Default DXGI binds the user (4.9.115).
+        strip_user = want_winlogon or (topo_mode == "follow" and sid is None)
+        username = None if strip_user else (params.get("username") or None)
         result = rd.start(
             fps=float(params.get("fps", 6.0) or 6.0),
             quality=int(params.get("quality", 35) or 35),

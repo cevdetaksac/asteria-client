@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.114"  # RD: PrintWindow-first Winlogon chrome; attach honesty; SAM≠WTS Active
+VERSION = "4.9.115"  # RD: fail dumps; password→Default; flat settle + recovery meta
 
 
 

@@ -530,6 +530,11 @@ def prepare_remote_session(
                 "session_status": "Active",
                 "screen": {"w": int(w), "h": int(h)},
                 "method": method,
+                # Cloud MUST Start with these — not topology=follow / omit-SID
+                # (password → Default DXGI; 4.9.115).
+                "topology": "session",
+                "prefer": "default",
+                "force_secure": False,
             },
         }
     except Exception as e:

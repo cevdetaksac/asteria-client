@@ -2,6 +2,14 @@
 
 Removed `docs/ux-review` screenshots, duplicate resilience/alert plan MDs. Contract **1.4.64** cloud checklist is SoT for dashboard work.
 
+# v4.9.115
+
+## Remote Desktop — fail dumps + password→Default + flat settle
+- Local dump ring: `%ProgramData%\Asteria\rd_capture_diag\` (JSON + JPEG) on flat/black fail; wire `local_dump_path` / `recovery_steps` / `hwnd_classes`
+- Password prepare → Start: keep username; `prefer_default_on_unknown` for SID+user (Default DXGI); prepare returns `topology=session`
+- Soft-degraded settle even with hwnd≥1 when attached; PrintWindow retry before hard fail
+- Contract **1.4.82**
+
 # v4.9.114
 
 ## Remote Desktop — LogonUI chrome (C-RD-PIX) + sessions honesty

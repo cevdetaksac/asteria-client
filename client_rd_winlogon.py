@@ -391,12 +391,17 @@ def console_start_secure_desktop(
     session_locked: Optional[bool] = None,
     explorer_present: Optional[bool] = None,
     input_desktop: str = "",
+    prefer_default_on_unknown: bool = False,
 ) -> bool:
     """Winlogon helper when the *input* desktop is secure — not when WTS lists a user.
 
     Listed username + live Default is PIX-4. Listed username + Win+L is PIX-3.
     Unknown lock with a username used to skip Winlogon and paint user-helper
-    ``gdi+black`` (Derin-Web). Prefer Winlogon unless Default is proven live.
+    ``gdi+black`` (Derin-Web follow). Prefer Winlogon unless Default is proven live.
+
+    ``prefer_default_on_unknown=True``: password / explicit SID+user Start — if
+    LogonUI is absent and lock is not True, stay on Default (restore direct
+    user login). Follow / omit-SID keeps ``False`` (safe Winlogon bias).
     """
     desk = str(input_desktop or "").strip().lower()
     if desk == "winlogon":
@@ -414,6 +419,11 @@ def console_start_secure_desktop(
         and desk != "winlogon"
     ):
         return False
+    if prefer_default_on_unknown and not logonui_present and session_locked is not True:
+        # Explicit user session Start after prepare — do not force Winlogon on
+        # unreadable lock flags (password login regression in 4.9.10x).
+        if desk != "winlogon":
+            return False
     if explorer_present is False and session_locked is not False:
         return True
     # Unknown lock (None) must NOT unlock Default — Derin user-helper black.

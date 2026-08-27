@@ -64,7 +64,8 @@ MIN_JPEG_BYTES = 1500                 # API rejects tinier frames ("Frame too sm
 MIN_GOOD_JPEG_BYTES = 5 * 1024        # healthy 1280q35 frame is usually ≥5KB
 CAPTURE_FAIL_SECONDS = 10.0           # no frames in this window → fail stream
 WINLOGON_BLACK_FAIL_SECONDS = 2.0     # C-RD-P0-WL-4: unbroken black → fail
-WINLOGON_FLAT_FAIL_SECONDS = 3.0      # C-RD-PIX-3: ≤3s LogonUI chrome or fail
+WINLOGON_FLAT_FAIL_SECONDS = 4.0      # C-RD-PIX: settle PrintWindow then fail
+WINLOGON_FLAT_SETTLE_SECONDS = 4.0    # soft-degraded window even with hwnd≥1
 PROBE_TIMEOUT_SEC = 12.0              # legacy one-shot cold-start room
 # Logon/Winlogon start budgets.
 # 4.9.88/89 lab: mid-probe force_desktop_reattach SetThreadDesktop on the *command*
@@ -257,6 +258,9 @@ class RemoteDesktopStreamer:
         self._last_stream_error = ""
         self._last_unhealthy_jpeg_bytes = 0
         self._last_diag_emit_mono = 0.0
+        self._capture_recovery_steps: list = []
+        self._last_diag_dump_path = ""
+        self._last_hwnd_classes: list = []
         self._capture_method = "none"
         self._stream_started_at = 0.0
         self._use_user_helper = False  # Session 0 / other session → CreateProcessAsUser helper
@@ -557,6 +561,9 @@ class RemoteDesktopStreamer:
             self._last_stream_error = ""
             self._last_unhealthy_jpeg_bytes = 0
             self._last_diag_emit_mono = 0.0
+            self._capture_recovery_steps = []
+            self._last_diag_dump_path = ""
+            self._last_hwnd_classes = []
             self._last_good_jpeg = None
             self._last_good_wh = (0, 0)
             self._use_user_helper = False
@@ -710,7 +717,15 @@ class RemoteDesktopStreamer:
             else:
                 # Follow **and** SID Start: decide from input desktop / lock /
                 # LogonUI — not from WTS username alone (lab 4.9.103 SID FAIL).
-                self._apply_follow_secure_or_default()
+                # Password / explicit SID+user: unknown lock → Default (not Winlogon).
+                session_bound = bool(
+                    not force_secure
+                    and session_id is not None
+                    and str(self._target_username or "").strip()
+                )
+                self._apply_follow_secure_or_default(
+                    prefer_default_on_unknown=session_bound
+                )
             # C-RD-FOLLOW: omit-sid live Default must not spawn Winlogon helper.
             if self._follow_console and not self._force_secure_desktop:
                 self._maybe_skip_winlogon_for_live_console()
@@ -996,33 +1011,59 @@ class RemoteDesktopStreamer:
                 # Connected but only black/flat after retries.
                 if (blackish or flattish) and self._winlogon_mode:
                     hwnd_n = int(getattr(self, "_logonui_hwnd_count", 0) or 0)
-                    # C-RD-PIX-1/2: LogonUI hwnd present + flat GDI is a hard fail —
-                    # soft-degraded only when chrome has not appeared yet (hwnd=0).
-                    if (
+                    # Soft-degraded: keep helper while PrintWindow settle runs —
+                    # hwnd≥1 + attached still gets a settle window (Derin class).
+                    allow_settle = bool(
                         flattish
                         and not blackish
-                        and hwnd_n <= 0
                         and persistent_started
                         and jpeg
                         and w > 0
                         and h > 0
                         and len(jpeg) >= MIN_JPEG_BYTES
-                    ):
+                        and (
+                            hwnd_n <= 0
+                            or bool(self._desktop_attached)
+                        )
+                    )
+                    if allow_settle:
+                        # One more PrintWindow burst before declaring degraded.
+                        try:
+                            self._note_recovery("start_settle_printwindow")
+                            self.force_winlogon_recapture()
+                            jpeg2, w2, h2 = self._grab_via_persistent_helper(0.8)
+                            method2 = self._capture_method or ""
+                            if (
+                                jpeg2
+                                and w2 > 0
+                                and h2 > 0
+                                and "+flat" not in method2
+                                and "+black" not in method2
+                            ):
+                                jpeg, w, h = jpeg2, w2, h2
+                                flattish = False
+                                blackish = False
+                        except Exception:
+                            pass
+                    if allow_settle and flattish:
                         log(
                             "[REMOTE-DESKTOP] ⚠ winlogon start soft-degraded: "
                             f"flat settle method={self._capture_method} "
                             f"var={self._last_frame_variance:.1f} "
-                            f"hwnd={hwnd_n} "
-                            f"desk={self._desktop_name or '?'} — keep streaming"
+                            f"hwnd={hwnd_n} attached={bool(self._desktop_attached)} "
+                            f"desk={self._desktop_name or '?'} — keep streaming "
+                            f"≤{WINLOGON_FLAT_SETTLE_SECONDS:.0f}s"
                         )
                         self._last_helper_fail_phase = ""
+                        if self._flat_streak_started <= 0:
+                            self._flat_streak_started = time.time()
                         self.emit_stream_progress(
                             "degraded",
                             "Winlogon settle flat; waiting for LogonUI chrome",
                             error="",
                             force=True,
                         )
-                    else:
+                    elif flattish or blackish:
                         err = (
                             "winlogon_capture_flat"
                             if flattish and not blackish
@@ -1038,6 +1079,11 @@ class RemoteDesktopStreamer:
                         )
                         self._capture_method = self._capture_method or "none"
                         log(f"[REMOTE-DESKTOP] ✖ {err}: {msg}")
+                        self._persist_capture_fail_dump(
+                            reason=err,
+                            jpeg=jpeg,
+                            detail=msg,
+                        )
                         self._running = False
                         self._transport = "idle"
                         self.emit_stream_progress("failed", msg, error=err, force=True)
@@ -2170,6 +2216,21 @@ class RemoteDesktopStreamer:
             f"unbroken solid fill for ≥{WINLOGON_FLAT_FAIL_SECONDS:.0f}s "
             f"(var={self._last_frame_variance:.1f} method={self._capture_method})"
         )
+        try:
+            jpeg_dump = None
+            if self._use_user_helper and self._persistent_helper_connected():
+                jpeg_dump, _, _ = self._grab_via_persistent_helper(0.4)
+            self._persist_capture_fail_dump(
+                reason="winlogon_capture_flat",
+                jpeg=jpeg_dump,
+                detail=(
+                    f"streak≥{WINLOGON_FLAT_FAIL_SECONDS:.0f}s "
+                    f"var={self._last_frame_variance:.1f} "
+                    f"method={self._capture_method}"
+                ),
+            )
+        except Exception:
+            pass
         self._maybe_emit_unhealthy_diag(
             reason="winlogon_capture_flat",
             force=True,
@@ -2181,6 +2242,66 @@ class RemoteDesktopStreamer:
             force=True,
         )
         self.stop(reason="winlogon_capture_flat")
+
+    def _note_recovery(self, step: str) -> None:
+        try:
+            msg = str(step or "").strip()[:120]
+            if not msg:
+                return
+            steps = list(getattr(self, "_capture_recovery_steps", []) or [])
+            steps.append(f"{time.strftime('%H:%M:%S')}:{msg}")
+            self._capture_recovery_steps = steps[-24:]
+        except Exception:
+            pass
+
+    def _persist_capture_fail_dump(
+        self,
+        *,
+        reason: str,
+        jpeg: Optional[bytes] = None,
+        detail: str = "",
+    ) -> None:
+        """Rare-host forensics: JSON (+JPEG) under ProgramData\\Asteria\\rd_capture_diag."""
+        try:
+            from client_rd_capture_diag_dump import write_capture_fail_dump
+            hwnd_meta = {}
+            try:
+                from client_rd_winlogon import visible_surface_signature
+                state, tokens, count = visible_surface_signature()
+                hwnd_meta = {
+                    "ui_state": state,
+                    "tokens": sorted(list(tokens))[:40],
+                    "visible_count": int(count),
+                }
+            except Exception:
+                hwnd_meta = {}
+            if getattr(self, "_last_hwnd_classes", None):
+                hwnd_meta["classes"] = list(self._last_hwnd_classes)[:20]
+            diag = self._capture_diag_snapshot()
+            dump = write_capture_fail_dump(
+                reason=reason,
+                diag=diag,
+                extra={
+                    "detail": str(detail or "")[:400],
+                    "recovery_steps": list(
+                        getattr(self, "_capture_recovery_steps", []) or []
+                    ),
+                    "hwnd_meta": hwnd_meta,
+                    "desktop_attached": bool(self._desktop_attached),
+                    "desktop_name": str(self._desktop_name or ""),
+                    "helper_token": str(self._last_helper_token_source or ""),
+                    "prefer_dxgi": bool(self._prefer_dxgi),
+                    "winlogon_mode": bool(self._winlogon_mode),
+                    "force_secure": bool(self._force_secure_desktop),
+                    "follow_console": bool(self._follow_console),
+                },
+                jpeg=jpeg,
+                stream_id=str(self._stream_id or ""),
+            )
+            if dump.get("ok") and dump.get("path"):
+                self._last_diag_dump_path = str(dump.get("path") or "")
+        except Exception as exc:
+            log(f"[REMOTE-DESKTOP] persist capture dump failed: {exc}")
 
     def force_winlogon_recapture(self) -> None:
         """C-RD-CHROME-4: drop desktop bind so next grab reattaches after CAD."""
@@ -2606,13 +2727,16 @@ class RemoteDesktopStreamer:
                 ("hwnd-bitblt-logonui", self._grab_hwnd_bitblt_chrome),
             ):
                 try:
+                    self._note_recovery(f"try:{label}")
                     alt = grabber()
                 except Exception as exc:
                     log(f"[REMOTE-DESKTOP] {label} failed: {exc}")
+                    self._note_recovery(f"fail:{label}:{exc}")
                     alt = None
                 if self._frame_usable(alt):
                     img = alt
                     method = label
+                    self._note_recovery(f"ok:{label}")
                     break
 
         # DXGI only on Default. Secure input desktop → GDI / PrintWindow.
@@ -3053,6 +3177,12 @@ class RemoteDesktopStreamer:
             except Exception:
                 return []
         candidates.sort(key=lambda x: x[0], reverse=True)
+        try:
+            self._last_hwnd_classes = [
+                c[-1] for c in candidates[:12] if c[-1]
+            ]
+        except Exception:
+            self._last_hwnd_classes = []
         return candidates
 
     def _grab_printwindow_chrome(self):
@@ -3407,7 +3537,9 @@ class RemoteDesktopStreamer:
             pass
         return str(self._target_username or "").strip()
 
-    def _apply_follow_secure_or_default(self) -> None:
+    def _apply_follow_secure_or_default(
+        self, *, prefer_default_on_unknown: bool = False
+    ) -> None:
         """Follow / SID Start: Winlogon unless Default input desktop is proven live."""
         sid = int(self._target_session_id or 0)
         user = self._console_interactive_username()
@@ -3439,11 +3571,12 @@ class RemoteDesktopStreamer:
                     session_locked=locked,
                     explorer_present=explorer,
                     input_desktop=desk_hint,
+                    prefer_default_on_unknown=bool(prefer_default_on_unknown),
                 )
             )
         except Exception as exc:
             log(f"[REMOTE-DESKTOP] follow desktop probe: {exc}")
-            secure = True
+            secure = not prefer_default_on_unknown
         if secure:
             self._winlogon_mode = True
             self._prefer_dxgi = False
@@ -3452,7 +3585,8 @@ class RemoteDesktopStreamer:
             log(
                 f"[REMOTE-DESKTOP] secure desktop -> Winlogon "
                 f"(logonui={logonui} locked={locked} explorer={explorer} "
-                f"user={user!r} session={sid} desk={desk_hint or '?'})"
+                f"user={user!r} session={sid} desk={desk_hint or '?'} "
+                f"prefer_default_unknown={prefer_default_on_unknown})"
             )
             return
         self._winlogon_mode = False
@@ -3465,7 +3599,8 @@ class RemoteDesktopStreamer:
         self._desktop_name = "Default"
         log(
             f"[REMOTE-DESKTOP] unlocked Default -> DXGI "
-            f"session={sid} user={user!r} locked={locked} — skip Winlogon helper"
+            f"session={sid} user={user!r} locked={locked} "
+            f"prefer_default_unknown={prefer_default_on_unknown} — skip Winlogon helper"
         )
 
     def _maybe_skip_winlogon_for_live_console(self) -> None:
@@ -5311,6 +5446,12 @@ class RemoteDesktopStreamer:
             "healthy_frame": bool(healthy),
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "updated_mono": round(time.monotonic(), 3),
+            "recovery_steps": list(
+                getattr(self, "_capture_recovery_steps", []) or []
+            )[-12:],
+            "hwnd_classes": list(getattr(self, "_last_hwnd_classes", []) or [])[:12],
+            "local_dump_path": str(getattr(self, "_last_diag_dump_path", "") or ""),
+            "error": str(getattr(self, "_last_stream_error", "") or ""),
             "media": {
                 "available": bool(media.get("available")),
                 "active": bool(media.get("active")),

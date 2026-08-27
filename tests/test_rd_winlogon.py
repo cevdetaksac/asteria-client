@@ -460,6 +460,25 @@ class TestWinlogonStartContract(unittest.TestCase):
                 input_desktop="default",
             )
         )
+        # Password / SID+user Start: unknown lock + no LogonUI → Default.
+        self.assertFalse(
+            console_start_secure_desktop(
+                username="administrator",
+                logonui_present=False,
+                session_locked=None,
+                explorer_present=True,
+                input_desktop="default",
+                prefer_default_on_unknown=True,
+            )
+        )
+        self.assertTrue(
+            console_start_secure_desktop(
+                username="administrator",
+                logonui_present=True,
+                session_locked=None,
+                prefer_default_on_unknown=True,
+            )
+        )
 
     def test_resolve_console_capture_mode(self):
         from client_rd_winlogon import resolve_console_capture_mode
