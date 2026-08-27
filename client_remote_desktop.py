@@ -64,7 +64,7 @@ MIN_JPEG_BYTES = 1500                 # API rejects tinier frames ("Frame too sm
 MIN_GOOD_JPEG_BYTES = 5 * 1024        # healthy 1280q35 frame is usually ≥5KB
 CAPTURE_FAIL_SECONDS = 10.0           # no frames in this window → fail stream
 WINLOGON_BLACK_FAIL_SECONDS = 2.0     # C-RD-P0-WL-4: unbroken black → fail
-WINLOGON_FLAT_FAIL_SECONDS = 6.0      # grace for soft-degraded settle → chrome
+WINLOGON_FLAT_FAIL_SECONDS = 3.0      # C-RD-PIX-3: ≤3s LogonUI chrome or fail
 PROBE_TIMEOUT_SEC = 12.0              # legacy one-shot cold-start room
 # Logon/Winlogon start budgets.
 # 4.9.88/89 lab: mid-probe force_desktop_reattach SetThreadDesktop on the *command*
@@ -995,13 +995,13 @@ class RemoteDesktopStreamer:
                         }
                 # Connected but only black/flat after retries.
                 if (blackish or flattish) and self._winlogon_mode:
-                    # Soft-degraded start: keep helper alive when we have a settle
-                    # frame. Hard-fail only blocked chrome recovery + input lab
-                    # (4.9.88–89). Physical blank console still fails later via
-                    # WINLOGON_FLAT_FAIL_SECONDS if variance never recovers.
+                    hwnd_n = int(getattr(self, "_logonui_hwnd_count", 0) or 0)
+                    # C-RD-PIX-1/2: LogonUI hwnd present + flat GDI is a hard fail —
+                    # soft-degraded only when chrome has not appeared yet (hwnd=0).
                     if (
                         flattish
                         and not blackish
+                        and hwnd_n <= 0
                         and persistent_started
                         and jpeg
                         and w > 0
@@ -1012,7 +1012,7 @@ class RemoteDesktopStreamer:
                             "[REMOTE-DESKTOP] ⚠ winlogon start soft-degraded: "
                             f"flat settle method={self._capture_method} "
                             f"var={self._last_frame_variance:.1f} "
-                            f"hwnd={getattr(self, '_logonui_hwnd_count', 0)} "
+                            f"hwnd={hwnd_n} "
                             f"desk={self._desktop_name or '?'} — keep streaming"
                         )
                         self._last_helper_fail_phase = ""
@@ -1032,6 +1032,8 @@ class RemoteDesktopStreamer:
                             "Winlogon/GDI capture returned unbroken "
                             f"{'flat/blue' if err.endswith('flat') else 'black'} "
                             f"after retry (method={self._capture_method}, "
+                            f"hwnd={hwnd_n}, "
+                            f"attached={bool(self._desktop_attached)}, "
                             f"token={self._last_helper_token_source or 'none'})"
                         )
                         self._capture_method = self._capture_method or "none"
@@ -2563,6 +2565,15 @@ class RemoteDesktopStreamer:
                 log(f"[REMOTE-DESKTOP] DXGI grab failed: {exc}")
             return None
 
+    def _frame_usable(self, img) -> bool:
+        """True when pixels look like real chrome (not black/flat fill)."""
+        if img is None:
+            return False
+        try:
+            return not self._is_mostly_black(img) and not self._is_mostly_flat(img)
+        except Exception:
+            return False
+
     def _capture_screen_image(self):
         """Capture primary screen → PIL RGB Image (no encode). Returns (img, method)."""
         try:
@@ -2571,14 +2582,39 @@ class RemoteDesktopStreamer:
             log("[REMOTE-DESKTOP] Pillow (PIL) not available")
             return None, "none"
 
-        # Ensure this thread is on the interactive input desktop (RDP black-BitBlt fix)
-        self._attach_input_desktop()
+        # C-RD-PIX-1: Winlogon capture must bind winsta0\\Winlogon before any BitBlt.
+        attached = bool(self._attach_input_desktop())
+        if self._winlogon_mode and not attached:
+            log(
+                "[REMOTE-DESKTOP] Winlogon capture skipped — desktop not attached "
+                f"(desk={self._desktop_name or '?'})"
+            )
+            self._desktop_attached = False
+            return None, "none"
+
         origin_x, origin_y, native_w, native_h = self._get_capture_rect()
         self._screen_x, self._screen_y = origin_x, origin_y
         self._screen_w, self._screen_h = native_w, native_h
 
         img = None
         method = "none"
+        # C-RD-PIX-2: LogonUI / LockApp paint via DWM — BitBlt desktop DC is often
+        # a solid accent fill. Prefer PrintWindow / HWND BitBlt first on Winlogon.
+        if self._winlogon_mode:
+            for label, grabber in (
+                ("printwindow-logonui", self._grab_printwindow_chrome),
+                ("hwnd-bitblt-logonui", self._grab_hwnd_bitblt_chrome),
+            ):
+                try:
+                    alt = grabber()
+                except Exception as exc:
+                    log(f"[REMOTE-DESKTOP] {label} failed: {exc}")
+                    alt = None
+                if self._frame_usable(alt):
+                    img = alt
+                    method = label
+                    break
+
         # DXGI only on Default. Secure input desktop → GDI / PrintWindow.
         try_dxgi = (not self._winlogon_mode) and (
             str(self._desktop_name or "").lower() != "winlogon"
@@ -2587,15 +2623,21 @@ class RemoteDesktopStreamer:
             or self._in_session_helper
             or self._media_ready()
         )
-        if try_dxgi:
+        if img is None and try_dxgi:
             img = self._grab_dxgi()
             if img is not None:
                 method = "dxgi-desktop-duplication"
         # Prefer GDI BitBlt (more reliable than ImageGrab under elevation / DPI)
-        if img is None:
+        if img is None or (
+            self._winlogon_mode and not self._frame_usable(img)
+        ):
             try:
-                img = self._grab_gdi()
-                if img is not None:
+                gdi_img = self._grab_gdi()
+                if self._frame_usable(gdi_img):
+                    img = gdi_img
+                    method = "gdi"
+                elif img is None and gdi_img is not None:
+                    img = gdi_img
                     method = "gdi"
             except Exception as e:
                 log(f"[REMOTE-DESKTOP] GDI grab failed: {e}")
@@ -2655,32 +2697,23 @@ class RemoteDesktopStreamer:
                     f"session={sid}/{csid} state={state} method={method}")
             method = method + "+black"
         elif self._is_mostly_flat(img):
-            # C-RD-CHROME-1/2: reattach + PrintWindow before declaring solid fill.
+            # C-RD-CHROME-1/2: reattach + PrintWindow / HWND before declaring solid fill.
             recovered = False
             if self._winlogon_mode:
                 try:
                     self._desktop_attached = False
-                    self._attach_input_desktop()
-                    # Fresh BitBlt after rebind (LogonUI may have painted).
-                    retry = self._grab_gdi()
-                    if (
-                        retry is not None
-                        and not self._is_mostly_flat(retry)
-                        and not self._is_mostly_black(retry)
-                    ):
-                        img = retry
-                        method = "gdi-reattach"
-                        recovered = True
-                    if not recovered:
-                        alt = self._grab_printwindow_chrome()
-                        if (
-                            alt is not None
-                            and not self._is_mostly_flat(alt)
-                            and not self._is_mostly_black(alt)
+                    if self._attach_input_desktop():
+                        for label, grabber in (
+                            ("printwindow-logonui", self._grab_printwindow_chrome),
+                            ("hwnd-bitblt-logonui", self._grab_hwnd_bitblt_chrome),
+                            ("gdi-reattach", self._grab_gdi),
                         ):
-                            img = alt
-                            method = "printwindow-logonui"
-                            recovered = True
+                            alt = grabber()
+                            if self._frame_usable(alt):
+                                img = alt
+                                method = label
+                                recovered = True
+                                break
                 except Exception as exc:
                     log(f"[REMOTE-DESKTOP] flat recovery failed: {exc}")
             if not recovered:
@@ -2692,10 +2725,12 @@ class RemoteDesktopStreamer:
                     log(
                         f"[REMOTE-DESKTOP] ⚠ Flat Winlogon frame "
                         f"(var={var:.1f} bright={bright:.4f} "
-                        f"desk={self._desktop_name or '?'}) method={method}"
+                        f"desk={self._desktop_name or '?'} "
+                        f"attached={self._desktop_attached}) method={method}"
                     )
                 method = method + "+flat"
-                self._desktop_attached = False
+                # Keep attach flag honest — flat pixels ≠ detach; helper may still
+                # be bound while GDI paints accent fill.
 
         self._remember_frame_chrome(img, method)
         self._capture_method = method
@@ -2963,6 +2998,63 @@ class RemoteDesktopStreamer:
             except Exception:
                 pass
 
+    def _enum_capture_hwnd_candidates(self, min_side: int = 80):
+        """Visible top-level HWNDs on the current thread desktop (LogonUI boost)."""
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        candidates = []
+
+        @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        def _cb(hwnd, _lp):
+            try:
+                if not user32.IsWindowVisible(hwnd):
+                    return True
+                rect = wintypes.RECT()
+                if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                    return True
+                ww = int(rect.right - rect.left)
+                hh = int(rect.bottom - rect.top)
+                if ww < int(min_side) or hh < int(min_side):
+                    return True
+                area = ww * hh
+                cbuf = ctypes.create_unicode_buffer(256)
+                user32.GetClassNameW(hwnd, cbuf, 256)
+                cname = (cbuf.value or "").lower()
+                tbuf = ctypes.create_unicode_buffer(512)
+                user32.GetWindowTextW(hwnd, tbuf, 512)
+                title = (tbuf.value or "").lower()
+                boost = 0
+                for hint in (
+                    "logonui", "lockapp", "immersive", "authui", "credential",
+                    "windows.ui", "applicationframe", "statusview",
+                ):
+                    if hint in cname or hint in title:
+                        boost = 10_000_000
+                        break
+                candidates.append(
+                    (area + boost, hwnd, ww, hh, int(rect.left), int(rect.top), cname)
+                )
+            except Exception:
+                pass
+            return True
+
+        try:
+            EnumDesktopWindows = getattr(user32, "EnumDesktopWindows", None)
+            hdesk = user32.GetThreadDesktop(ctypes.windll.kernel32.GetCurrentThreadId())
+            if EnumDesktopWindows and hdesk:
+                EnumDesktopWindows(hdesk, _cb, 0)
+            else:
+                user32.EnumWindows(_cb, 0)
+        except Exception:
+            try:
+                user32.EnumWindows(_cb, 0)
+            except Exception:
+                return []
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        return candidates
+
     def _grab_printwindow_chrome(self):
         """PrintWindow visible top-level HWNDs (PW_RENDERFULLCONTENT) for LogonUI.
 
@@ -2983,58 +3075,14 @@ class RemoteDesktopStreamer:
         if width <= 0 or height <= 0:
             return None
 
-        candidates = []
-
-        @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-        def _cb(hwnd, _lp):
-            try:
-                if not user32.IsWindowVisible(hwnd):
-                    return True
-                rect = wintypes.RECT()
-                if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
-                    return True
-                ww = int(rect.right - rect.left)
-                hh = int(rect.bottom - rect.top)
-                if ww < 200 or hh < 200:
-                    return True
-                area = ww * hh
-                cbuf = ctypes.create_unicode_buffer(256)
-                user32.GetClassNameW(hwnd, cbuf, 256)
-                cname = (cbuf.value or "").lower()
-                boost = 0
-                for hint in (
-                    "logonui", "lockapp", "immersive", "authui", "credential",
-                    "windows.ui", "applicationframe",
-                ):
-                    if hint in cname:
-                        boost = 10_000_000
-                        break
-                candidates.append((area + boost, hwnd, ww, hh, int(rect.left), int(rect.top)))
-            except Exception:
-                pass
-            return True
-
-        try:
-            EnumDesktopWindows = getattr(user32, "EnumDesktopWindows", None)
-            hdesk = user32.GetThreadDesktop(ctypes.windll.kernel32.GetCurrentThreadId())
-            if EnumDesktopWindows and hdesk:
-                EnumDesktopWindows(hdesk, _cb, 0)
-            else:
-                user32.EnumWindows(_cb, 0)
-        except Exception:
-            try:
-                user32.EnumWindows(_cb, 0)
-            except Exception:
-                return None
-
+        candidates = self._enum_capture_hwnd_candidates(min_side=64)
         if not candidates:
             return None
-        candidates.sort(key=lambda x: x[0], reverse=True)
 
         # Compose into capture rect from largest / LogonUI-like windows.
         canvas = Image.new("RGB", (width, height), (0, 0, 0))
         painted = False
-        for _score, hwnd, ww, hh, wx, wy in candidates[:6]:
+        for _score, hwnd, ww, hh, wx, wy, _cname in candidates[:8]:
             hdc = memdc = bmp = old = None
             try:
                 hdc = user32.GetWindowDC(hwnd)
@@ -3080,6 +3128,99 @@ class RemoteDesktopStreamer:
                 canvas.paste(piece, (dx, dy))
                 painted = True
                 # One good LockApp / LogonUI surface is enough.
+                if _score >= 10_000_000:
+                    break
+            except Exception:
+                continue
+            finally:
+                try:
+                    if old is not None and memdc:
+                        gdi32.SelectObject(memdc, old)
+                except Exception:
+                    pass
+                try:
+                    if bmp:
+                        gdi32.DeleteObject(bmp)
+                except Exception:
+                    pass
+                try:
+                    if memdc:
+                        gdi32.DeleteDC(memdc)
+                except Exception:
+                    pass
+                try:
+                    if hdc:
+                        user32.ReleaseDC(hwnd, hdc)
+                except Exception:
+                    pass
+        if not painted:
+            return None
+        if self._is_mostly_black(canvas) or self._is_mostly_flat(canvas):
+            return None
+        return canvas
+
+    def _grab_hwnd_bitblt_chrome(self):
+        """BitBlt each LogonUI-like HWND window DC (PrintWindow alternative)."""
+        import ctypes
+        from ctypes import wintypes
+        try:
+            from PIL import Image
+        except ImportError:
+            return None
+
+        user32 = ctypes.windll.user32
+        gdi32 = ctypes.windll.gdi32
+        SRCCOPY_CAPTUREBLT = 0x40CC0020
+        left, top, width, height = self._get_capture_rect()
+        if width <= 0 or height <= 0:
+            return None
+
+        candidates = self._enum_capture_hwnd_candidates(min_side=64)
+        if not candidates:
+            return None
+
+        canvas = Image.new("RGB", (width, height), (0, 0, 0))
+        painted = False
+
+        class BITMAPINFOHEADER(ctypes.Structure):
+            _fields_ = [
+                ("biSize", wintypes.DWORD),
+                ("biWidth", wintypes.LONG),
+                ("biHeight", wintypes.LONG),
+                ("biPlanes", wintypes.WORD),
+                ("biBitCount", wintypes.WORD),
+                ("biCompression", wintypes.DWORD),
+                ("biSizeImage", wintypes.DWORD),
+                ("biXPelsPerMeter", wintypes.LONG),
+                ("biYPelsPerMeter", wintypes.LONG),
+                ("biClrUsed", wintypes.DWORD),
+                ("biClrImportant", wintypes.DWORD),
+            ]
+
+        for _score, hwnd, ww, hh, wx, wy, _cname in candidates[:8]:
+            hdc = memdc = bmp = old = None
+            try:
+                hdc = user32.GetWindowDC(hwnd)
+                if not hdc:
+                    continue
+                memdc = gdi32.CreateCompatibleDC(hdc)
+                bmp = gdi32.CreateCompatibleBitmap(hdc, ww, hh)
+                old = gdi32.SelectObject(memdc, bmp)
+                if not gdi32.BitBlt(memdc, 0, 0, ww, hh, hdc, 0, 0, SRCCOPY_CAPTUREBLT):
+                    continue
+                bi = BITMAPINFOHEADER()
+                bi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
+                bi.biWidth = ww
+                bi.biHeight = -hh
+                bi.biPlanes = 1
+                bi.biBitCount = 32
+                buf = (ctypes.c_char * (ww * hh * 4))()
+                gdi32.GetDIBits(memdc, bmp, 0, hh, buf, ctypes.byref(bi), 0)
+                piece = Image.frombuffer("RGB", (ww, hh), bytes(buf), "raw", "BGRX", 0, 1).copy()
+                if self._is_mostly_black(piece) or self._is_mostly_flat(piece):
+                    continue
+                canvas.paste(piece, (int(wx - left), int(wy - top)))
+                painted = True
                 if _score >= 10_000_000:
                     break
             except Exception:
@@ -4281,6 +4422,15 @@ class RemoteDesktopStreamer:
         desk = str(meta.get("desktop") or "").strip()
         if desk:
             self._desktop_name = desk
+        # Parent never attaches when helper owns capture — mirror helper bind.
+        if "desktop_attached" in meta:
+            try:
+                self._desktop_attached = bool(meta.get("desktop_attached"))
+            except Exception:
+                pass
+        elif desk.lower() == "winlogon" and self._winlogon_mode:
+            # Helper reported named Winlogon desktop ⇒ treat as attached for diag.
+            self._desktop_attached = True
 
         img = None
         if payload and width > 0 and height > 0:
@@ -5158,6 +5308,9 @@ class RemoteDesktopStreamer:
             "in_session_helper": bool(self._in_session_helper),
             "desktop_attached": bool(self._desktop_attached),
             "desktop_attach_tid": int(self._desktop_attach_tid or 0) or None,
+            "healthy_frame": bool(healthy),
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "updated_mono": round(time.monotonic(), 3),
             "media": {
                 "available": bool(media.get("available")),
                 "active": bool(media.get("active")),
@@ -5198,6 +5351,14 @@ class RemoteDesktopStreamer:
             faults.append("LOGONUI_PRESENT_BUT_FLAT")
         if helper_ok and (flat or black) and not self._chrome_detected:
             faults.append("HELPER_CONNECTED_NO_CHROME")
+        if (
+            self._winlogon_mode
+            and (flat or black)
+            and not bool(self._desktop_attached)
+            and not self._in_session_helper
+        ):
+            # Parent flag — helper may still be attached; see desktop_attached after sync.
+            faults.append("DESKTOP_ATTACH_FALSE")
         if frames_sent <= 0 and self._running and (flat or black):
             faults.append("NO_HEALTHY_FRAMES_ON_WIRE")
         if bool(env.get("headless_hint")):

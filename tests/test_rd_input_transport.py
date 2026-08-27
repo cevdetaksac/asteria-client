@@ -552,6 +552,33 @@ class TestWinlogonHelperInput(unittest.TestCase):
         self.assertTrue(rd._chrome_detected)
         self.assertEqual(rd._logonui_hwnd_count, 4)
         self.assertEqual(rd._flat_streak_started, 0.0)
+        self.assertTrue(rd._desktop_attached)
+
+    def test_sync_helper_mirrors_desktop_attached_flag(self):
+        rd = _make()
+        rd._winlogon_mode = True
+        rd._desktop_attached = False
+        rd._sync_helper_frame_telemetry(
+            {
+                "method": "printwindow-logonui",
+                "desktop": "Winlogon",
+                "desktop_attached": True,
+                "hwnd": 2,
+                "chrome_detected": True,
+                "frame_variance": 40.0,
+            }
+        )
+        self.assertTrue(rd._desktop_attached)
+        self.assertEqual(rd._desktop_name, "Winlogon")
+
+    def test_winlogon_capture_skips_when_attach_fails(self):
+        rd = _make()
+        rd._winlogon_mode = True
+        rd._attach_input_desktop = lambda: False
+        img, method = rd._capture_screen_image()
+        self.assertIsNone(img)
+        self.assertEqual(method, "none")
+        self.assertFalse(rd._desktop_attached)
 
     def test_protocol2_type_text_normalized(self):
         from client_remote_desktop import RemoteDesktopStreamer

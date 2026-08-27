@@ -1767,14 +1767,15 @@ class RemoteCommandExecutor:
                 "success": True,
                 "message": (
                     f"{len(users)} local user(s) "
-                    f"(active={enabled_n}, disabled={disabled_n})"
+                    f"(enabled={enabled_n}, disabled={disabled_n})"
                 ),
                 "data": {
                     "users": users,
                     "include_disabled": include_disabled,
                     "counts": {
                         "total": len(users),
-                        "active": enabled_n,
+                        "enabled": enabled_n,
+                        "active": enabled_n,  # legacy alias (= SAM enabled count)
                         "disabled": disabled_n,
                     },
                 },

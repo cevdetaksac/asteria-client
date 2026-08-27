@@ -512,6 +512,28 @@ def run_session_helper(
 
     def capture_loop():
         nonlocal prefer_raw
+
+        def _frame_meta(**extra):
+            meta = {
+                "frame_variance": float(
+                    getattr(rd, "_last_frame_variance", 0.0) or 0.0
+                ),
+                "chrome_detected": bool(
+                    getattr(rd, "_chrome_detected", False)
+                ),
+                "hwnd": int(
+                    getattr(rd, "_logonui_hwnd_count", 0) or 0
+                ),
+                "desktop": str(
+                    getattr(rd, "_desktop_name", "") or ""
+                ),
+                "desktop_attached": bool(
+                    getattr(rd, "_desktop_attached", False)
+                ),
+            }
+            meta.update(extra)
+            return meta
+
         while not stop.is_set():
             started = time.monotonic()
             try:
@@ -528,31 +550,19 @@ def run_session_helper(
                         rgb = img.convert("RGB").tobytes()
                         if len(rgb) <= MAX_PAYLOAD:
                             captured_mono = time.monotonic()
-                            channel.send("R", {
-                                "format": "rgb",
-                                "width": int(img.width),
-                                "height": int(img.height),
-                                "native_width": int(rd._screen_w or img.width),
-                                "native_height": int(rd._screen_h or img.height),
-                                "origin_x": int(rd._screen_x),
-                                "origin_y": int(rd._screen_y),
-                                "capture_ms": round((captured_mono - started) * 1000.0, 3),
-                                "capture_mono_ms": int(captured_mono * 1000),
-                                "method": method or "gdi",
-                                "flat_frame": False,
-                                "frame_variance": float(
-                                    getattr(rd, "_last_frame_variance", 0.0) or 0.0
-                                ),
-                                "chrome_detected": bool(
-                                    getattr(rd, "_chrome_detected", False)
-                                ),
-                                "hwnd": int(
-                                    getattr(rd, "_logonui_hwnd_count", 0) or 0
-                                ),
-                                "desktop": str(
-                                    getattr(rd, "_desktop_name", "") or ""
-                                ),
-                            }, rgb)
+                            channel.send("R", _frame_meta(
+                                format="rgb",
+                                width=int(img.width),
+                                height=int(img.height),
+                                native_width=int(rd._screen_w or img.width),
+                                native_height=int(rd._screen_h or img.height),
+                                origin_x=int(rd._screen_x),
+                                origin_y=int(rd._screen_y),
+                                capture_ms=round((captured_mono - started) * 1000.0, 3),
+                                capture_mono_ms=int(captured_mono * 1000),
+                                method=method or "gdi",
+                                flat_frame=False,
+                            ), rgb)
                             sent = True
                     elif img is not None and (
                         "+flat" in (method or "") or "+black" in (method or "")
@@ -565,63 +575,42 @@ def run_session_helper(
                             flat_now = "+flat" in method_now
                             black_now = "+black" in method_now
                             captured_mono = time.monotonic()
-                            channel.send("F", {
-                                "format": "jpeg",
-                                "width": width,
-                                "height": height,
-                                "native_width": int(rd._screen_w or width),
-                                "native_height": int(rd._screen_h or height),
-                                "origin_x": int(rd._screen_x),
-                                "origin_y": int(rd._screen_y),
-                                "capture_ms": round((captured_mono - started) * 1000.0, 3),
-                                "capture_mono_ms": int(captured_mono * 1000),
-                                "method": method_now,
-                                "flat_frame": bool(flat_now),
-                                "frame_variance": float(
-                                    getattr(rd, "_last_frame_variance", 0.0) or 0.0
-                                ),
-                                "chrome_detected": bool(
+                            channel.send("F", _frame_meta(
+                                format="jpeg",
+                                width=width,
+                                height=height,
+                                native_width=int(rd._screen_w or width),
+                                native_height=int(rd._screen_h or height),
+                                origin_x=int(rd._screen_x),
+                                origin_y=int(rd._screen_y),
+                                capture_ms=round((captured_mono - started) * 1000.0, 3),
+                                capture_mono_ms=int(captured_mono * 1000),
+                                method=method_now,
+                                flat_frame=bool(flat_now),
+                                chrome_detected=bool(
                                     getattr(rd, "_chrome_detected", False)
                                     and not flat_now
                                     and not black_now
                                 ),
-                                "hwnd": int(
-                                    getattr(rd, "_logonui_hwnd_count", 0) or 0
-                                ),
-                                "desktop": str(
-                                    getattr(rd, "_desktop_name", "") or ""
-                                ),
-                            }, jpeg)
+                            ), jpeg)
                             sent = True
                 if not sent:
                     jpeg, width, height = rd._grab_jpeg()
                     if jpeg and width > 0 and height > 0:
                         captured_mono = time.monotonic()
-                        channel.send("F", {
-                            "format": "jpeg",
-                            "width": width,
-                            "height": height,
-                            "native_width": int(rd._screen_w or width),
-                            "native_height": int(rd._screen_h or height),
-                            "origin_x": int(rd._screen_x),
-                            "origin_y": int(rd._screen_y),
-                            "capture_ms": round((captured_mono - started) * 1000.0, 3),
-                            "capture_mono_ms": int(captured_mono * 1000),
-                            "method": rd._capture_method,
-                            "flat_frame": "+flat" in (rd._capture_method or ""),
-                            "frame_variance": float(
-                                getattr(rd, "_last_frame_variance", 0.0) or 0.0
-                            ),
-                            "chrome_detected": bool(
-                                getattr(rd, "_chrome_detected", False)
-                            ),
-                            "hwnd": int(
-                                getattr(rd, "_logonui_hwnd_count", 0) or 0
-                            ),
-                            "desktop": str(
-                                getattr(rd, "_desktop_name", "") or ""
-                            ),
-                        }, jpeg)
+                        channel.send("F", _frame_meta(
+                            format="jpeg",
+                            width=width,
+                            height=height,
+                            native_width=int(rd._screen_w or width),
+                            native_height=int(rd._screen_h or height),
+                            origin_x=int(rd._screen_x),
+                            origin_y=int(rd._screen_y),
+                            capture_ms=round((captured_mono - started) * 1000.0, 3),
+                            capture_mono_ms=int(captured_mono * 1000),
+                            method=rd._capture_method,
+                            flat_frame="+flat" in (rd._capture_method or ""),
+                        ), jpeg)
             except Exception as exc:
                 try:
                     channel.send("E", {"error": str(exc)})

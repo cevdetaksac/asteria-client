@@ -144,7 +144,10 @@ def list_local_users(*, include_disabled: bool = True) -> List[Dict[str, Any]]:
                     "description": (u.get("Description") or "") or "",
                     "sid": sid,
                     "enabled": enabled,
-                    "status": "active" if enabled else "disabled",
+                    # SAM account state — never "active" (that word is WTS session state;
+                    # cloud password modal confused Administrator status=active with a live SID).
+                    "status": "enabled" if enabled else "disabled",
+                    "account_status": "enabled" if enabled else "disabled",
                     "protected": protected,
                     "can_enable": (not enabled) and (not protected),
                     "can_disable": enabled and (not protected),
@@ -195,15 +198,24 @@ def list_local_users(*, include_disabled: bool = True) -> List[Dict[str, Any]]:
         s = by_user.get(u["username"].lower())
         if s:
             st = str(s.get("status") or "").strip().lower()
-            # Only live interactive sessions (not Disc/Listen) — avoids
-            # showing "Oturumu kapat" for stale/disconnected rows.
+            # Only live interactive sessions (Active/Connected) — Disc/Listen must
+            # not mint a ghost session_id that cloud treats as an unlock target.
             live = st in ("active", "connected")
             u["has_session"] = live
-            u["session_id"] = s.get("session_id") if live else None
-            u["session_status"] = s.get("status") if live else None
-            if not live and s.get("status"):
-                # Keep disconnected hint for UI without enabling logoff.
+            if live:
+                try:
+                    sid_n = int(s.get("session_id") or 0)
+                except (TypeError, ValueError):
+                    sid_n = 0
+                u["session_id"] = sid_n or None
                 u["session_status"] = s.get("status")
+            else:
+                u["session_id"] = None
+                u["session_status"] = None
+        else:
+            u["has_session"] = False
+            u["session_id"] = None
+            u["session_status"] = None
 
     return users
 

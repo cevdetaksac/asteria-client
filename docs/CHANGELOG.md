@@ -2,6 +2,16 @@
 
 Removed `docs/ux-review` screenshots, duplicate resilience/alert plan MDs. Contract **1.4.64** cloud checklist is SoT for dashboard work.
 
+# v4.9.114
+
+## Remote Desktop — LogonUI chrome (C-RD-PIX) + sessions honesty
+- Winlogon: require desktop attach; PrintWindow / HWND BitBlt before GDI BitBlt
+- Helper mirrors `desktop_attached`; parent diag no longer stuck false
+- LogonUI hwnd + flat → hard fail (no soft-degraded Live); flat fail ≤3s
+- `capture_diag.updated_at` / `healthy_frame` fresh each snapshot
+- `list_local_users.status` = SAM `enabled`/`disabled` (not WTS Active); Disc ≠ session_id
+- Contract **1.4.81**
+
 # v4.9.113
 
 ## Remote Desktop — persistent agent WS + JPEG primary honesty
