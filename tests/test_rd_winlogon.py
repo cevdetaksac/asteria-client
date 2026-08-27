@@ -312,6 +312,69 @@ class TestWinlogonStartContract(unittest.TestCase):
         ):
             self.assertFalse(rd._should_promote_follow_to_winlogon())
 
+    def test_welcome_unlocked_without_explorer_stays_default(self):
+        """Hoş Geldiniz: WTS unlocked, explorer not up yet — do not promote."""
+        rd = self._make_rd()
+        rd._follow_console = True
+        rd._winlogon_mode = False
+        rd._target_session_id = 2
+        rd._capture_method = "persistent-user-helper:gdi+black"
+        rd._desktop_name = "Default"
+        with mock.patch(
+            "client_rd_winlogon.session_has_logonui", return_value=False
+        ), mock.patch(
+            "client_rd_winlogon.session_lock_state", return_value=False
+        ), mock.patch(
+            "client_rd_winlogon.session_has_process", return_value=False
+        ):
+            self.assertFalse(rd._should_promote_follow_to_winlogon())
+
+    def test_dxgi_retry_allowed_without_explorer(self):
+        """PIX-4 DXGI retry must run during Welcome (explorer optional)."""
+        rd = self._make_rd()
+        rd._winlogon_mode = False
+        rd._force_secure_desktop = False
+        rd._target_session_id = 2
+        rd._capture_method = "persistent-user-helper:gdi+black"
+        rd._desktop_name = "Default"
+        rd._prefer_dxgi = True
+        rd._fps = 30
+        rd._quality = 72
+        rd._max_width = 1920
+        rd._monitor_index = 0
+        rd._stats = {}
+        rd._dxcam = object()
+        rd._session_helper = None
+        rd._last_helper_raw = None
+        healthy = (b"\xff\xd8" + b"x" * 2000 + b"\xff\xd9", 1280, 720)
+
+        def _grab():
+            rd._capture_method = "dxgi-desktop-duplication"
+            return healthy
+
+        with mock.patch(
+            "client_rd_winlogon.session_has_logonui", return_value=False
+        ), mock.patch(
+            "client_rd_winlogon.session_lock_state", return_value=False
+        ), mock.patch(
+            "client_rd_winlogon.session_has_process", return_value=False
+        ), mock.patch.object(
+            rd, "_persistent_helper_connected", return_value=False
+        ), mock.patch.object(
+            rd, "_attach_input_desktop"
+        ), mock.patch.object(
+            rd, "_reset_dxgi_camera"
+        ), mock.patch.object(
+            rd, "_grab_jpeg", side_effect=_grab
+        ), mock.patch.object(
+            rd, "_media_ready", return_value=False
+        ), mock.patch.object(
+            rd, "_jpeg_ws_primary", return_value=True
+        ):
+            out = rd._retry_unlocked_dxgi_capture()
+        self.assertIsNotNone(out)
+        self.assertEqual(out[1], 1280)
+
     def test_follow_unlock_clears_force_secure(self):
         """Lock-row Start must still follow Default after password (FOLLOW-4)."""
         rd = self._make_rd()

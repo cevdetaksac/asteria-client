@@ -2,6 +2,14 @@
 
 Removed `docs/ux-review` screenshots, duplicate resilience/alert plan MDs. Contract **1.4.64** cloud checklist is SoT for dashboard work.
 
+# v4.9.118
+
+## Remote Desktop — Default post-logon black recovery (FOLLOW-4)
+- DXGI retry no longer requires explorer.exe (Welcome / Hoş Geldiniz)
+- After follow: Active Console/RDP Default helper respawn (`allow_default` HOST-2)
+- Capture loop: DXGI bridge on helper `gdi+black`; streak recover ≤1.5s
+- Contract **1.4.85**
+
 # v4.9.117
 
 ## Remote Desktop — post-logon follow keeps streaming (FOLLOW-4)

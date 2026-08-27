@@ -80,6 +80,8 @@ FOLLOW_ACCEPT_SEC = 8.0               # C-RD-FOLLOW helper respawn after logon (
 FOLLOW_DEFAULT_PROBE_SEC = 10.0       # wait for healthy Default pixels after switch
 FOLLOW_HELPER_RETRIES = 3             # spawn retries before DXGI in-process fallback
 FOLLOW_CHECK_SEC = 0.25
+# Post-logon Default can paint gdi+black while Welcome/DWM settles (Derin lab).
+DEFAULT_BLACK_RECOVER_SEC = 1.5
 HELPER_ACCEPT_SEC = 5.0               # non-winlogon helper accept (was 12s → 23s stacks)
 HELPER_FRAME_SEC = 5.0
 HELPER_ONESHOT_WAIT_SEC = 4.0
@@ -549,6 +551,8 @@ class RemoteDesktopStreamer:
             self._prefer_dxgi = False
             self._tscon_attempted = False
             self._active_rdp_fallback_attempted = False
+            self._default_black_recover_attempted = False
+            self._default_dxgi_retry_this_streak = False
             self._logonui_hwnd_count = 0
             self._chrome_diag_logged = False
             self._black_streak_started = 0.0
@@ -1128,11 +1132,10 @@ class RemoteDesktopStreamer:
                         blackish = "+black" in (self._capture_method or "")
                         flattish = "+flat" in (self._capture_method or "")
                     elif blackish:
-                        # PIX-4: unlocked Default + gdi black → retry DXGI, do not
-                        # declare winlogon_capture_black (lab 4.9.103 Run C).
-                        retried = self._retry_unlocked_dxgi_capture()
-                        if retried:
-                            jpeg, w, h = retried
+                        # PIX-4: unlocked Default + gdi black → retry DXGI / Active RDP.
+                        recovered = self._recover_default_black_capture()
+                        if recovered:
+                            jpeg, w, h = recovered
                             blackish = "+black" in (self._capture_method or "")
                         if blackish or not jpeg:
                             err = "winlogon_capture_black"
@@ -1140,7 +1143,7 @@ class RemoteDesktopStreamer:
                                 "Follow Default helper painted gdi+black "
                                 f"(method={self._capture_method}, "
                                 f"desk={self._desktop_name or '?'}); "
-                                "DXGI retry also failed"
+                                "DXGI/Active recovery also failed"
                             )
                             log(f"[REMOTE-DESKTOP] ✖ {err}: {msg}")
                             self._running = False
@@ -1980,12 +1983,27 @@ class RemoteDesktopStreamer:
                     max(0.08, 2.0 / max(effective_fps, 1.0))
                 )
             # Helper connected but empty/black during Welcome → bridge with DXGI.
+            method_bridge = str(self._capture_method or "")
             if (
-                (not jpeg or w <= 0 or h <= 0 or len(jpeg or b"") < MIN_JPEG_BYTES)
-                and not self._winlogon_mode
+                not self._winlogon_mode
+                and (
+                    not jpeg
+                    or w <= 0
+                    or h <= 0
+                    or len(jpeg or b"") < MIN_JPEG_BYTES
+                    or "+black" in method_bridge
+                    or "+flat" in method_bridge
+                )
             ):
                 alt = self._grab_jpeg()
-                if alt[0] and alt[1] > 0 and alt[2] > 0:
+                alt_method = str(self._capture_method or "")
+                if (
+                    alt[0]
+                    and alt[1] > 0
+                    and alt[2] > 0
+                    and "+black" not in alt_method
+                    and "+flat" not in alt_method
+                ):
                     jpeg, w, h = alt
                     self._note_recovery("capture_dxgi_bridge")
         else:
@@ -2088,15 +2106,35 @@ class RemoteDesktopStreamer:
                         else:
                             self._stats["black_frames"] += 1
                             self._maybe_fail_winlogon_black()
+                            self._maybe_recover_default_black_streak()
                         return
                 else:
-                    self._stats["frames_failed"] += 1
-                    if bad_flat:
-                        self._maybe_fail_winlogon_flat()
+                    # Default post-logon: helper stays black — DXGI once, then streak recover.
+                    if not self._winlogon_mode and not bad_flat:
+                        recovered = None
+                        if not bool(
+                            getattr(self, "_default_dxgi_retry_this_streak", False)
+                        ):
+                            self._default_dxgi_retry_this_streak = True
+                            recovered = self._retry_unlocked_dxgi_capture()
+                        if recovered:
+                            jpeg, w, h = recovered
+                            self._black_streak_started = 0.0
+                            self._flat_streak_started = 0.0
+                            self._default_dxgi_retry_this_streak = False
+                        else:
+                            self._stats["frames_failed"] += 1
+                            self._stats["black_frames"] += 1
+                            self._maybe_recover_default_black_streak()
+                            return
                     else:
-                        self._stats["black_frames"] += 1
-                        self._maybe_fail_winlogon_black()
-                    return
+                        self._stats["frames_failed"] += 1
+                        if bad_flat:
+                            self._maybe_fail_winlogon_flat()
+                        else:
+                            self._stats["black_frames"] += 1
+                            self._maybe_fail_winlogon_black()
+                        return
             else:
                 self._invalidate_desktop_bind()
                 self._attach_input_desktop()
@@ -2143,6 +2181,7 @@ class RemoteDesktopStreamer:
         else:
             self._black_streak_started = 0.0
             self._flat_streak_started = 0.0
+            self._default_dxgi_retry_this_streak = False
 
         # Helper JPEG while WebRTC live: decode once → raw mailbox (no double encode).
         if self._media_ready() and self._use_user_helper:
@@ -2796,6 +2835,13 @@ class RemoteDesktopStreamer:
             img = self._grab_dxgi()
             if img is not None:
                 method = "dxgi-desktop-duplication"
+            else:
+                # Welcome / mid-follow: first DXGI tick often empty — reset once.
+                self._reset_dxgi_camera()
+                img = self._grab_dxgi()
+                if img is not None:
+                    method = "dxgi-desktop-duplication"
+                    self._note_recovery("ok:dxgi-default-retry")
         elif try_dxgi_winlogon:
             try:
                 self._note_recovery("try:dxgi-winlogon")
@@ -3846,14 +3892,27 @@ class RemoteDesktopStreamer:
             return jpeg2, w2, h2
         return None
 
-    def _fallback_flat_winlogon_to_active_rdp(self):
-        """C-RD-HOST-2: console Winlogon flat → Active RDP/Console user Default.
+    def _reset_dxgi_camera(self) -> None:
+        """Drop dxcam so the next grab re-creates Desktop Duplication."""
+        try:
+            if self._dxcam is not None:
+                try:
+                    self._dxcam.stop()
+                except Exception:
+                    pass
+            self._dxcam = None
+        except Exception:
+            self._dxcam = None
 
-        Derin/Ninety pattern: physical console LogonUI is PrintWindow-flat while an
-        Active RDP session already has a composable Default desktop (what classic
-        RDP shows). Mirror that session instead of failing the stream.
+    def _fallback_flat_winlogon_to_active_rdp(self, *, allow_default: bool = False):
+        """C-RD-HOST-2: flat/black → Active RDP/Console user Default.
+
+        Console Winlogon flat (Derin/Ninety PrintWindow miss) and post-logon
+        Default ``gdi+black`` / ``no_frame`` (allow_default) both use this path.
+        Prefer Active RDP; Active Console is allowed. Same-SID Console still
+        hard-respawns the Default helper with DXGI prefer after Welcome.
         """
-        if not self._winlogon_mode:
+        if not self._winlogon_mode and not allow_default:
             return None
         if bool(getattr(self, "_active_rdp_fallback_attempted", False)):
             return None
@@ -3892,11 +3951,16 @@ class RemoteDesktopStreamer:
         sid, user, proto = ranked[0][1], ranked[0][2], ranked[0][3]
         log(
             f"[REMOTE-DESKTOP] C-RD-HOST-2 active-rdp fallback "
-            f"console={console_sid} → session={sid} user={user!r} proto={proto}"
+            f"console={console_sid} → session={sid} user={user!r} proto={proto} "
+            f"allow_default={bool(allow_default)}"
         )
         self.emit_stream_progress(
             "switching",
-            f"Console Winlogon flat; attaching Active {proto} session {sid}",
+            (
+                f"Default black; respawning Active {proto} session {sid}"
+                if allow_default and not self._winlogon_mode
+                else f"Console Winlogon flat; attaching Active {proto} session {sid}"
+            ),
             force=True,
         )
         self._winlogon_mode = False
@@ -3906,14 +3970,33 @@ class RemoteDesktopStreamer:
         self._target_session_id = int(sid)
         self._target_username = user
         self._desktop_name = "Default"
+        self._use_user_helper = True
         self._capture_method = f"active-rdp-fallback:{proto}"
         self._stats["capture_method"] = self._capture_method
+        self._reset_dxgi_camera()
+        self._locked_encode_w = 0
+        self._locked_encode_h = 0
         self._stop_persistent_helper()
         if not self._start_persistent_helper(accept_timeout=FOLLOW_ACCEPT_SEC):
             log(
                 "[REMOTE-DESKTOP] active-rdp helper spawn failed "
                 f"phase={self._last_helper_fail_phase}"
             )
+            # In-process DXGI on Default may still paint after Welcome.
+            self._use_user_helper = False
+            jpeg2, w2, h2 = self._grab_jpeg()
+            method = str(self._capture_method or "")
+            if (
+                jpeg2
+                and w2 > 0
+                and h2 > 0
+                and len(jpeg2) >= MIN_JPEG_BYTES
+                and "+flat" not in method
+                and "+black" not in method
+            ):
+                self._capture_method = f"active-rdp-fallback:dxgi:{proto}"
+                self._stats["capture_method"] = self._capture_method
+                return jpeg2, w2, h2
             return None
         jpeg2, w2, h2 = self._grab_via_persistent_helper(1.0)
         if (not jpeg2 or len(jpeg2) < MIN_JPEG_BYTES) and self._last_helper_raw:
@@ -3932,13 +4015,29 @@ class RemoteDesktopStreamer:
                 self._capture_method = f"active-rdp-fallback:{method or proto}"
                 self._stats["capture_method"] = self._capture_method
             return jpeg2, w2, h2
+        # Helper still black — one in-process DXGI pass on Default.
+        self._use_user_helper = False
+        self._prefer_dxgi = True
+        jpeg3, w3, h3 = self._grab_jpeg()
+        method3 = str(self._capture_method or "")
+        if (
+            jpeg3
+            and w3 > 0
+            and h3 > 0
+            and len(jpeg3) >= MIN_JPEG_BYTES
+            and "+flat" not in method3
+            and "+black" not in method3
+        ):
+            self._capture_method = f"active-rdp-fallback:dxgi:{proto}"
+            self._stats["capture_method"] = self._capture_method
+            return jpeg3, w3, h3
         return None
 
     def _should_promote_follow_to_winlogon(self) -> bool:
         """Lock/LogonUI with a listed username → user-helper GDI black (C-RD-PIX-3).
 
-        Unlocked Default (explorer + WTS unlocked) is PIX-4: do **not** jump to
-        Winlogon because GDI was black — retry DXGI instead.
+        Unlocked Default (WTS unlocked; explorer optional during Welcome) is PIX-4:
+        do **not** jump to Winlogon because GDI was black — retry DXGI instead.
         Applies to follow **and** SID Start (lab 4.9.103 Active username FAIL).
 
         Exception: if LogonUI is present, prefer Winlogon even when explorer is
@@ -3961,6 +4060,12 @@ class RemoteDesktopStreamer:
             if logonui or locked is True:
                 return True
             if (
+                locked is False
+                and not logonui
+            ):
+                # Welcome / getting-ready: explorer may still be False — stay Default.
+                return False
+            if (
                 explorer is True
                 and locked is False
                 and not logonui
@@ -3979,13 +4084,16 @@ class RemoteDesktopStreamer:
         return "gdi" in method or "helper" in method
 
     def _retry_unlocked_dxgi_capture(self):
-        """PIX-4: reset DXGI and re-grab Default; never treat as Winlogon success."""
+        """PIX-4: reset DXGI and re-grab Default; never treat as Winlogon success.
+
+        Explorer is **optional** — post-password Welcome often has no explorer yet
+        while WTS is already unlocked (FOLLOW-10 / Derin Hoş Geldiniz freeze).
+        """
         if self._winlogon_mode or self._force_secure_desktop:
             return None
         try:
             from client_rd_winlogon import (
                 session_has_logonui,
-                session_has_process,
                 session_lock_state,
             )
             sid = int(self._target_session_id or 0)
@@ -3993,8 +4101,6 @@ class RemoteDesktopStreamer:
                 session_has_logonui(sid)
                 or session_lock_state(sid) is True
             ):
-                return None
-            if sid > 0 and session_has_process(sid, "explorer.exe") is False:
                 return None
         except Exception:
             pass
@@ -4005,15 +4111,7 @@ class RemoteDesktopStreamer:
         self._prefer_dxgi = True
         self._desktop_name = "Default"
         self._desktop_attached = False
-        try:
-            if self._dxcam is not None:
-                try:
-                    self._dxcam.stop()
-                except Exception:
-                    pass
-            self._dxcam = None
-        except Exception:
-            self._dxcam = None
+        self._reset_dxgi_camera()
         # Drop encode lock so 1024×768 black does not stick.
         self._locked_encode_w = 0
         self._locked_encode_h = 0
@@ -4035,6 +4133,21 @@ class RemoteDesktopStreamer:
             jpeg, w, h = self._grab_via_persistent_helper(1.2)
             if (not jpeg or len(jpeg) < MIN_JPEG_BYTES) and self._last_helper_raw:
                 jpeg, w, h = self._encode_helper_raw_jpeg()
+            method = str(self._capture_method or "")
+            if (
+                jpeg
+                and w > 0
+                and h > 0
+                and len(jpeg) >= MIN_JPEG_BYTES
+                and "+black" not in method
+                and "+flat" not in method
+            ):
+                if "dxgi" not in method.lower():
+                    self._capture_method = f"dxgi:{method or 'desktop-duplication'}"
+                    self._stats["capture_method"] = self._capture_method
+                return jpeg, w, h
+            # Helper still black — bridge with in-process DXGI.
+            jpeg, w, h = self._grab_jpeg()
         else:
             jpeg, w, h = self._grab_jpeg()
         method = str(self._capture_method or "")
@@ -4051,6 +4164,58 @@ class RemoteDesktopStreamer:
                 self._stats["capture_method"] = self._capture_method
             return jpeg, w, h
         return None
+
+    def _recover_default_black_capture(self):
+        """DXGI retry then Active-session Default respawn after post-logon black."""
+        if self._winlogon_mode or self._force_secure_desktop:
+            return None
+        retried = self._retry_unlocked_dxgi_capture()
+        if retried:
+            return retried
+        try:
+            return self._fallback_flat_winlogon_to_active_rdp(allow_default=True)
+        except Exception as exc:
+            self._note_recovery(f"fail:default_black_active_rdp:{exc}")
+            return None
+
+    def _maybe_recover_default_black_streak(self) -> None:
+        """After sustained Default black, attempt one recovery wave (FOLLOW-4)."""
+        if self._winlogon_mode or self._force_secure_desktop:
+            return
+        if bool(getattr(self, "_default_black_recover_attempted", False)):
+            return
+        started = float(getattr(self, "_black_streak_started", 0) or 0)
+        if started <= 0:
+            return
+        if time.time() - started < float(DEFAULT_BLACK_RECOVER_SEC):
+            return
+        self._default_black_recover_attempted = True
+        self._note_recovery("try:default_black_streak_recover")
+        out = self._recover_default_black_capture()
+        if out:
+            jpeg, w, h = out
+            self._black_streak_started = 0.0
+            self._default_dxgi_retry_this_streak = False
+            self._note_recovery("ok:default_black_streak_recover")
+            try:
+                self._seq += 1
+                self._enqueue_ws_frame(jpeg, w, h, self._seq)
+                self._last_activity = time.time()
+            except Exception:
+                pass
+            self.emit_stream_progress(
+                "live",
+                "Default capture recovered after black streak",
+                force=True,
+            )
+        else:
+            self._note_recovery("fail:default_black_streak_recover")
+            self.emit_stream_progress(
+                "degraded",
+                "Default still black after DXGI/Active recovery",
+                error="FOLLOW_NO_DEFAULT_FRAME",
+                force=True,
+            )
 
     def _fallback_user_helper_to_winlogon(
         self,
@@ -4272,11 +4437,17 @@ class RemoteDesktopStreamer:
             self._winlogon_mode = False
             self._force_secure_desktop = False  # unlock clears lock-row pin
             self._prefer_dxgi = True
+            # Allow HOST-2 again on Default black after a Winlogon-start attempt.
+            self._active_rdp_fallback_attempted = False
+            self._default_black_recover_attempted = False
             self._target_session_id = int(new_sid)
             self._target_username = str(username or "").strip()
             self._desktop_name = "Default"
             self._use_user_helper = True
             self._note_recovery(f"follow:{reason}")
+            self._reset_dxgi_camera()
+            self._locked_encode_w = 0
+            self._locked_encode_h = 0
 
             started = False
             if respawn or not self._persistent_helper_connected():
@@ -4328,6 +4499,7 @@ class RemoteDesktopStreamer:
             self._stream_id = stream_id
             # Probe Default pixels — Welcome can take several seconds (FOLLOW-4).
             jpeg2, w2, h2 = None, 0, 0
+            dxgi_retried = False
             deadline = time.time() + float(FOLLOW_DEFAULT_PROBE_SEC)
             while time.time() < deadline:
                 if self._use_user_helper and self._persistent_helper_connected():
@@ -4351,6 +4523,22 @@ class RemoteDesktopStreamer:
                     and "+flat" not in method
                 ):
                     break
+                # Mid-Welcome black: one DXGI reset mid-probe (not every tick).
+                if (
+                    not dxgi_retried
+                    and (
+                        "+black" in method
+                        or "+flat" in method
+                        or not jpeg2
+                    )
+                ):
+                    dxgi_retried = True
+                    recovered = self._retry_unlocked_dxgi_capture()
+                    if recovered:
+                        jpeg2, w2, h2 = recovered
+                        method = str(self._capture_method or "")
+                        if "+black" not in method and "+flat" not in method:
+                            break
                 # Helper died mid-Welcome — respawn once more then DXGI.
                 if self._use_user_helper and not self._persistent_helper_connected():
                     self._note_recovery("follow_helper_drop_mid_probe")
@@ -4369,6 +4557,22 @@ class RemoteDesktopStreamer:
                 and "+black" not in method
                 and "+flat" not in method
             )
+            if not healthy:
+                # Last chance: DXGI + Active Console/RDP Default respawn.
+                recovered = self._recover_default_black_capture()
+                if recovered:
+                    jpeg2, w2, h2 = recovered
+                    method = str(self._capture_method or "")
+                    healthy = bool(
+                        jpeg2
+                        and w2 > 0
+                        and h2 > 0
+                        and len(jpeg2) >= MIN_JPEG_BYTES
+                        and "+black" not in method
+                        and "+flat" not in method
+                    )
+                    if healthy:
+                        self._note_recovery("follow_default_black_recover")
             if healthy:
                 try:
                     self._seq += 1

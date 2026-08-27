@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.117"  # RD: post-logon follow Welcome→Default; helper retry + DXGI bridge
+VERSION = "4.9.118"  # RD: Default post-logon black → DXGI retry + Active fallback
 
 
 
