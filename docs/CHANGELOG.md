@@ -2,6 +2,15 @@
 
 Removed `docs/ux-review` screenshots, duplicate resilience/alert plan MDs. Contract **1.4.64** cloud checklist is SoT for dashboard work.
 
+# v4.9.119
+
+## Remote Desktop — full `rd_capture_diag` dumps (DIAG-6)
+- Dump on Start `SESSION0_HELPER_NO_FRAME` / `CAPTURE_NO_DESKTOP` / winlogon flat+black
+- Streaming: sustained Default empty frames (`default_no_frame*`) after ~2s
+- Follow `follow_no_frame` + Default black recover fail also dump
+- Ring keep 12; wire `local_dump_path` via `capture_diag`
+- Contract **1.4.86**
+
 # v4.9.118
 
 ## Remote Desktop — Default post-logon black recovery (FOLLOW-4)

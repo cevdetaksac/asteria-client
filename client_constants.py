@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.118"  # RD: Default post-logon black → DXGI retry + Active fallback
+VERSION = "4.9.119"  # RD: dump Default no_frame/black into rd_capture_diag
 
 
 

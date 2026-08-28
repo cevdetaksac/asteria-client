@@ -82,6 +82,9 @@ FOLLOW_HELPER_RETRIES = 3             # spawn retries before DXGI in-process fal
 FOLLOW_CHECK_SEC = 0.25
 # Post-logon Default can paint gdi+black while Welcome/DWM settles (Derin lab).
 DEFAULT_BLACK_RECOVER_SEC = 1.5
+# Local rd_capture_diag: dump after sustained empty frames (Ninety Default no_frame).
+DIAG_NO_FRAME_DUMP_SEC = 2.0
+DIAG_DUMP_COOLDOWN_SEC = 25.0
 HELPER_ACCEPT_SEC = 5.0               # non-winlogon helper accept (was 12s → 23s stacks)
 HELPER_FRAME_SEC = 5.0
 HELPER_ONESHOT_WAIT_SEC = 4.0
@@ -265,6 +268,10 @@ class RemoteDesktopStreamer:
         self._capture_recovery_steps: list = []
         self._last_diag_dump_path = ""
         self._last_hwnd_classes: list = []
+        self._last_diag_dump_mono = 0.0
+        self._last_diag_dump_reason = ""
+        self._diag_dump_reasons_this_stream: set = set()
+        self._no_frame_streak_started = 0.0
         self._capture_method = "none"
         self._stream_started_at = 0.0
         self._use_user_helper = False  # Session 0 / other session → CreateProcessAsUser helper
@@ -571,6 +578,10 @@ class RemoteDesktopStreamer:
             self._capture_recovery_steps = []
             self._last_diag_dump_path = ""
             self._last_hwnd_classes = []
+            self._last_diag_dump_mono = 0.0
+            self._last_diag_dump_reason = ""
+            self._diag_dump_reasons_this_stream = set()
+            self._no_frame_streak_started = 0.0
             self._last_good_jpeg = None
             self._last_good_wh = (0, 0)
             self._use_user_helper = False
@@ -1006,6 +1017,12 @@ class RemoteDesktopStreamer:
                         jpeg, w, h = fb
                     else:
                         log(f"[REMOTE-DESKTOP] ✖ {err}: {msg}")
+                        self._persist_capture_fail_dump(
+                            reason=err,
+                            jpeg=jpeg,
+                            detail=msg,
+                            force=True,
+                        )
                         self._running = False
                         self._transport = "idle"
                         self.emit_stream_progress("failed", msg, error=err, force=True)
@@ -1109,6 +1126,7 @@ class RemoteDesktopStreamer:
                                 reason=err,
                                 jpeg=jpeg,
                                 detail=msg,
+                                force=True,
                             )
                             self._running = False
                             self._transport = "idle"
@@ -1146,6 +1164,12 @@ class RemoteDesktopStreamer:
                                 "DXGI/Active recovery also failed"
                             )
                             log(f"[REMOTE-DESKTOP] ✖ {err}: {msg}")
+                            self._persist_capture_fail_dump(
+                                reason=err,
+                                jpeg=jpeg,
+                                detail=msg,
+                                force=True,
+                            )
                             self._running = False
                             self._transport = "idle"
                             self.emit_stream_progress(
@@ -1207,6 +1231,12 @@ class RemoteDesktopStreamer:
                         )
                         log(f"[REMOTE-DESKTOP] ✖ {err}: {msg}")
                         self._last_stream_error = err
+                        self._persist_capture_fail_dump(
+                            reason=err,
+                            jpeg=jpeg,
+                            detail=msg,
+                            force=True,
+                        )
                         self._running = False
                         self._transport = "idle"
                         self.emit_stream_progress("failed", msg, error=err, force=True)
@@ -1229,6 +1259,12 @@ class RemoteDesktopStreamer:
                     f"jpeg={0 if not jpeg else len(jpeg)}B)."
                 )
                 log(f"[REMOTE-DESKTOP] ✖ {err}: {msg}")
+                self._persist_capture_fail_dump(
+                    reason=err,
+                    jpeg=jpeg,
+                    detail=msg,
+                    force=True,
+                )
                 self._running = False
                 self._transport = "idle"
                 self.emit_stream_progress("failed", msg, error=err, force=True)
@@ -2048,18 +2084,42 @@ class RemoteDesktopStreamer:
             encoded = self._encode_helper_raw_jpeg()
             if encoded[0]:
                 jpeg, w, h = encoded
+                self._clear_no_frame_streak()
             else:
                 self._stats["frames_failed"] += 1
+                self._last_helper_fail_phase = (
+                    self._last_helper_fail_phase or "no_frame"
+                )
+                self._last_helper_fail_detail = (
+                    self._last_helper_fail_detail
+                    or f"method={self._capture_method} jpeg=0B"
+                )
+                self._maybe_emit_unhealthy_diag(
+                    reason="no_frame",
+                    detail=str(self._last_helper_fail_detail or "")[:240],
+                )
+                self._maybe_dump_no_frame_streak(
+                    detail=(
+                        f"empty frame method={self._capture_method} "
+                        f"helper={self._persistent_helper_connected()} "
+                        f"misses={getattr(self, '_helper_frame_misses', 0)}"
+                    ),
+                )
                 return
         # API rejects tiny frames; black frames look like "live" black desktop
         if len(jpeg) < MIN_JPEG_BYTES:
             self._stats["frames_failed"] += 1
             self._stats["black_frames"] += 1
+            self._maybe_dump_no_frame_streak(
+                jpeg=jpeg,
+                detail=f"tiny jpeg={len(jpeg)}B method={self._capture_method}",
+            )
             return
         if jpeg[:2] != b"\xff\xd8" or jpeg[-2:] != b"\xff\xd9":
             self._stats["frames_failed"] += 1
             log("[REMOTE-DESKTOP] Invalid JPEG magic — skip frame")
             return
+        self._clear_no_frame_streak()
         if "+black" in (self._capture_method or "") or "+flat" in (self._capture_method or ""):
             # Disconnected RDP / wrong desktop / flat accent fill → re-attach
             bad_flat = "+flat" in (self._capture_method or "")
@@ -2243,6 +2303,21 @@ class RemoteDesktopStreamer:
             f"unbroken black for ≥{WINLOGON_BLACK_FAIL_SECONDS:.0f}s "
             f"(method={self._capture_method})"
         )
+        try:
+            jpeg_dump = None
+            if self._use_user_helper and self._persistent_helper_connected():
+                jpeg_dump, _, _ = self._grab_via_persistent_helper(0.4)
+            self._persist_capture_fail_dump(
+                reason="winlogon_capture_black",
+                jpeg=jpeg_dump,
+                detail=(
+                    f"streak≥{WINLOGON_BLACK_FAIL_SECONDS:.0f}s "
+                    f"method={self._capture_method}"
+                ),
+                force=True,
+            )
+        except Exception:
+            pass
         self._maybe_emit_unhealthy_diag(
             reason="winlogon_capture_black",
             force=True,
@@ -2304,6 +2379,7 @@ class RemoteDesktopStreamer:
                     f"var={self._last_frame_variance:.1f} "
                     f"method={self._capture_method}"
                 ),
+                force=True,
             )
         except Exception:
             pass
@@ -2336,9 +2412,27 @@ class RemoteDesktopStreamer:
         reason: str,
         jpeg: Optional[bytes] = None,
         detail: str = "",
+        force: bool = False,
     ) -> None:
-        """Rare-host forensics: JSON (+JPEG) under ProgramData\\Asteria\\rd_capture_diag."""
+        """Rare-host forensics: JSON (+JPEG) under ProgramData\\Asteria\\rd_capture_diag.
+
+        Terminal Start/Stop fails use ``force=True``. Streaming degraded paths
+        dump once per reason per stream (plus cooldown) so Default ``no_frame``
+        leaves evidence without flooding the ring.
+        """
         try:
+            reason_s = str(reason or "fail").strip()[:80] or "fail"
+            now = time.monotonic()
+            dumped = getattr(self, "_diag_dump_reasons_this_stream", None)
+            if not isinstance(dumped, set):
+                dumped = set()
+                self._diag_dump_reasons_this_stream = dumped
+            if not force:
+                if reason_s in dumped:
+                    return
+                last_mono = float(getattr(self, "_last_diag_dump_mono", 0.0) or 0.0)
+                if (now - last_mono) < float(DIAG_DUMP_COOLDOWN_SEC):
+                    return
             from client_rd_capture_diag_dump import write_capture_fail_dump
             hwnd_meta = {}
             try:
@@ -2355,7 +2449,7 @@ class RemoteDesktopStreamer:
                 hwnd_meta["classes"] = list(self._last_hwnd_classes)[:20]
             diag = self._capture_diag_snapshot()
             dump = write_capture_fail_dump(
-                reason=reason,
+                reason=reason_s,
                 diag=diag,
                 extra={
                     "detail": str(detail or "")[:400],
@@ -2366,18 +2460,83 @@ class RemoteDesktopStreamer:
                     "desktop_attached": bool(self._desktop_attached),
                     "desktop_name": str(self._desktop_name or ""),
                     "helper_token": str(self._last_helper_token_source or ""),
+                    "helper_fail_phase": str(self._last_helper_fail_phase or ""),
+                    "helper_fail_detail": str(
+                        self._last_helper_fail_detail or ""
+                    )[:320],
                     "prefer_dxgi": bool(self._prefer_dxgi),
                     "winlogon_mode": bool(self._winlogon_mode),
                     "force_secure": bool(self._force_secure_desktop),
                     "follow_console": bool(self._follow_console),
+                    "use_user_helper": bool(self._use_user_helper),
+                    "helper_connected": bool(self._persistent_helper_connected()),
+                    "helper_frame_misses": int(
+                        getattr(self, "_helper_frame_misses", 0) or 0
+                    ),
+                    "capture_method": str(self._capture_method or ""),
+                    "target_session_id": int(self._target_session_id or 0),
+                    "target_username": str(self._target_username or "")[:64],
+                    "force": bool(force),
                 },
                 jpeg=jpeg,
                 stream_id=str(self._stream_id or ""),
             )
             if dump.get("ok") and dump.get("path"):
                 self._last_diag_dump_path = str(dump.get("path") or "")
+                self._last_diag_dump_mono = now
+                self._last_diag_dump_reason = reason_s
+                dumped.add(reason_s)
+                self._note_recovery(f"dump:{reason_s}")
+                # Push path into Capture health immediately.
+                try:
+                    self._enqueue_capture_diag(
+                        phase="degraded",
+                        reason=f"dump:{reason_s}",
+                        detail=str(dump.get("path") or "")[:320],
+                    )
+                except Exception:
+                    pass
         except Exception as exc:
             log(f"[REMOTE-DESKTOP] persist capture dump failed: {exc}")
+
+    def _maybe_dump_no_frame_streak(
+        self,
+        *,
+        jpeg: Optional[bytes] = None,
+        detail: str = "",
+    ) -> None:
+        """After sustained empty Default/capture frames, write one local dump."""
+        now = time.time()
+        if self._no_frame_streak_started <= 0:
+            self._no_frame_streak_started = now
+            return
+        if (now - self._no_frame_streak_started) < float(DIAG_NO_FRAME_DUMP_SEC):
+            return
+        reason = (
+            "winlogon_no_frame"
+            if self._winlogon_mode or self._force_secure_desktop
+            else "default_no_frame"
+        )
+        phase = str(self._last_helper_fail_phase or "")
+        if phase == "no_frame" or "no_frame" in str(
+            self._last_helper_fail_detail or ""
+        ):
+            reason = f"{reason}_helper"
+        self._persist_capture_fail_dump(
+            reason=reason,
+            jpeg=jpeg,
+            detail=detail
+            or (
+                f"streak≥{DIAG_NO_FRAME_DUMP_SEC:.0f}s "
+                f"method={self._capture_method} "
+                f"phase={phase or '-'} "
+                f"var={self._last_frame_variance:.1f}"
+            ),
+            force=False,
+        )
+
+    def _clear_no_frame_streak(self) -> None:
+        self._no_frame_streak_started = 0.0
 
     def force_winlogon_recapture(self) -> None:
         """C-RD-CHROME-4: drop desktop bind so next grab reattaches after CAD."""
@@ -4210,6 +4369,15 @@ class RemoteDesktopStreamer:
             )
         else:
             self._note_recovery("fail:default_black_streak_recover")
+            self._persist_capture_fail_dump(
+                reason="default_black_recover_fail",
+                detail=(
+                    f"streak≥{DEFAULT_BLACK_RECOVER_SEC:.1f}s "
+                    f"method={self._capture_method} "
+                    f"var={self._last_frame_variance:.1f}"
+                ),
+                force=True,
+            )
             self.emit_stream_progress(
                 "degraded",
                 "Default still black after DXGI/Active recovery",
@@ -4607,6 +4775,12 @@ class RemoteDesktopStreamer:
                     detail=f"method={method} jpeg={0 if not jpeg2 else len(jpeg2)}B",
                 )
                 self._note_recovery("follow_no_frame_keep_streaming")
+                self._persist_capture_fail_dump(
+                    reason="follow_no_frame",
+                    jpeg=jpeg2,
+                    detail=f"method={method} jpeg={0 if not jpeg2 else len(jpeg2)}B",
+                    force=True,
+                )
         except Exception as exc:
             log(f"[REMOTE-DESKTOP] C-RD-FOLLOW error: {exc}")
         finally:

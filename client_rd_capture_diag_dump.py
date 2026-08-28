@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from client_helpers import log
 
-_MAX_DUMPS = 8
+_MAX_DUMPS = 12
 _MAX_JPEG_BYTES = 280_000
 _SUBDIR = "rd_capture_diag"
 
