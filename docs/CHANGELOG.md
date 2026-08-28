@@ -2,6 +2,15 @@
 
 Removed `docs/ux-review` screenshots, duplicate resilience/alert plan MDs. Contract **1.4.64** cloud checklist is SoT for dashboard work.
 
+# v4.9.120
+
+## Remote Desktop — Capture health honesty (no Live flicker)
+- Clear stale `helper_fail=no_frame` / `jpeg=0B` when healthy PrintWindow/DXGI is on the wire
+- Do not mark healthy method as `black_frame` from a leftover streak
+- JPEG-WS primary + healthy pixels: omit `WEBRTC_PEER_ERROR` from faults / root_cause
+- Emit `capture_diag phase=live` on healthy recovery so cloud replaces FAIL banner
+- Contract **1.4.87**
+
 # v4.9.119
 
 ## Remote Desktop — full `rd_capture_diag` dumps (DIAG-6)

@@ -272,6 +272,7 @@ class RemoteDesktopStreamer:
         self._last_diag_dump_reason = ""
         self._diag_dump_reasons_this_stream: set = set()
         self._no_frame_streak_started = 0.0
+        self._last_diag_was_healthy = False
         self._capture_method = "none"
         self._stream_started_at = 0.0
         self._use_user_helper = False  # Session 0 / other session → CreateProcessAsUser helper
@@ -582,6 +583,7 @@ class RemoteDesktopStreamer:
             self._last_diag_dump_reason = ""
             self._diag_dump_reasons_this_stream = set()
             self._no_frame_streak_started = 0.0
+            self._last_diag_was_healthy = False
             self._last_good_jpeg = None
             self._last_good_wh = (0, 0)
             self._use_user_helper = False
@@ -1994,6 +1996,10 @@ class RemoteDesktopStreamer:
                 self._seq += 1
                 seq = self._seq
                 if self._dispatch_raw_frame(rgb, w, h, seq):
+                    if self._frame_is_healthy():
+                        self._note_healthy_wire_frame(
+                            detail=f"raw {w}x{h} method={self._capture_method}"
+                        )
                     return
                 # Media publish failed — fall through to JPEG for WS/HTTP.
 
@@ -2075,6 +2081,10 @@ class RemoteDesktopStreamer:
                 self._seq += 1
                 seq = self._seq
                 if self._dispatch_raw_frame(rgb, rw, rh, seq):
+                    if self._frame_is_healthy():
+                        self._note_healthy_wire_frame(
+                            detail=f"helper-raw {rw}x{rh} method={self._capture_method}"
+                        )
                     return
                 # Publish failed — keep bytes for JPEG-WS fallthrough.
                 self._last_helper_raw = (rgb, rw, rh)
@@ -2265,12 +2275,16 @@ class RemoteDesktopStreamer:
         self._last_good_wh = (w, h)
         self._dispatch_frame(token, jpeg, w, h, seq)
         # Flat/black must never claim Live (cloud: gdi+flat ≠ Live).
-        if not self._progress_live_emitted and self._frame_is_healthy():
-            self.emit_stream_progress(
-                "live",
-                "First real frame on the wire",
-                force=True,
+        if self._frame_is_healthy():
+            self._note_healthy_wire_frame(
+                detail=f"{w}x{h} method={self._capture_method}"
             )
+            if not self._progress_live_emitted:
+                self.emit_stream_progress(
+                    "live",
+                    "First real frame on the wire",
+                    force=True,
+                )
 
     def _maybe_fail_winlogon_black(self) -> None:
         """C-RD-P0-WL-4: sustained GDI black in winlogon → retry once, then fail."""
@@ -2537,6 +2551,56 @@ class RemoteDesktopStreamer:
 
     def _clear_no_frame_streak(self) -> None:
         self._no_frame_streak_started = 0.0
+
+    def _clear_stale_helper_fail(self) -> None:
+        """Drop probe miss tags once healthy pixels are on the wire (C-RD-DIAG)."""
+        phase = str(self._last_helper_fail_phase or "").lower()
+        if phase in ("", "no_frame", "flat", "black"):
+            self._last_helper_fail_phase = ""
+            self._last_helper_fail_detail = ""
+        if str(self._last_stream_error or "").lower() in (
+            "",
+            "no_frame",
+            "follow_no_default_frame",
+            "winlogon_capture_black",
+            "winlogon_capture_flat",
+        ):
+            # Only clear soft miss errors — keep hard spawn/token codes.
+            if phase in ("", "no_frame", "flat", "black"):
+                self._last_stream_error = ""
+
+    def _pixels_currently_healthy(self) -> bool:
+        """True when latest chrome telemetry says real pixels (not black/flat)."""
+        method = str(self._capture_method or "")
+        if "+black" in method or "+flat" in method:
+            return False
+        if float(self._last_frame_variance or 0.0) >= float(FLAT_VARIANCE_THRESHOLD):
+            return True
+        return bool(self._chrome_detected and self._frame_is_healthy())
+
+    def _note_healthy_wire_frame(self, *, detail: str = "") -> None:
+        """Healthy JPEG on wire: clear stale no_frame and refresh Capture health."""
+        was_unhealthy = not bool(getattr(self, "_last_diag_was_healthy", False))
+        stale_fail = bool(self._last_helper_fail_phase)
+        self._clear_no_frame_streak()
+        self._clear_stale_helper_fail()
+        self._black_streak_started = 0.0
+        self._flat_streak_started = 0.0
+        self._last_diag_was_healthy = True
+        now = time.monotonic()
+        # Transition or periodic refresh so cloud replaces FAIL · no_frame banner.
+        if was_unhealthy or stale_fail or (
+            now - float(self._last_diag_emit_mono or 0.0)
+        ) >= 3.0:
+            self._last_diag_emit_mono = now
+            try:
+                self._enqueue_capture_diag(
+                    phase="live",
+                    reason="healthy_frame",
+                    detail=str(detail or self._capture_method or "")[:240],
+                )
+            except Exception:
+                pass
 
     def force_winlogon_recapture(self) -> None:
         """C-RD-CHROME-4: drop desktop bind so next grab reattaches after CAD."""
@@ -3357,6 +3421,11 @@ class RemoteDesktopStreamer:
         self._stats["frame_variance"] = float(var)
         self._stats["bright_ratio"] = float(report_bright)
         self._stats["chrome_detected"] = bool(chrome)
+        if chrome:
+            # Healthy PrintWindow/DXGI must not keep a prior black/flat streak
+            # (Ninety flicker: var high while Capture health still said black).
+            self._black_streak_started = 0.0
+            self._flat_streak_started = 0.0
         if self._winlogon_mode and not self._chrome_diag_logged:
             self._chrome_diag_logged = True
             # Only enum HWND on the in-session helper desktop; Session-0 parent
@@ -6017,20 +6086,38 @@ class RemoteDesktopStreamer:
             media = dict(self._media.status() or {})
         except Exception:
             media = {}
-        flat = bool("+flat" in method or self._flat_streak_started > 0)
-        black = bool("+black" in method or self._black_streak_started > 0)
+        # Method tags are ground truth. Stale black/flat streaks must not mark
+        # healthy printwindow-logonui as black (Ninety Live flicker).
+        flat = bool("+flat" in method)
+        black = bool("+black" in method)
+        if self._flat_streak_started > 0 and (
+            flat or not self._chrome_detected
+        ):
+            flat = True
+        if self._black_streak_started > 0 and (
+            black or not self._chrome_detected
+        ):
+            black = True
+        frames_sent = int(self._stats.get("frames_sent") or 0)
+        var_ok = float(self._last_frame_variance or 0.0) >= float(
+            FLAT_VARIANCE_THRESHOLD
+        )
         healthy = bool(
             not flat
             and not black
-            and self._chrome_detected
-            and int(self._stats.get("frames_sent") or 0) > 0
+            and frames_sent > 0
+            and (self._chrome_detected or var_ok)
         )
+        # Healthy wire must not keep advertising probe no_frame to Capture health.
+        if healthy:
+            self._clear_stale_helper_fail()
         analysis = self._analyze_capture_faults(
             method=method,
             env=env if isinstance(env, dict) else {},
             flat=flat,
             black=black,
             media=media,
+            healthy_pixels=healthy,
         )
         flat_sec = (
             max(0.0, time.time() - self._flat_streak_started)
@@ -6117,6 +6204,7 @@ class RemoteDesktopStreamer:
         flat: bool,
         black: bool,
         media: dict,
+        healthy_pixels: bool = False,
     ) -> dict:
         """Classify unhealthy Live so cloud can separate client vs cloud blame."""
         faults: list = []
@@ -6125,10 +6213,26 @@ class RemoteDesktopStreamer:
         logonui = bool(env.get("logonui"))
         hwnd = int(getattr(self, "_logonui_hwnd_count", 0) or 0)
         frames_sent = int(self._stats.get("frames_sent") or 0)
+        pixel_ok = bool(
+            healthy_pixels
+            or (
+                not flat
+                and not black
+                and (
+                    self._chrome_detected
+                    or float(self._last_frame_variance or 0.0)
+                    >= float(FLAT_VARIANCE_THRESHOLD)
+                )
+                and frames_sent > 0
+            )
+        )
 
         if phase in ("spawn", "accept", "token", "create"):
             faults.append(f"HELPER_{phase.upper()}")
-        if self._use_user_helper and not helper_ok and not phase:
+        # Stale no_frame after healthy PrintWindow must not stay as a fault.
+        if phase == "no_frame" and not pixel_ok:
+            faults.append("HELPER_NO_FRAME")
+        if self._use_user_helper and not helper_ok and not phase and not pixel_ok:
             faults.append("HELPER_DISCONNECTED")
         if black:
             faults.append("PIXEL_BLACK")
@@ -6163,13 +6267,21 @@ class RemoteDesktopStreamer:
         ):
             faults.append("RESOLVE_WINLOGON_BUT_DEFAULT_CAPTURE")
         media_err = str(media.get("error") or "")
-        if media_err:
+        # JPEG-WS primary + healthy pixels: WebRTC peer noise must not own FAIL.
+        if media_err and not (self._jpeg_ws_primary() and pixel_ok):
             faults.append("WEBRTC_PEER_ERROR")
         if not self._ws_ok and self._running:
             faults.append("AGENT_WS_DOWN")
 
         # Primary root cause (client system layer first — matches Derin lab).
-        if "HELPER_SPAWN" in " ".join(faults) or "HELPER_ACCEPT" in " ".join(faults) or "HELPER_TOKEN" in " ".join(faults) or "HELPER_CREATE" in " ".join(faults):
+        if pixel_ok and not any(
+            f.startswith("HELPER_") and f != "HELPER_NO_FRAME" for f in faults
+        ) and not black and not flat and "AGENT_WS_DOWN" not in faults:
+            layer = "ok"
+            root = ""
+            advice = ""
+            blame = "none"
+        elif "HELPER_SPAWN" in " ".join(faults) or "HELPER_ACCEPT" in " ".join(faults) or "HELPER_TOKEN" in " ".join(faults) or "HELPER_CREATE" in " ".join(faults):
             layer = "client_helper"
             root = (
                 f"Session helper failed phase={phase or '?'} "
@@ -6204,6 +6316,14 @@ class RemoteDesktopStreamer:
             layer = "client_capture"
             root = f"Unhealthy pixels method={method or '?'} flat={flat} black={black}"
             advice = "Inspect desktop attach and capture path on the agent host"
+            blame = "client"
+        elif "HELPER_NO_FRAME" in faults:
+            layer = "client_helper"
+            root = (
+                f"Helper produced no JPEG (phase=no_frame "
+                f"detail={str(self._last_helper_fail_detail or '')[:160]})"
+            )
+            advice = "Inspect helper capture on the target desktop; pull rd_capture_diag dump"
             blame = "client"
         elif "AGENT_WS_DOWN" in faults:
             layer = "agent_ws"
@@ -6247,6 +6367,7 @@ class RemoteDesktopStreamer:
         if snap.get("healthy") and not force:
             return
         self._last_diag_emit_mono = now
+        self._last_diag_was_healthy = False
         # Keep helper_fail_detail informative for Capture health banner.
         if not self._last_helper_fail_detail and snap.get("root_cause"):
             self._last_helper_fail_detail = str(snap.get("root_cause") or "")[:240]

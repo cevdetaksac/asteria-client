@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.119"  # RD: dump Default no_frame/black into rd_capture_diag
+VERSION = "4.9.120"  # RD: clear stale no_frame when healthy PrintWindow on wire
 
 
 
