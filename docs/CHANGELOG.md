@@ -2,6 +2,15 @@
 
 Removed `docs/ux-review` screenshots, duplicate resilience/alert plan MDs. Contract **1.4.64** cloud checklist is SoT for dashboard work.
 
+# v4.9.121
+
+## Attacks — NLA RDP fail no longer swallowed as NETWORK:445
+- Subscribe `RdpCoreTS/Operational` **Event 131** (pre-auth TCP + client IP); seed RDP IP hint
+- Flatten Event **UserData** (TS Param* / ClientIP) so 1149/131 IPs parse
+- Classifier: NTLM + empty/`-` workstation → **RDP** *before* NtLmSsp → Network
+- 1149 remains success-only; wrong-password spray must not depend on it
+- Contract **1.4.88** · lab: C-ATK-1
+
 # v4.9.120
 
 ## Remote Desktop — Capture health honesty (no Live flicker)

@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.120"  # RD: clear stale no_frame when healthy PrintWindow on wire
+VERSION = "4.9.121"  # Attacks: RdpCoreTS 131 + NLA NtLmSsp → RDP (not NETWORK:445)
 
 
 

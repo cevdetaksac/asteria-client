@@ -10,7 +10,7 @@ Watched events:
   Security   — 4624/4625/4648/4672/4688/4697/4720/4723/4724/4732/1102
   System     — 1074/6005/6006/7045/7040
   Application — 18453/18456/15457/17135 (MSSQL)
-  RDP        — 1149/21/24/25
+  RDP        — 1149/21/24/25 + RdpCoreTS 131 (pre-auth TCP with client IP)
   OpenSSH    — Operational Event 4 (Failed / Invalid user password)
 
 Each parsed event is forwarded to ThreatEngine.process_event().
@@ -49,6 +49,8 @@ WATCHED_CHANNELS: Dict[str, List[int]] = {
     "Application": [18453, 18456, 15457, 17135],
     "Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational": [1149],
     "Microsoft-Windows-TerminalServices-LocalSessionManager/Operational": [21, 24, 25],
+    # Pre-auth RDP TCP accept — carries client IP; 1149 only fires on *success*
+    "Microsoft-Windows-RemoteDesktopServices-RdpCoreTS/Operational": [131],
     # Real OpenSSH (sshd) — fail soft if feature not installed
     "OpenSSH/Operational": [4],
 }
@@ -65,15 +67,23 @@ IGNORED_LOGON_TYPES: Set[int] = {5, 7}
 # Prefixes for machine/DWM accounts to skip
 IGNORED_ACCOUNT_PREFIXES = ("DWM-", "UMFD-", "IUSR")
 
-# Recent TerminalServices 1149 IPs — promote LogonType-3 NLA fails to RDP.
+# Recent RDP TCP / TerminalServices IPs — promote LogonType-3 NLA fails to RDP.
+# 1149 = auth *succeeded* (useless for wrong-password spray).
+# RdpCoreTS 131 = TCP accepted with client IP (fires before credential check).
 _RDP_IP_HINTS: Dict[str, float] = {}
 _RDP_HINT_TTL_SEC = 180.0
 _RDP_HINT_LOCK = threading.Lock()
 
 
 def note_rdp_source_ip(ip: str) -> None:
-    """Remember an IP that just hit TerminalServices (Event 1149)."""
+    """Remember an IP that just hit RDP (Event 131 / 1149 / TS channel)."""
     addr = (ip or "").strip()
+    # Event 131 may be "1.2.3.4:54321"
+    if ":" in addr and not addr.startswith("["):
+        # IPv4:port — keep host only; leave IPv6 alone
+        host, _, maybe_port = addr.rpartition(":")
+        if host.count(".") == 3 and maybe_port.isdigit():
+            addr = host
     if not addr or addr in ("-", "::1", "127.0.0.1"):
         return
     now = time.time()
@@ -129,6 +139,7 @@ EVENT_TYPE_MAP: Dict[int, str] = {
     17135: "sql_server_restarted",
     # RDP
     1149: "rdp_connection_succeeded",
+    131:  "rdp_tcp_accepted",  # pre-auth; IP hint only — not an Attacks row
     21:   "rdp_session_logon",
     24:   "rdp_session_disconnect",
     25:   "rdp_session_reconnect",
@@ -463,6 +474,17 @@ class EventLogWatcher:
                 if anon_parts and "Message" not in event_data:
                     event_data["Message"] = " ".join(anon_parts)
 
+            # UserData (TS 1149 Param*, RdpCoreTS fields) — flatten leaf tags
+            user_section = root.find("e:UserData", ns)
+            if user_section is not None:
+                for el in user_section.iter():
+                    tag = el.tag.split("}")[-1] if "}" in (el.tag or "") else (el.tag or "")
+                    if not tag or tag in ("UserData", "EventXML"):
+                        continue
+                    text = (el.text or "").strip()
+                    if text and tag not in event_data:
+                        event_data[tag] = text
+
             # OpenSSH Operational: Event 4 text is Failed/Accepted/Invalid user
             ssh_parsed = None
             if "OpenSSH" in (channel or "") or "OpenSSH" in (provider or ""):
@@ -519,6 +541,12 @@ class EventLogWatcher:
                 "raw_data": safe_raw,
             }
 
+            # Pre-auth RDP TCP — seed IP hint so following 4625 NtLmSsp → RDP
+            if event_id == 131 or event_type == "rdp_tcp_accepted":
+                note_rdp_source_ip(result.get("source_ip") or "")
+            if event_id == 1149:
+                note_rdp_source_ip(result.get("source_ip") or "")
+
             if ssh_parsed:
                 result["source_ip"] = ssh_parsed.get("source_ip") or result["source_ip"]
                 result["username"] = ssh_parsed.get("username") or result["username"]
@@ -562,7 +590,36 @@ class EventLogWatcher:
 
         # RDP events
         if event_id == 1149:
-            return data.get("Param3", data.get("IpAddress", ""))
+            return data.get("Param3", data.get("IpAddress", "")) or ""
+        if event_id == 131:
+            for key in (
+                "ClientIP",
+                "ClientAddress",
+                "IpAddress",
+                "Address",
+                "Param1",
+            ):
+                raw = str(data.get(key) or "").strip()
+                if not raw or raw in ("-", "::1", "127.0.0.1"):
+                    continue
+                # "1.2.3.4:54321" or bare IP
+                if ":" in raw and not raw.startswith("["):
+                    host, _, port = raw.rpartition(":")
+                    if host.count(".") == 3 and port.isdigit():
+                        return host
+                return raw
+            # Message: "… from client 1.2.3.4:49964."
+            for key in ("Message", "EventMessage"):
+                msg = str(data.get(key) or "")
+                if not msg:
+                    continue
+                import re
+                m = re.search(
+                    r"(\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?",
+                    msg,
+                )
+                if m:
+                    return m.group(1)
 
         return ""
 
@@ -667,10 +724,19 @@ class EventLogWatcher:
             return "MSSQL"
         if "OpenSSH" in (channel or ""):
             return "SSH"
-        if event_id in (1149, 21, 24, 25) or "TerminalServices" in (channel or ""):
+        if (
+            event_id in (1149, 21, 24, 25, 131)
+            or "TerminalServices" in (channel or "")
+            or "RdpCoreTS" in (channel or "")
+            or "RemoteDesktopServices" in (channel or "")
+        ):
             if event_id == 1149:
                 note_rdp_source_ip(
                     str(data.get("Param3") or data.get("IpAddress") or "")
+                )
+            if event_id == 131:
+                note_rdp_source_ip(
+                    EventLogWatcher._extract_ip(data, 131)
                 )
             return "RDP"
         if event_id in (4624, 4625):
@@ -702,12 +768,13 @@ class EventLogWatcher:
                     or proc.startswith("advapi")
                 ):
                     return "RDP"
-                if "ntlmssp" in proc.replace(" ", ""):
-                    return "Network"
-                # External type-3 with NTLM and no workstation often RDP NLA scanners.
+                # External type-3 with NTLM and no workstation often RDP NLA scanners
+                # (must run *before* NtLmSsp → Network).
                 workstation = str(data.get("WorkstationName") or "").strip()
                 if "ntlm" in auth and (not workstation or workstation == "-"):
                     return "RDP"
+                if "ntlmssp" in proc.replace(" ", ""):
+                    return "Network"
                 return "Network"
         return "System"
 
@@ -772,7 +839,11 @@ class EventLogWatcher:
             return _port("SSH", 22)
         if event_id in (18453, 18456, 15457, 17135):
             return _port("MSSQL", 1433)
-        if event_id in (1149, 21, 24, 25) or "TerminalServices" in (channel or ""):
+        if event_id in (1149, 21, 24, 25, 131) or "TerminalServices" in (
+            channel or ""
+        ) or "RdpCoreTS" in (channel or "") or "RemoteDesktopServices" in (
+            channel or ""
+        ):
             return _port("RDP", 3389)
         if event_id in (4624, 4625):
             svc = EventLogWatcher._detect_service(event_id, channel or "", data)
