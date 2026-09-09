@@ -1270,6 +1270,13 @@ class SystemHealthMonitor:
                 payload["snapshot"]["event_log_health"] = ew.get_health()
         except Exception:
             pass
+        # AuthLogWatcher: MySQL err / IIS FTP 530 / MSSQL ERRORLOG path coverage.
+        try:
+            aw = getattr(self, "auth_log_watcher", None)
+            if aw is not None and hasattr(aw, "get_health"):
+                payload["snapshot"]["auth_log_health"] = aw.get_health()
+        except Exception:
+            pass
         try:
             ng = getattr(self, "network_guard", None)
             if ng is not None:

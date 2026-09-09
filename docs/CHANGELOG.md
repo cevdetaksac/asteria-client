@@ -2,6 +2,15 @@
 
 Removed `docs/ux-review` screenshots, duplicate resilience/alert plan MDs. Contract **1.4.64** cloud checklist is SoT for dashboard work.
 
+# v4.9.122
+
+## Attacks — AuthLogWatcher FTP / MySQL / MSSQL file tails
+- Tail MySQL/MariaDB (+ XAMPP/Laragon) `*.err`/`*.log` Access denied
+- IIS FTP W3C **530** + MSSQL **ERRORLOG** `Login failed … [CLIENT: ip]`
+- Lab probe: `%ProgramData%\Asteria\authlog_probe\{mysql,ftp,mssql}` + `ASTERIA_AUTHLOG_EXTRA`
+- Skip loopback; expose `auth_log_health` in health snapshot
+- Contract **1.4.89** · lab: C-ATK-2 / `tools/sim_authlog_inject.py`
+
 # v4.9.121
 
 ## Attacks — NLA RDP fail no longer swallowed as NETWORK:445

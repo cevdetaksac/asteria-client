@@ -3604,8 +3604,9 @@ class CloudHoneypotClient:
                     log(f"[AUTHLOG] start failed: {ale}")
                 log(f"🛡️ Threat detection pipeline started ({source})")
                 log(
-                    "[THREAT] Real-port auth (EventLog + MySQL errlog) is independent of "
-                    "honeypot bait — both channels POST /api/attack when rules match"
+                    "[THREAT] Real-port auth (EventLog + MySQL/FTP/MSSQL AuthLog) is "
+                    "independent of honeypot bait — both channels POST /api/attack "
+                    "when rules match"
                 )
             except Exception as e:
                 log(f"⚠️ Threat detection start failed ({source}): {e}")

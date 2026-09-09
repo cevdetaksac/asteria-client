@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.121"  # Attacks: RdpCoreTS 131 + NLA NtLmSsp → RDP (not NETWORK:445)
+VERSION = "4.9.122"  # AuthLog: MSSQL ERRORLOG + probe dirs + FTP/MySQL path coverage
 
 
 
