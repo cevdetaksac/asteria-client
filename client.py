@@ -693,6 +693,11 @@ class CloudHoneypotClient:
                 ensure_rd_host_prep_on_boot()
             except Exception as e:
                 log(f"[RD-HOST-PREP] startup skip: {e}")
+            try:
+                from client_mysql_authlog_prep import ensure_mysql_authlog_prep_on_boot
+                ensure_mysql_authlog_prep_on_boot()
+            except Exception as e:
+                log(f"[MYSQL-AUTHLOG-PREP] startup skip: {e}")
 
         if _gui_fast:
             threading.Thread(

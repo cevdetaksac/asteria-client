@@ -41,16 +41,25 @@ _MSSQL_LOGIN_FAILED_SIMPLE = re.compile(
 )
 _MSSQL_CLIENT_IP = re.compile(r"\[CLIENT:\s*([^\]]+)\]", re.IGNORECASE)
 
+# Prefer *.err — Access denied lives in the error log. Avoid *-slow.log / general log noise.
 _MYSQL_GLOB_CANDIDATES = (
     r"C:\ProgramData\MySQL\MySQL Server *\Data\*.err",
-    r"C:\ProgramData\MySQL\MySQL Server *\Data\*.log",
     r"C:\Program Files\MySQL\MySQL Server *\data\*.err",
-    r"C:\Program Files\MySQL\MySQL Server *\data\*.log",
     r"C:\Program Files\MariaDB *\data\*.err",
     r"C:\ProgramData\MariaDB\*\data\*.err",
     r"C:\xampp\mysql\data\*.err",
     r"C:\wamp64\bin\mysql\mysql*\data\*.err",
     r"C:\laragon\data\mysql*\*.err",
+    # my.ini / config locations (resolved in _discover_mysql_from_ini)
+)
+
+_MYSQL_INI_GLOBS = (
+    r"C:\ProgramData\MySQL\MySQL Server *\my.ini",
+    r"C:\ProgramData\MySQL\MySQL Server *\my.cnf",
+    r"C:\Program Files\MySQL\MySQL Server *\my.ini",
+    r"C:\Program Files\MariaDB *\my.ini",
+    r"C:\Program Files\MariaDB *\data\my.ini",
+    r"C:\xampp\mysql\bin\my.ini",
 )
 
 _FTP_GLOB_CANDIDATES = (
@@ -64,6 +73,12 @@ _MSSQL_GLOB_CANDIDATES = (
     r"C:\Program Files\Microsoft SQL Server\MSSQL*\MSSQL\Log\ERRORLOG.*",
     r"C:\Program Files (x86)\Microsoft SQL Server\MSSQL*\MSSQL\Log\ERRORLOG",
     r"C:\Program Files (x86)\Microsoft SQL Server\MSSQL*\MSSQL\Log\ERRORLOG.*",
+)
+
+# Skip non-auth MySQL logs that match broad *.log globs
+_MYSQL_SKIP_NAME_RE = re.compile(
+    r"(?:-slow\.log$|\.pid$|ib_logfile|binlog|relay-log|general\.log$)",
+    re.IGNORECASE,
 )
 
 _IPV4_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
@@ -151,6 +166,14 @@ class AuthLogWatcher:
 
     def get_health(self) -> dict:
         paths = self.discover_status()
+        denied_tail = self._sample_mysql_denied_tail(paths["mysql"])
+        hint = ""
+        if paths["mysql"] and denied_tail == 0:
+            hint = (
+                "MySQL error log found but no 'Access denied' in recent tail — "
+                "set log_error_verbosity=3 under [mysqld] and restart MySQL "
+                "(MySQL 8 defaults hide auth Notes)."
+            )
         return {
             "running": bool(self._thread and self._thread.is_alive()),
             "interval_sec": self.interval_sec,
@@ -160,12 +183,15 @@ class AuthLogWatcher:
             "mysql_count": len(paths["mysql"]),
             "ftp_count": len(paths["ftp"]),
             "mssql_count": len(paths["mssql"]),
+            "mysql_access_denied_tail": denied_tail,
+            "mysql_logging_hint": hint,
             "scans": int(self._stats.get("scans", 0)),
             "emits": int(self._stats.get("emits", 0)),
             "errors": int(self._stats.get("errors", 0)),
         }
 
     def _loop(self) -> None:
+        warned_mysql_verbosity = False
         while not self._stop.wait(self.interval_sec):
             try:
                 self._stats["scans"] = int(self._stats.get("scans", 0)) + 1
@@ -173,6 +199,16 @@ class AuthLogWatcher:
                 ftp = self._discover_ftp_logs()
                 mssql = self._discover_mssql_logs()
                 self._last_discover = {"mysql": mysql, "ftp": ftp, "mssql": mssql}
+                if (
+                    mysql
+                    and not warned_mysql_verbosity
+                    and self._sample_mysql_denied_tail(mysql) == 0
+                ):
+                    log(
+                        "[AUTHLOG] MySQL err log present but no Access denied in tail — "
+                        "likely log_error_verbosity<3; auth fails will not hit Attacks"
+                    )
+                    warned_mysql_verbosity = True
                 for path in mysql:
                     self._scan_file(path, kind="mysql")
                 for path in ftp:
@@ -185,12 +221,18 @@ class AuthLogWatcher:
 
     def _discover_mysql_logs(self) -> List[str]:
         probes = _programdata_probe_globs()
-        return self._discover(
+        found = self._discover(
             _MYSQL_GLOB_CANDIDATES
             + (probes[0],)
             + self._extra_for("mysql"),
-            limit=8,
+            limit=16,
+            kind="mysql",
         )
+        # Merge my.ini-resolved paths (log-error / datadir\*.err)
+        for p in self._discover_mysql_from_ini():
+            if p not in found and os.path.isfile(p):
+                found.append(p)
+        return found[:8]
 
     def _discover_ftp_logs(self) -> List[str]:
         probes = _programdata_probe_globs()
@@ -203,12 +245,16 @@ class AuthLogWatcher:
 
     def _discover_mssql_logs(self) -> List[str]:
         probes = _programdata_probe_globs()
-        return self._discover(
+        found = self._discover(
             _MSSQL_GLOB_CANDIDATES
             + (probes[2],)
             + self._extra_for("mssql"),
-            limit=8,
+            limit=16,
         )
+        for p in self._discover_mssql_from_registry():
+            if p not in found and os.path.isfile(p):
+                found.append(p)
+        return found[:8]
 
     def _extra_for(self, kind: str) -> Tuple[str, ...]:
         """Ctor extras + ASTERIA_AUTHLOG_EXTRA, filtered by kind keywords."""
@@ -228,7 +274,11 @@ class AuthLogWatcher:
         return tuple(out)
 
     @staticmethod
-    def _discover(patterns: Tuple[str, ...], limit: int) -> List[str]:
+    def _discover(
+        patterns: Tuple[str, ...],
+        limit: int,
+        kind: str = "",
+    ) -> List[str]:
         found: List[str] = []
         for pattern in patterns:
             try:
@@ -244,9 +294,146 @@ class AuthLogWatcher:
         ):
             if p in seen or not os.path.isfile(p):
                 continue
+            if kind == "mysql" and _MYSQL_SKIP_NAME_RE.search(os.path.basename(p) or ""):
+                continue
             seen.add(p)
             uniq.append(p)
         return uniq[:limit]
+
+    @staticmethod
+    def _discover_mysql_from_ini() -> List[str]:
+        """Resolve log-error / datadir from my.ini (Derin: Server 8.04 style)."""
+        out: List[str] = []
+        ini_files: List[str] = []
+        for pattern in _MYSQL_INI_GLOBS:
+            try:
+                ini_files.extend(glob.glob(pattern))
+            except Exception:
+                pass
+        for ini in ini_files[:12]:
+            try:
+                with open(ini, "r", encoding="utf-8", errors="replace") as fh:
+                    text = fh.read()
+            except OSError:
+                continue
+            datadir = ""
+            log_error = ""
+            in_mysqld = False
+            for raw in text.splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#") or line.startswith(";"):
+                    continue
+                low = line.lower()
+                if low.startswith("[") and low.endswith("]"):
+                    in_mysqld = low in ("[mysqld]", "[mysqld_safe]", "[server]")
+                    continue
+                if not in_mysqld:
+                    continue
+                if low.startswith("datadir") and "=" in line:
+                    datadir = line.split("=", 1)[1].strip().strip('"').strip("'")
+                elif low.startswith("log-error") or low.startswith("log_error"):
+                    if "=" in line:
+                        log_error = line.split("=", 1)[1].strip().strip('"').strip("'")
+            if log_error:
+                # Absolute or relative to datadir
+                if os.path.isabs(log_error) and os.path.isfile(log_error):
+                    out.append(log_error)
+                elif datadir:
+                    cand = os.path.join(datadir, log_error)
+                    if os.path.isfile(cand):
+                        out.append(cand)
+                    # Windows often uses bare name without .err
+                    if not log_error.lower().endswith(".err"):
+                        cand2 = cand + ".err"
+                        if os.path.isfile(cand2):
+                            out.append(cand2)
+            if datadir and os.path.isdir(datadir):
+                try:
+                    for name in os.listdir(datadir):
+                        if name.lower().endswith(".err"):
+                            out.append(os.path.join(datadir, name))
+                except OSError:
+                    pass
+        # Dedupe preserve order
+        seen = set()
+        uniq = []
+        for p in out:
+            rp = os.path.normpath(p)
+            if rp in seen:
+                continue
+            seen.add(rp)
+            uniq.append(rp)
+        return uniq
+
+    @staticmethod
+    def _discover_mssql_from_registry() -> List[str]:
+        """Find ERRORLOG via SQL Server instance registry (custom install dirs)."""
+        out: List[str] = []
+        try:
+            import winreg  # type: ignore
+        except ImportError:
+            return out
+        roots = [
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Microsoft SQL Server"),
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Microsoft SQL Server"),
+        ]
+        instance_names: List[str] = []
+        for hive, path in roots:
+            try:
+                with winreg.OpenKey(hive, path + r"\Instance Names\SQL") as key:
+                    i = 0
+                    while True:
+                        try:
+                            _name, value, _ = winreg.EnumValue(key, i)
+                            if value:
+                                instance_names.append(str(value))
+                            i += 1
+                        except OSError:
+                            break
+            except OSError:
+                continue
+        for inst in instance_names:
+            for hive, path in roots:
+                try:
+                    with winreg.OpenKey(
+                        hive, path + rf"\{inst}\Setup"
+                    ) as key:
+                        sql_path, _ = winreg.QueryValueEx(key, "SQLPath")
+                except OSError:
+                    continue
+                # SQLPath is often ...\MSSQL — Log\ERRORLOG sits under it
+                for rel in (
+                    r"Log\ERRORLOG",
+                    r"MSSQL\Log\ERRORLOG",
+                ):
+                    cand = os.path.join(str(sql_path), rel)
+                    if os.path.isfile(cand):
+                        out.append(cand)
+        seen = set()
+        uniq = []
+        for p in out:
+            rp = os.path.normpath(p)
+            if rp in seen:
+                continue
+            seen.add(rp)
+            uniq.append(rp)
+        return uniq
+
+    @staticmethod
+    def _sample_mysql_denied_tail(paths: List[str], nbytes: int = 262144) -> int:
+        """Count Access denied hits in the last nbytes of each mysql err log."""
+        total = 0
+        for path in paths[:4]:
+            try:
+                size = os.path.getsize(path)
+                with open(path, "rb") as fh:
+                    start = max(0, size - nbytes)
+                    fh.seek(start)
+                    chunk = fh.read().decode("utf-8", errors="replace")
+                total += len(_MYSQL_DENIED.findall(chunk))
+            except OSError:
+                continue
+        return total
 
     def _scan_file(self, path: str, *, kind: str) -> None:
         try:

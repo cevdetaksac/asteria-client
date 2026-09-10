@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.122"  # AuthLog: MSSQL ERRORLOG + probe dirs + FTP/MySQL path coverage
+VERSION = "4.9.123"  # AuthLog: my.ini/registry discovery + MySQL verbosity health hint
 
 
 

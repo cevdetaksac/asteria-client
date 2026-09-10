@@ -182,7 +182,36 @@ class TestAuthLogFileScan(unittest.TestCase):
         self.assertIn("mysql_count", h)
         self.assertIn("ftp_count", h)
         self.assertIn("mssql_count", h)
+        self.assertIn("mysql_access_denied_tail", h)
+        self.assertIn("mysql_logging_hint", h)
         self.assertFalse(h["running"])
+
+    def test_skip_slow_log_name(self):
+        from client_auth_log_watchers import _MYSQL_SKIP_NAME_RE
+
+        self.assertTrue(_MYSQL_SKIP_NAME_RE.search("WIN-HOST-slow.log"))
+        self.assertFalse(_MYSQL_SKIP_NAME_RE.search("WIN-HOST.err"))
+
+    def test_mysql_ini_datadir_err(self):
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            data = os.path.join(td, "Data")
+            os.makedirs(data)
+            err = os.path.join(data, "host.err")
+            with open(err, "w", encoding="utf-8") as fh:
+                fh.write("seed\n")
+            ini = os.path.join(td, "my.ini")
+            with open(ini, "w", encoding="utf-8") as fh:
+                fh.write("[mysqld]\n")
+                fh.write(f"datadir={data}\n")
+                fh.write("log-error=host\n")
+            with mock.patch(
+                "client_auth_log_watchers._MYSQL_INI_GLOBS", (ini,)
+            ):
+                found = AuthLogWatcher._discover_mysql_from_ini()
+            self.assertIn(os.path.normpath(err), [os.path.normpath(p) for p in found])
 
 
 if __name__ == "__main__":
