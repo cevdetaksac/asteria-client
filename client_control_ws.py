@@ -26,6 +26,18 @@ from client_helpers import log
 PROTOCOL_V = 1
 PING_INTERVAL_SEC = 25.0
 RECV_TIMEOUT_SEC = 0.5
+def _warn(msg: str) -> None:
+    """Disconnects are WARNING (were INFO and hidden in noise)."""
+    try:
+        import client_helpers as _ch
+        if getattr(_ch, "LOGGER", None):
+            _ch.LOGGER.warning(str(msg))
+            return
+    except Exception:
+        pass
+    log(msg)
+
+
 RECONNECT_MIN = 1.0
 RECONNECT_MAX = 30.0
 # Cloud idle_timeout ≈ 90s — force reconnect before dashboard goes gray on a zombie TCP.
@@ -156,7 +168,7 @@ class AgentControlWebSocket:
                 return True
             except Exception as e:
                 self._stats["send_errors"] += 1
-                log(f"[CONTROL-WS] send error: {e}")
+                _warn(f"[CONTROL-WS] send error type={type(e).__name__}: {e}")
                 return False
 
     def send_ack(self, command_id: str, state: str = "received") -> bool:
@@ -354,10 +366,10 @@ class AgentControlWebSocket:
                     except websocket.WebSocketTimeoutException:
                         continue
                     except Exception as e:
-                        log(f"[CONTROL-WS] recv error: {e}")
+                        _warn(f"[CONTROL-WS] disconnect reason=recv_error type={type(e).__name__}: {e}")
                         break
             except Exception as e:
-                log(f"[CONTROL-WS] connect/session error: {e}")
+                _warn(f"[CONTROL-WS] disconnect reason=connect_error type={type(e).__name__}: {e}")
             finally:
                 was = self._connected
                 self._connected = False
@@ -375,7 +387,8 @@ class AgentControlWebSocket:
 
             if not self._running:
                 break
-            sleep_for = self._backoff + random.uniform(0, 0.5)
+            # Jittered exponential backoff (avoid fleet-wide reconnect storms)
+            sleep_for = self._backoff * random.uniform(0.5, 1.0) + random.uniform(0, 0.5)
             log(f"[CONTROL-WS] reconnect in {sleep_for:.1f}s")
             time.sleep(sleep_for)
             self._backoff = min(RECONNECT_MAX, self._backoff * 2.0)

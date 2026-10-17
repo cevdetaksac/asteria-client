@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.123"  # AuthLog: my.ini/registry discovery + MySQL verbosity health hint
+VERSION = "4.9.124"  # Phase 1: CONTROL-WS warnings + jittered backoff, offline-queue health gate
 
 
 

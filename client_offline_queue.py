@@ -139,7 +139,7 @@ def health_observe_block(token: str = "", *, path: str = QUEUE_FILE) -> dict:
         "mode": "observe",
         "local_flag": local_flag,
         "canary_gate": canary_gate,
-        "enabled": bool(local_flag and canary_gate),
+        "enabled": bool(offline_queue_enabled()),
         "pending": pending_count(token, path=path),
         "max_records": MAX_RECORDS,
         "max_batch": MAX_BATCH,
