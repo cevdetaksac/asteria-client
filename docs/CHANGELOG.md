@@ -2,6 +2,13 @@
 
 Removed `docs/ux-review` screenshots, duplicate resilience/alert plan MDs. Contract **1.4.64** cloud checklist is SoT for dashboard work.
 
+# v4.9.124
+
+## Control channel + offline queue health (contract 1.4.91)
+
+- CONTROL-WS disconnect WARNING + reason; jittered reconnect backoff
+- Offline queue health `enabled` = `offline_queue_enabled()`
+
 # v4.9.123
 
 ## Attacks — MySQL AuthLog auto-prep + discovery harden
