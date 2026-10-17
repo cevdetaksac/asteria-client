@@ -463,8 +463,6 @@ class TestTriggerFlow(unittest.TestCase):
         sp.assert_not_called()
         self.assertEqual(sent[0]["threat_type"], "ransomware_offline_suspect")
 
-    @unittest.expectedFailure  # POLICY-PENDING: contract 1.4.14 says process auto_contain hard-off;
-    # 1.3.4 / C-CANARY-2 allow it when operator config AND fleet gate. Code follows the latter.
     def test_even_strong_signal_needs_operator_command(self):
         guard, sent = self._mk({"auto_contain": True, "auto_restore": True})
         netdiff = {"internet_lost": True, "adapters_down": ["Ethernet"],

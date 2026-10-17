@@ -135,8 +135,9 @@ class TestFleetCanary(unittest.TestCase):
                 }
             }
         })
-        self.assertTrue(cfg2["auto_contain"])
-        self.assertTrue(cfg2["auto_kill"])
+        # Contract 1.4.92 Option A: permanently hard-off even when fleet gate is open.
+        self.assertFalse(cfg2["auto_contain"])
+        self.assertFalse(cfg2["auto_kill"])
 
 
 if __name__ == "__main__":

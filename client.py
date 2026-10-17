@@ -913,7 +913,7 @@ class CloudHoneypotClient:
             time.sleep(API_STARTUP_DELAY)
             log("API senkronizasyonu başlatılıyor...")
             # API retry thread'ini başlat
-            threading.Thread(target=self.api_retry_loop, daemon=True).start()
+            __import__("client_supervisor").start_supervised(self.api_retry_loop, name="ApiRetry")
             
             # ServiceManager daemon thread'lerini başlat (sync, watchdog, batch reporter)
             self.service_manager.start()
@@ -3754,12 +3754,16 @@ class CloudHoneypotClient:
         except Exception as e:
             log(f"[IPC] daemon control server failed: {e}")
 
-        threading.Thread(target=self.heartbeat_loop, daemon=True).start()
+        __import__("client_supervisor").start_supervised(self.heartbeat_loop, name="Heartbeat")
+        try:
+            __import__("client_ir").engine(log=log).resume_pending_expiry()
+        except Exception as _e:
+            log(f"[IR] resume lockdown expiry failed: {_e}")
         
         # Soft tray handoff only — do NOT exit when users log on
-        threading.Thread(target=self.monitor_user_sessions, daemon=True).start()
+        __import__("client_supervisor").start_supervised(self.monitor_user_sessions, name="SessionMonitor")
         try:
-            threading.Thread(target=self.report_open_ports_loop, daemon=True).start()
+            __import__("client_supervisor").start_supervised(self.report_open_ports_loop, name="OpenPortsReport")
         except Exception as e:
             log(f"open ports reporter start failed: {e}")
         try:
@@ -3964,9 +3968,9 @@ class CloudHoneypotClient:
             getattr(self, "frontend_only", False) or getattr(self, "daemon_is_active", False)
         )
         if not ui_only:
-            threading.Thread(target=self.heartbeat_loop, daemon=True).start()
+            __import__("client_supervisor").start_supervised(self.heartbeat_loop, name="Heartbeat")
             try:
-                threading.Thread(target=self.report_open_ports_loop, daemon=True).start()
+                __import__("client_supervisor").start_supervised(self.report_open_ports_loop, name="OpenPortsReport")
             except Exception as e:
                 log(f"open ports reporter start failed: {e}")
             try:

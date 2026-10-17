@@ -2,6 +2,14 @@
 
 Removed `docs/ux-review` screenshots, duplicate resilience/alert plan MDs. Contract **1.4.64** cloud checklist is SoT for dashboard work.
 
+# v4.9.125
+
+## IR sessions/lockdown + Network Guard hard-off (contract 1.4.92)
+
+- logoff_session / disconnect_session / logoff_all_sessions; full emergency_lockdown + undo
+- Network Guard auto_contain permanently off (Option A)
+- Supervised workers; CONTROL-WS conn_health
+
 # v4.9.124
 
 ## Control channel + offline queue health (contract 1.4.91)

@@ -293,7 +293,7 @@ class ProcessProtection:
             if result.returncode == 0:
                 log("[SELF-PROTECT] ✅ Restart task created in Task Scheduler")
             else:
-                log(f"[SELF-PROTECT] Task creation warning: {result.stderr.strip()}")
+                log(f"[SELF-PROTECT] Task creation warning: {(result.stderr or result.stdout or '').strip() or result.returncode}")
         except Exception as e:
             log(f"[SELF-PROTECT] Task creation error: {e}")
 

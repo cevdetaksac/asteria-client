@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.124"  # Phase 1: CONTROL-WS warnings + jittered backoff, offline-queue health gate
+VERSION = "4.9.125"  # Phase 2: IR sessions/lockdown, supervised workers, CONTROL-WS health
 
 
 

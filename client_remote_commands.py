@@ -86,6 +86,8 @@ ALLOWED_COMMANDS: Set[str] = {
     "relocate_service",
     "emergency_lockdown", "lift_lockdown",
     "enable_lockdown", "disable_lockdown",  # aliases
+    # IR sessions + full lockdown (contract 1.4.92)
+    "logoff_session", "disconnect_session", "logoff_all_sessions", "emergency_lockdown_undo",
     "unlock_ransomware_quarantine", "list_ransomware_quarantine",
     "list_sessions", "list_processes", "inspect_process", "list_local_users", "list_services", "snapshot",
     "collect_diagnostics",
@@ -127,6 +129,7 @@ _IR_URGENT_COMMANDS = frozenset({
     "allow_process",
     "isolate_host", "lift_isolation",
     "logoff_user", "contain_user",
+    "logoff_session", "disconnect_session", "logoff_all_sessions", "emergency_lockdown_undo",
     "block_ip", "unblock_ip",
     "disable_account", "disable_all_users", "reset_password",
     "stop_service", "start_service", "restart_service", "disable_service",
@@ -180,6 +183,8 @@ PROTECTED_SERVICES: Set[str] = {
 REQUIRES_CONFIRMATION: Set[str] = {
     "emergency_lockdown", "reset_password", "disable_account",
     "disable_all_users", "contain_user",
+    "logoff_session", "disconnect_session", "logoff_all_sessions",
+    "emergency_lockdown_undo",
     # Process containment is only sent after explicit operator approval.
     "suspend_process",
     "allow_process",
@@ -3663,7 +3668,50 @@ class RemoteCommandExecutor:
             out["error"] = "ACCESS_DENIED" if "access" in err.lower() else "FAILED"
         return out
 
+    # ---- Incident response (contract 1.4.92) ----
+    def _ir(self):
+        import client_ir
+        return client_ir.engine(log=log)
+
+    @staticmethod
+    def _ir_wrap(res: dict) -> dict:
+        res = dict(res or {})
+        res.setdefault("success", bool(res.get("ok")))
+        return res
+
+    def _cmd_logoff_session(self, params: dict) -> dict:
+        return self._ir_wrap(self._ir().logoff_session(
+            params.get("session_id"), dry_run=bool(params.get("dry_run"))))
+
+    def _cmd_disconnect_session(self, params: dict) -> dict:
+        return self._ir_wrap(self._ir().disconnect_session(
+            params.get("session_id"), dry_run=bool(params.get("dry_run"))))
+
+    def _cmd_logoff_all_sessions(self, params: dict) -> dict:
+        return self._ir_wrap(self._ir().logoff_all_sessions(
+            exclude_session_ids=params.get("exclude_session_ids") or [],
+            exclude_users=params.get("exclude_users") or [],
+            include_console=params.get("include_console", True) is not False,
+            dry_run=bool(params.get("dry_run")),
+        ))
+
+    def _cmd_emergency_lockdown_undo(self, params: dict) -> dict:
+        return self._ir_wrap(self._ir().emergency_lockdown_undo(
+            str(params.get("lockdown_id") or "")))
+
+    _LOCKDOWN_V2_KEYS = ("logoff_all", "block_rdp", "disable_non_admin", "keep_admins", "dry_run")
+
     def _cmd_emergency_lockdown(self, params: dict) -> dict:
+        if any(k in params for k in self._LOCKDOWN_V2_KEYS):
+            return self._ir_wrap(self._ir().emergency_lockdown(
+                logoff_all=params.get("logoff_all", True) is not False,
+                block_rdp=params.get("block_rdp", True) is not False,
+                disable_non_admin=bool(params.get("disable_non_admin", False)),
+                keep_admins=params.get("keep_admins") or [],
+                management_ip=str(params.get("management_ip") or "").strip(),
+                duration_minutes=int(params.get("duration_minutes", 60) or 0),
+                dry_run=bool(params.get("dry_run")),
+            ))
         mgmt_ip = params.get("management_ip", "")
         duration = params.get("duration_minutes", 60)
         if not mgmt_ip:

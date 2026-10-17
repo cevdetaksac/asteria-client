@@ -26,6 +26,14 @@ from client_helpers import log
 PROTOCOL_V = 1
 PING_INTERVAL_SEC = 25.0
 RECV_TIMEOUT_SEC = 0.5
+_LAST_DISC = {"reason": None, "at": None}
+
+
+def _note_disc(reason: str) -> None:
+    _LAST_DISC["reason"] = reason
+    _LAST_DISC["at"] = datetime.now(timezone.utc).isoformat()
+
+
 def _warn(msg: str) -> None:
     """Disconnects are WARNING (were INFO and hidden in noise)."""
     try:
@@ -309,6 +317,13 @@ class AgentControlWebSocket:
                     "pid": os.getpid(),
                     "mode": "daemon",
                     "ts": datetime.now(timezone.utc).isoformat(),
+                    "conn_health": {
+                        "connects": int(self._stats.get("connects") or 0),
+                        "disconnects": int(self._stats.get("disconnects") or 0),
+                        "stale_reconnects": int(self._stats.get("stale_reconnects") or 0),
+                        "last_disconnect_reason": _LAST_DISC.get("reason"),
+                        "last_disconnect_at": _LAST_DISC.get("at"),
+                    },
                 }
                 # ZT-601: truthful envelope-v2 capability (off unless configured
                 # to observe). Never advertises enforce; design gate not promoted.
@@ -366,9 +381,11 @@ class AgentControlWebSocket:
                     except websocket.WebSocketTimeoutException:
                         continue
                     except Exception as e:
+                        _note_disc("recv_error")
                         _warn(f"[CONTROL-WS] disconnect reason=recv_error type={type(e).__name__}: {e}")
                         break
             except Exception as e:
+                _note_disc("connect_error")
                 _warn(f"[CONTROL-WS] disconnect reason=connect_error type={type(e).__name__}: {e}")
             finally:
                 was = self._connected
@@ -383,6 +400,7 @@ class AgentControlWebSocket:
                         pass
                 if was:
                     self._stats["disconnects"] += 1
+                    _note_disc(_LAST_DISC.get("reason") or "socket_closed")
                     log("[CONTROL-WS] disconnected")
 
             if not self._running:

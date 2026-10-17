@@ -120,18 +120,12 @@ def load_config(client_config: Optional[dict] = None) -> dict:
     # C-CANARY-2: auto contain/kill/restore only when fleet gate AND config.
     # Missing canary → fail-closed (all false). Network-surface restore stays
     # separately gated by auto_restore_network (contract 1.4.14).
-    want_contain = bool(cfg.get("auto_contain", False))
-    want_kill = bool(cfg.get("auto_kill", False))
-    want_restore = bool(cfg.get("auto_restore", False))
-    try:
-        from client_fleet_canary import GATE_NG, and_enabled
-        cfg["auto_contain"] = and_enabled(GATE_NG, want_contain)
-        cfg["auto_kill"] = and_enabled(GATE_NG, want_kill)
-        cfg["auto_restore"] = and_enabled(GATE_NG, want_restore)
-    except Exception:
-        cfg["auto_contain"] = False
-        cfg["auto_kill"] = False
-        cfg["auto_restore"] = False
+    # Contract 1.4.14 / 1.4.92: process auto_contain / auto_kill / auto_restore
+    # are permanently hard-off. Only an explicit operator command may suspend.
+    # Fleet gate / config cannot re-enable the bomb-path (Option A, 2026-10-18).
+    cfg["auto_contain"] = False
+    cfg["auto_kill"] = False
+    cfg["auto_restore"] = False
     cfg["auto_restore_network"] = bool(cfg.get("auto_restore_network", True))
     return cfg
 
@@ -1627,7 +1621,7 @@ class NetworkGuard:
 
         # Auto-contain only when canary gate AND config enable (load_config AND).
         # Default / out-of-canary remains alert-only (C-CANARY-2).
-        auto_contain = bool(strong and self.cfg.get("auto_contain", False))
+        auto_contain = False  # 1.4.92 hard-off; operator command only
         log(f"[NET-GUARD] {'CONTAIN' if auto_contain else 'ALERT-ONLY'} "
             f"{trigger} score={score} suspects={len(suspects)} strong={strong}")
 
