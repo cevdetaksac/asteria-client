@@ -476,7 +476,9 @@ class RemoteDesktopStreamer:
               command_id: Optional[str] = None,
               viewer_backend: Optional[str] = None,
               notify_user: bool = False,
-              session_target: Optional[dict] = None) -> dict:
+              session_target: Optional[dict] = None,
+              stream_id: Optional[str] = None,
+              ice_servers: Optional[list] = None) -> dict:
         """Start capture + WS (with HTTP fallback).
 
         Honest start: resolve WTS session_id, probe desktop first.
@@ -514,11 +516,16 @@ class RemoteDesktopStreamer:
         want_winlogon = bool(force_secure)
         with self._lock:
             self._command_id = str(command_id or "").strip()
-            self._stream_id = uuid.uuid4().hex
+            self._stream_id = (str(stream_id).strip() if stream_id else "") or uuid.uuid4().hex
+            self._cloud_ice_servers = list(ice_servers) if isinstance(ice_servers, list) else []
             self._viewer_backend = (viewer_backend or 'auto').strip().lower()
             self._notify_user = bool(notify_user)
             self._session_target = session_target if isinstance(session_target, dict) else None
             self._hw_sidecar = None
+            log(
+                f"[REMOTE-DESKTOP] start params stream_id={self._stream_id} "
+                f"viewer_backend={self._viewer_backend} ice_n={len(self._cloud_ice_servers)}"
+            )
             self._hw_active = False
             self._hw_fallback_reason = None
             self._progress_live_emitted = False
@@ -1451,20 +1458,26 @@ class RemoteDesktopStreamer:
     # ===================== Phase 4 HW sidecar (C-RD-HW) ===================== #
 
     def _hw_want(self) -> bool:
-        """True when this start should try webrtc_hw (flag/caps permitting)."""
+        """True when this start should try webrtc_hw.
+
+        Binary presence is enough — do NOT gate on --selftest. Selftest DXGI
+        often fails in Session-0 SYSTEM even when CreateProcessAsUser into the
+        console session can capture (phone JPEG-only regression 4.9.133).
+        """
         vb = str(getattr(self, "_viewer_backend", "auto") or "auto").strip().lower()
         if vb == "jpeg":
+            log("[REMOTE-DESKTOP] HW skip: viewer_backend=jpeg")
             return False
         if vb not in ("auto", "webrtc_hw", "hw"):
+            log(f"[REMOTE-DESKTOP] HW skip: viewer_backend={vb!r}")
             return False
-        # Cloud may set preferred_transport; agent also checks binary + selftest.
-        if not _rd_hw.sidecar_path():
+        path = _rd_hw.sidecar_path()
+        if not path:
+            log("[REMOTE-DESKTOP] HW skip: asteria-encode.exe not found")
+            self._hw_fallback_reason = "binary_missing"
             return False
-        try:
-            caps = _rd_hw.caps_from_selftest()
-            return bool(caps.get("webrtc_hw"))
-        except Exception:
-            return False
+        log(f"[REMOTE-DESKTOP] HW want: backend={vb} path={path}")
+        return True
 
     def _hw_on_msg(self, msg: dict) -> None:
         """Forward sidecar JSON-lines into the existing remote WS / meta path."""
@@ -1538,11 +1551,14 @@ class RemoteDesktopStreamer:
         """Spawn asteria-encode --agent. Returns True if offer path is live."""
         try:
             sc = _rd_hw.HwSidecar(self._hw_on_msg)
-            ice = None
-            try:
-                ice = self._media.capabilities().get("ice_servers") if self._media else None
-            except Exception:
-                ice = None
+            ice = list(getattr(self, "_cloud_ice_servers", None) or [])
+            if not ice:
+                try:
+                    ice = self._media.capabilities().get("ice_servers") if self._media else None
+                except Exception:
+                    ice = None
+            if not ice:
+                log("[REMOTE-DESKTOP] HW warning: no ice_servers yet (TURN may be needed for 4G)")
             sid = None
             st = getattr(self, "_session_target", None) or {}
             if isinstance(st, dict) and st.get("kind") == "session":

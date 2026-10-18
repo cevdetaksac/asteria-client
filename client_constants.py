@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.133"  # HW webrtc_hw primary + signaling fix; JPEG fallback
+VERSION = "4.9.134"  # HW: honor cloud stream_id+ICE; do not gate on Session-0 selftest
 
 
 

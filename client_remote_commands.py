@@ -1363,6 +1363,8 @@ class RemoteCommandExecutor:
             viewer_backend=params.get("viewer_backend"),
             notify_user=bool(params.get("notify_user") or False),
             session_target=params.get("session_target"),
+            stream_id=params.get("stream_id"),
+            ice_servers=params.get("ice_servers"),
         )
         if result.get("success"):
             self._notify_remote_desktop_ui("started")
