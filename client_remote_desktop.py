@@ -559,14 +559,26 @@ class RemoteDesktopStreamer:
             self._seq = 0
             self._last_activity = time.time()
             self._stop.clear()
-            # Phase 4: try HW sidecar when requested; JPEG path continues as fallback
+            # Phase 4: try HW sidecar when requested; JPEG continues as fallback only
             if self._hw_want():
+                # Prefer webrtc so _jpeg_ws_primary flips off once HW is up
+                if self._preferred_transport != "webrtc":
+                    self._preferred_transport = "webrtc"
                 if self._start_hw_sidecar():
                     self._transport = "webrtc_hw"
                     self.emit_stream_progress("webrtc_hw", "HW encode sidecar started")
+                    self._emit_agent_ws({
+                        "t": "remote_meta",
+                        "type": "remote_meta",
+                        "backend": "webrtc_hw",
+                        "stream_id": self._stream_id,
+                        "jpeg_primary": False,
+                    })
                 else:
                     log(f"[REMOTE-DESKTOP] HW unavailable -> JPEG ({self._hw_fallback_reason})")
+                    self._preferred_transport = "websocket"
                     self._emit_agent_ws({
+                        "t": "remote_meta",
                         "type": "remote_meta",
                         "backend": "jpeg",
                         "fallback_reason": self._hw_fallback_reason,
@@ -1463,14 +1475,18 @@ class RemoteDesktopStreamer:
             if t == "offer":
                 sdp = msg.get("sdp") or ""
                 self._emit_agent_ws({
+                    "t": "webrtc_offer",
                     "type": "webrtc_offer",
+                    "protocol": 1,
                     "backend": "webrtc_hw",
                     "sdp": sdp,
                     "stream_id": getattr(self, "_stream_id", ""),
                 })
             elif t == "ice":
                 self._emit_agent_ws({
+                    "t": "webrtc_ice",
                     "type": "webrtc_ice",
+                    "protocol": 1,
                     "backend": "webrtc_hw",
                     "candidate": msg.get("candidate"),
                     "sdpMid": msg.get("sdpMid"),
@@ -2138,6 +2154,9 @@ class RemoteDesktopStreamer:
         return "websocket"
 
     def _jpeg_ws_primary(self) -> bool:
+        # Phase 4: when HW sidecar is live, JPEG is fallback-only (C-RD-HW-SMOOTH)
+        if getattr(self, "_hw_active", False):
+            return False
         return self._preferred_transport != "webrtc"
 
     def _should_send_jpeg_ws(self) -> bool:

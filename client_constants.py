@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.132"  # Fix: winlogon helper sent empty tile deltas on static lock screen (HELPER_NO_FRAME)
+VERSION = "4.9.133"  # HW webrtc_hw primary + signaling fix; JPEG fallback
 
 
 
