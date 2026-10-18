@@ -44,7 +44,8 @@ pub struct OfferBundle {
 
 pub fn make_offer() -> Result<OfferBundle, String> {
     from_feature_flags().install_process_default();
-    let mut rtc = RtcConfig::new()
+    // One path: offer H.264 only; the viewer's answer picks the profile (C-RD-CODEC-1)
+    let mut rtc = RtcConfig::new().clear_codecs().enable_h264(true)
         .enable_bwe(Some(Bitrate::kbps(3000)))
         .set_stats_interval(Some(Duration::from_secs(1)))
         .build(Instant::now());
@@ -218,7 +219,15 @@ pub fn run(
         if ice == "connected" || ice == "completed" {
             if pt_video.is_none() {
                 if let Some(w) = rtc.writer(mid) {
-                    pt_video = w.payload_params().find(|p| p.spec().codec.is_video()).map(|p| p.pt());
+                    // H.264 packetization-mode=1, constrained baseline 42e01f first (decodes everywhere)
+                    let rank = |p: &str0m::format::PayloadParams| { let f = &p.spec().format;
+                        (f.packetization_mode == Some(1)) as u8 * 4 + match f.profile_level_id { Some(0x42e01f) => 3, Some(x) if x >> 16 == 0x42 => 2, _ => 0 } };
+                    if let Some(p) = w.payload_params().filter(|p| p.spec().codec == str0m::format::Codec::H264).max_by_key(|p| rank(p)) {
+                        let f = &p.spec().format;
+                        let _ = evt.send(json!({"t":"codec","pt":format!("{:?}",p.pt()),"pm":f.packetization_mode,"plid":f.profile_level_id.map(|x| format!("{x:06x}"))}));
+                        pt_video = Some(p.pt());
+                        pending_frames.clear(); let _ = ctl.send(Ctl::Keyframe); // start with a fresh IDR
+                    }
                 }
             }
             if let Some(pt) = pt_video {
@@ -261,7 +270,9 @@ pub fn run(
                             return Ok(Stats { ice, frames_sent: frames, bytes_sent: bytes, last_enc_ms, bitrate_est_kbps: bitrate_est, keyframes: keys });
                         }
                     }
+                    Event::Connected => { let _ = evt.send(json!({"t":"dtls","state":"connected"})); }
                     Event::KeyframeRequest(req) => {
+                        let _ = evt.send(json!({"t":"pli","kind":format!("{:?}",req.kind)}));
                         let _ = ctl.send(Ctl::Keyframe);
                         let _ = evt.send(json!({"t":"pli","kind":format!("{:?}", req.kind)}));
                         let _ = req.kind == KeyframeRequestKind::Pli;

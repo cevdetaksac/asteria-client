@@ -81,6 +81,7 @@ pub fn run(args: &[String]) -> i32 {
 
     let mut last_stats = Instant::now();
     let mut frames = 0u64;
+    let (mut total_frames, mut total_bytes) = (0u64, 0u64);
     let mut bytes = 0u64;
     let mut last_enc_ms = 0.0;
     let mut encoder = String::new();
@@ -90,13 +91,13 @@ pub fn run(args: &[String]) -> i32 {
             match ev["t"].as_str() {
                 Some("ice") => { ice = ev["state"].as_str().unwrap_or("").to_string(); out(&ev); }
                 Some("enc") => {
-                    frames += 1;
+                    frames += 1; total_frames += 1; total_bytes += ev["bytes"].as_u64().unwrap_or(0);
                     bytes += ev["bytes"].as_u64().unwrap_or(0);
                     last_enc_ms = ev["ms"].as_f64().unwrap_or(0.0);
                 }
                 Some("media") => { encoder = ev["encoder"].as_str().unwrap_or("").to_string(); out(&ev); }
                 Some("error") => { out(&ev); }
-                Some("bwe") | Some("desktop") | Some("mons") | Some("pli") | Some("channel") | Some("warn") | Some("rtc") => out(&ev),
+                Some("codec") | Some("dtls") | Some("bwe") | Some("desktop") | Some("mons") | Some("pli") | Some("channel") | Some("warn") | Some("rtc") => out(&ev),
                 _ => {}
             }
         }
@@ -106,7 +107,7 @@ pub fn run(args: &[String]) -> i32 {
                 "t":"stats","fps": (frames as f64 / el * 10.0).round()/10.0,
                 "kbps": ((bytes * 8) as f64 / el / 1000.0).round(),
                 "encode_ms": (last_enc_ms * 100.0).round() / 100.0,
-                "encoder": encoder, "ice": ice,
+                "encoder": encoder, "ice": ice, "frames_total": total_frames, "bytes_total": total_bytes,
             }));
             frames = 0; bytes = 0; last_stats = Instant::now();
         }

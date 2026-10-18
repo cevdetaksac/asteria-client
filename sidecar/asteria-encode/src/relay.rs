@@ -7,6 +7,17 @@ use std::sync::mpsc;
 use std::time::Duration;
 use tungstenite::{stream::MaybeTlsStream, Message};
 
+fn flog(dir: &str, s: &str) {
+    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(format!("{dir}\\rdtest.log")) { let _ = writeln!(f, "{ts} {s}"); }
+}
+fn short(t: &str) -> String { // SDP: keep candidate/fmtp/rtpmap lines only
+    if !t.contains("\"sdp\"") { return t.chars().take(600).collect(); }
+    let v: Value = serde_json::from_str(t).unwrap_or(Value::Null);
+    let keep: Vec<&str> = v["sdp"].as_str().unwrap_or("").split("\r\n").filter(|l| l.starts_with("a=candidate") || l.starts_with("a=fmtp") || l.starts_with("a=rtpmap") || l.starts_with("m=")).collect();
+    format!("{} sdp: {}", v["t"], keep.join(" | "))
+}
+
 pub fn run(args: &[String]) -> i32 {
     let url = args.iter().position(|a| a == "--relay").and_then(|i| args.get(i + 1)).cloned().unwrap_or_default();
     let fps: u32 = crate::bench::arg(args, "--fps", 30);
@@ -31,9 +42,12 @@ fn session(url: &str, fps: u32) -> Result<(), String> {
     let _ = ws.send(Message::text(json!({"t":"pc_hello","version":env!("CARGO_PKG_VERSION")}).to_string()));
     let (tx, rx) = mpsc::channel::<String>();
     let mut child: Option<(Child, ChildStdin)> = None;
+    let dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_string_lossy().to_string())).unwrap_or(".".into());
+    flog(&dir, "relay connected");
     let res = loop {
         match ws.read() {
             Ok(Message::Text(t)) => {
+                flog(&dir, &format!("<viewer {}", short(&t)));
                 let v: Value = serde_json::from_str(&t).unwrap_or(Value::Null);
                 match v["t"].as_str() {
                     Some("join") => {
@@ -59,7 +73,7 @@ fn session(url: &str, fps: u32) -> Result<(), String> {
             Err(tungstenite::Error::Io(e)) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
             Err(e) => break Err(e.to_string()),
         }
-        while let Ok(l) = rx.try_recv() { if ws.send(Message::text(l)).is_err() { break } }
+        while let Ok(l) = rx.try_recv() { flog(&dir, &format!(">pc {}", short(&l))); if ws.send(Message::text(l)).is_err() { break } }
     };
     kill(&mut child);
     res
