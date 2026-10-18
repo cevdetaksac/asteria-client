@@ -68,7 +68,7 @@ pub fn run(args: &[String]) -> i32 {
     let rtc_thread = {
         let pending = Some(offer.pending);
         std::thread::spawn(move || {
-            rtc::run(offer.rtc, offer.sock, pending, offer.mid, offer.cid_u, offer.cid_r, m_out_rx, m_ctl_tx, cmd_rx, evt_tx)
+            rtc::run(offer.rtc, offer.sock, pending, offer.mid, offer.cid_ctrl, m_out_rx, m_ctl_tx, cmd_rx, evt_tx)
         })
     };
 

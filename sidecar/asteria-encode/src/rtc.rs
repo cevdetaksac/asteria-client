@@ -1,4 +1,4 @@
-//! str0m WebRTC session: offerer that sends H.264 + two data channels (C-RD-HW-5 / C-RD-HW-IN).
+//! str0m WebRTC session: offerer H.264 + one DataChannel `ctrl` (C-RD-ONE).
 use serde_json::{json, Value};
 use std::collections::VecDeque;
 use std::io::ErrorKind;
@@ -39,8 +39,7 @@ pub struct OfferBundle {
     pub sdp: String,
     pub pending: SdpPendingOffer,
     pub mid: Mid,
-    pub cid_u: ChannelId,
-    pub cid_r: ChannelId,
+    pub cid_ctrl: ChannelId,
 }
 
 pub fn make_offer() -> Result<OfferBundle, String> {
@@ -69,11 +68,10 @@ pub fn make_offer() -> Result<OfferBundle, String> {
 
     let mut change = rtc.sdp_api();
     let mid = change.add_media(MediaKind::Video, Direction::SendOnly, None, None, None);
-    let cid_u = change.add_channel("input-u".into());
-    let cid_r = change.add_channel("input-r".into());
+    let cid_ctrl = change.add_channel("ctrl".into());
     let (offer, pending) = change.apply().ok_or("sdp apply")?;
     let sdp = offer.to_sdp_string();
-    Ok(OfferBundle { rtc, sock, sdp, pending, mid, cid_u, cid_r })
+    Ok(OfferBundle { rtc, sock, sdp, pending, mid, cid_ctrl })
 }
 
 fn local_ip() -> Option<std::net::IpAddr> {
@@ -105,8 +103,7 @@ pub fn run(
     sock: UdpSocket,
     pending: Option<SdpPendingOffer>,
     mid: Mid,
-    cid_u: ChannelId,
-    cid_r: ChannelId,
+    cid_ctrl: ChannelId,
     media: Receiver<MediaOut>,
     ctl: Sender<Ctl>,
     cmds: Receiver<Cmd>,
@@ -152,7 +149,7 @@ pub fn run(
                 Ok(MediaOut::Event(v)) => {
                     if v["t"] == "enc" { last_enc_ms = v["ms"].as_f64().unwrap_or(0.0); }
                     if matches!(v["t"].as_str(), Some("cur" | "cp" | "mons" | "desktop" | "media")) {
-                        if let Some(mut ch) = rtc.channel(cid_r) {
+                        if let Some(mut ch) = rtc.channel(cid_ctrl) {
                             let s = v.to_string();
                             let _ = ch.write(false, s.as_bytes());
                         }
@@ -170,7 +167,7 @@ pub fn run(
             last_clip = seq;
             if let Some(s) = desk::get_clipboard() {
                 if s.len() <= 1 << 20 {
-                    if let Some(mut ch) = rtc.channel(cid_r) {
+                    if let Some(mut ch) = rtc.channel(cid_ctrl) {
                         let msg = json!({"t":"clip","s":s}).to_string();
                         let _ = ch.write(false, msg.as_bytes());
                     }
@@ -231,11 +228,14 @@ pub fn run(
                     Event::ChannelOpen(id, name) => {
                         let _ = evt.send(json!({"t":"channel","id":format!("{id:?}"),"name":name}));
                     }
+                    Event::ChannelClose(_id) => {
+                        let _ = inj.apply(&json!({"t":"rel"}));
+                    }
                     Event::ChannelData(d) => {
                         if let Ok(m) = serde_json::from_slice::<Value>(&d.data) {
-                            if d.id == cid_u || d.id == cid_r {
+                            if d.id == cid_ctrl {
                                 if let Some(reply) = inj.apply(&m) {
-                                    if let Some(mut ch) = rtc.channel(cid_r) {
+                                    if let Some(mut ch) = rtc.channel(cid_ctrl) {
                                         let s = reply.to_string();
                                         let _ = ch.write(false, s.as_bytes());
                                     }

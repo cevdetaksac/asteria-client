@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.139"  # soft MF H.264 fallback; mid-stream VIDEO_ENCODER_FAILED; force same-ver reinstall fallback
+VERSION = "4.9.140"  # C-RD-ONE: WebRTC+ctrl DC only; no helper JPEG live; stop on encoder fail
 
 
 

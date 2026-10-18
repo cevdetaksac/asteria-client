@@ -51,7 +51,7 @@ pub fn run(args: &[String]) -> i32 {
     let (evt_tx, evt_rx) = mpsc::channel::<Value>();
     let pending = Some(bundle.pending);
     let rtc_thread = std::thread::spawn(move || {
-        rtc::run(bundle.rtc, bundle.sock, pending, bundle.mid, bundle.cid_u, bundle.cid_r, m_out_rx, m_ctl_tx, cmd_rx, evt_tx)
+        rtc::run(bundle.rtc, bundle.sock, pending, bundle.mid, bundle.cid_ctrl, m_out_rx, m_ctl_tx, cmd_rx, evt_tx)
     });
 
     // stdin reader thread

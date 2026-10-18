@@ -816,6 +816,9 @@ class RemoteDesktopStreamer:
             if self._hw_want():
                 if self._start_hw_sidecar():
                     self._transport = "webrtc_hw"
+                    self._running = True
+                    self._stream_started_at = time.time()
+                    self._capture_method = "webrtc_hw"
                     self.emit_stream_progress("webrtc_hw", "Video encoder started")
                     self._emit_agent_ws({
                         "t": "remote_meta",
@@ -824,6 +827,19 @@ class RemoteDesktopStreamer:
                         "stream_id": self._stream_id,
                         "jpeg_primary": False,
                     })
+                    # C-RD-ONE: signaling WS only — no helper JPEG live path
+                    self.ensure_agent_ws()
+                    self._arm_hw_negotiate_timeout(20.0)
+                    log(
+                        f"[REMOTE-DESKTOP] Stream started "
+                        f"(fps={self._fps} session={self._target_session_id} "
+                        f"transport=webrtc_hw signaling=ws)"
+                    )
+                    return {
+                        "success": True,
+                        "message": "remote stream started (webrtc_hw)",
+                        "data": self.get_status(),
+                    }
                 else:
                     reason = str(self._hw_fallback_reason or "encoder_start_failed")
                     log(f"[REMOTE-DESKTOP] video encoder failed (no JPEG live): {reason}")
@@ -1477,9 +1493,9 @@ class RemoteDesktopStreamer:
             return {
                 "success": True,
                 "message": (
-                    "remote stream started (jpeg-ws primary; webrtc optional)"
-                    if self._jpeg_ws_primary()
-                    else "remote stream started (webrtc preferred; jpeg-ws fallback)"
+                    "remote stream started (webrtc_hw)"
+                    if (getattr(self, "_hw_active", False) or self._transport == "webrtc_hw")
+                    else "remote stream started"
                 ),
                 "data": self.get_status(),
             }
@@ -1528,6 +1544,10 @@ class RemoteDesktopStreamer:
                     "detail": "negotiate_timeout",
                     "stream_id": getattr(self, "_stream_id", ""),
                 })
+                try:
+                    self.stop(reason="VIDEO_ENCODER_FAILED")
+                except Exception:
+                    pass
                 return
             except Exception as e:
                 log(f"[REMOTE-DESKTOP] HW timeout handler: {e}")
@@ -1630,6 +1650,11 @@ class RemoteDesktopStreamer:
                     "detail": self._hw_fallback_reason,
                     "stream_id": getattr(self, "_stream_id", ""),
                 })
+                # C-RD-ONE-3: never leave capture_loop pushing GDI/JPEG over WS
+                try:
+                    self.stop(reason="VIDEO_ENCODER_FAILED")
+                except Exception:
+                    pass
         except Exception as e:
             log(f"[REMOTE-DESKTOP] HW on_msg failed: {e}")
 
@@ -2360,7 +2385,9 @@ class RemoteDesktopStreamer:
         return self._preferred_transport != "webrtc"
 
     def _should_send_jpeg_ws(self) -> bool:
-        """Keep JPEG-WS when websocket-primary, or until WebRTC media is ready."""
+        """C-RD-ONE-2: JPEG is never a live transport when HW path is active."""
+        if getattr(self, "_hw_active", False) or self._transport == "webrtc_hw":
+            return False
         if self._jpeg_ws_primary():
             return True
         return not self._media_ready()
@@ -2459,6 +2486,9 @@ class RemoteDesktopStreamer:
                     break
                 self._sync_media_capture_mode()
                 self._progress_heartbeat_tick()
+                if getattr(self, "_hw_active", False) or self._transport == "webrtc_hw":
+                    self._stop.wait(0.25)
+                    continue
                 self._maybe_follow_console_desktop()
                 self._maybe_promote_follow_lock_capture()
                 self._capture_and_send()
