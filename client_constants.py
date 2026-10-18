@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.142"  # C-RD-CAD-4: SendSAS brokered by session-0 SYSTEM parent
+VERSION = "4.9.143"  # C-RD-WARP-1: capture/encode on GPU-less servers (Basic Render/WARP, CPU NV12 + SW H.264)
 
 
 

@@ -16,10 +16,9 @@ pub struct Enc {
     mft: IMFTransform,
     events: Option<IMFMediaEventGenerator>,
     codec: Option<ICodecAPI>,
-    vdev: ID3D11VideoDevice,
-    vctx: ID3D11VideoContext,
-    vpe: ID3D11VideoProcessorEnumerator,
-    vp: ID3D11VideoProcessor,
+    /// GPU BGRA->NV12 video processor; None on WARP / Basic Render Driver -> CPU conversion
+    vpp: Option<(ID3D11VideoDevice, ID3D11VideoContext, ID3D11VideoProcessorEnumerator, ID3D11VideoProcessor)>,
+    bgra_st: Option<ID3D11Texture2D>,
     ring: Vec<(ID3D11Texture2D, ID3D11VideoProcessorOutputView)>,
     ring_i: usize,
     in_view: Option<(usize, ID3D11VideoProcessorInputView)>,
@@ -57,7 +56,8 @@ impl Enc {
             MFTEnumEx(MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER, None, Some(&info_out), &mut acts, &mut n)?;
             let mut list: Vec<IMFActivate> = std::slice::from_raw_parts(acts, n as usize).iter().filter_map(|a| a.clone()).collect();
             CoTaskMemFree(Some(acts as _));
-            let force_sw = std::env::var("ASTERIA_ENC_FORCE_SW").map(|v| v == "1").unwrap_or(false);
+            let vpp = if std::env::var("ASTERIA_D3D_WARP").map(|v| v == "1").unwrap_or(false) { None } else { Self::video_processor(device, ctx, w, h, fps).ok() };
+            let force_sw = vpp.is_none() || std::env::var("ASTERIA_ENC_FORCE_SW").map(|v| v == "1").unwrap_or(false);
             if force_sw { list.clear(); }
             let mut hardware = !list.is_empty();
             if list.is_empty() {
@@ -143,44 +143,84 @@ impl Enc {
             mft.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)?;
             mft.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)?;
 
-            // --- BGRA -> NV12 video processor
-            let vdev: ID3D11VideoDevice = device.cast()?;
-            let vctx: ID3D11VideoContext = ctx.cast()?;
-            let cd = D3D11_VIDEO_PROCESSOR_CONTENT_DESC {
-                InputFrameFormat: D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
-                InputFrameRate: DXGI_RATIONAL { Numerator: fps, Denominator: 1 }, InputWidth: w, InputHeight: h,
-                OutputFrameRate: DXGI_RATIONAL { Numerator: fps, Denominator: 1 }, OutputWidth: w, OutputHeight: h,
-                Usage: D3D11_VIDEO_USAGE_OPTIMAL_SPEED,
-            };
-            let vpe = vdev.CreateVideoProcessorEnumerator(&cd)?;
-            let vp = vdev.CreateVideoProcessor(&vpe, 0)?;
-            // BT.709 limited output, full-range RGB input
-            let cs_in = D3D11_VIDEO_PROCESSOR_COLOR_SPACE { _bitfield: 0 };
-            let cs_out = D3D11_VIDEO_PROCESSOR_COLOR_SPACE { _bitfield: 0b10 | (1 << 4) }; // YCbCr_Matrix=1(709), Nominal_Range=16-235
-            vctx.VideoProcessorSetStreamColorSpace(&vp, 0, &cs_in);
-            vctx.VideoProcessorSetOutputColorSpace(&vp, &cs_out);
-            vctx.VideoProcessorSetStreamAutoProcessingMode(&vp, 0, false);
+            // --- BGRA -> NV12: GPU video processor ring, or CPU from a BGRA staging copy
             let mut ring = vec![];
-            for _ in 0..4 {
+            for _ in 0..(if vpp.is_some() { 4 } else { 0 }) {
+                let (vdev, _, vpe, _) = vpp.as_ref().unwrap();
                 let t = bgra_texture(device, w, h, DXGI_FORMAT_NV12, D3D11_BIND_RENDER_TARGET.0 as u32)?;
                 let od = D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC {
                     ViewDimension: D3D11_VPOV_DIMENSION_TEXTURE2D,
                     Anonymous: D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0 { Texture2D: D3D11_TEX2D_VPOV { MipSlice: 0 } },
                 };
                 let mut ov = None;
-                vdev.CreateVideoProcessorOutputView(&t, &vpe, &od, Some(&mut ov))?;
+                vdev.CreateVideoProcessorOutputView(&t, vpe, &od, Some(&mut ov))?;
                 ring.push((t, ov.unwrap()));
             }
-            let staging = if hardware { None } else {
+            let bgra_st = if vpp.is_some() { None } else {
+                let d = D3D11_TEXTURE2D_DESC { Width: w, Height: h, MipLevels: 1, ArraySize: 1, Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 }, Usage: D3D11_USAGE_STAGING,
+                    BindFlags: 0, CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32, MiscFlags: 0 };
+                let mut st = None; device.CreateTexture2D(&d, None, Some(&mut st))?; st
+            };
+            let staging = if hardware || vpp.is_none() { None } else {
                 let d = D3D11_TEXTURE2D_DESC { Width: w, Height: h, MipLevels: 1, ArraySize: 1, Format: DXGI_FORMAT_NV12,
                     SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 }, Usage: D3D11_USAGE_STAGING,
                     BindFlags: 0, CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32, MiscFlags: 0 };
                 let mut st = None; device.CreateTexture2D(&d, None, Some(&mut st))?; st
             };
-            Ok(Enc { name, mft, events, codec, vdev, vctx, vpe, vp, ring, ring_i: 0, in_view: None, ctx: ctx.clone(),
+            Ok(Enc { name, mft, events, codec, vpp, bgra_st, ring, ring_i: 0, in_view: None, ctx: ctx.clone(),
                 need_input: 0, provides_samples, out_size: si.cbSize.max(1 << 20), w, h, fps, bitrate, _mgr: mgr,
                 sw: !hardware, staging })
         }
+    }
+
+    unsafe fn video_processor(device: &ID3D11Device, ctx: &ID3D11DeviceContext, w: u32, h: u32, fps: u32)
+        -> Result<(ID3D11VideoDevice, ID3D11VideoContext, ID3D11VideoProcessorEnumerator, ID3D11VideoProcessor)> {
+        let vdev: ID3D11VideoDevice = device.cast()?;
+        let vctx: ID3D11VideoContext = ctx.cast()?;
+        let cd = D3D11_VIDEO_PROCESSOR_CONTENT_DESC {
+            InputFrameFormat: D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
+            InputFrameRate: DXGI_RATIONAL { Numerator: fps, Denominator: 1 }, InputWidth: w, InputHeight: h,
+            OutputFrameRate: DXGI_RATIONAL { Numerator: fps, Denominator: 1 }, OutputWidth: w, OutputHeight: h,
+            Usage: D3D11_VIDEO_USAGE_OPTIMAL_SPEED,
+        };
+        let vpe = vdev.CreateVideoProcessorEnumerator(&cd)?;
+        let vp = vdev.CreateVideoProcessor(&vpe, 0)?;
+        // BT.709 limited output, full-range RGB input
+        let cs_in = D3D11_VIDEO_PROCESSOR_COLOR_SPACE { _bitfield: 0 };
+        let cs_out = D3D11_VIDEO_PROCESSOR_COLOR_SPACE { _bitfield: 0b10 | (1 << 4) };
+        vctx.VideoProcessorSetStreamColorSpace(&vp, 0, &cs_in);
+        vctx.VideoProcessorSetOutputColorSpace(&vp, &cs_out);
+        vctx.VideoProcessorSetStreamAutoProcessingMode(&vp, 0, false);
+        Ok((vdev, vctx, vpe, vp))
+    }
+
+    /// CPU BGRA -> NV12 (BT.709 limited), used when the device has no video processor (WARP).
+    unsafe fn cpu_nv12(&self, src: &ID3D11Texture2D, st: &ID3D11Texture2D) -> Result<IMFMediaBuffer> {
+        self.ctx.CopyResource(st, src);
+        let mut m = D3D11_MAPPED_SUBRESOURCE::default();
+        self.ctx.Map(st, 0, D3D11_MAP_READ, 0, Some(&mut m))?;
+        let (w, h, pitch) = (self.w as usize, self.h as usize, m.RowPitch as usize);
+        let total = w * h * 3 / 2;
+        let mb = MFCreateMemoryBuffer(total as u32)?;
+        let mut d = std::ptr::null_mut(); mb.Lock(&mut d, None, None)?;
+        let s = std::slice::from_raw_parts(m.pData as *const u8, pitch * h);
+        let o = std::slice::from_raw_parts_mut(d, total);
+        for y in 0..h {
+            let row = &s[y * pitch..];
+            for x in 0..w {
+                let (b, g, r) = (row[x * 4] as i32, row[x * 4 + 1] as i32, row[x * 4 + 2] as i32);
+                o[y * w + x] = (16 + ((47 * r + 157 * g + 16 * b) >> 8)) as u8;
+                if y & 1 == 0 && x & 1 == 0 {
+                    let i = w * h + (y / 2) * w + x;
+                    o[i] = (128 + ((-26 * r - 87 * g + 112 * b) >> 8)).clamp(0, 255) as u8;
+                    o[i + 1] = (128 + ((112 * r - 102 * g - 10 * b) >> 8)).clamp(0, 255) as u8;
+                }
+            }
+        }
+        mb.Unlock()?; self.ctx.Unmap(st, 0);
+        mb.SetCurrentLength(total as u32)?;
+        Ok(mb)
     }
 
     /// Collect outputs that became ready without submitting input (blocking up to `wait_ms` for the first).
@@ -214,6 +254,8 @@ impl Enc {
         unsafe {
             // wait for NeedInput
             while self.events.is_some() && self.need_input == 0 { self.pump(true, &mut out)?; }
+            let buf = if let Some(st) = self.bgra_st.clone() { self.cpu_nv12(src, &st)? } else {
+            let (vdev, vctx, vpe, vp) = self.vpp.clone().unwrap();
             let key = src.as_raw() as usize;
             let iv = match &self.in_view {
                 Some((k, v)) if *k == key => v.clone(),
@@ -223,7 +265,7 @@ impl Enc {
                         Anonymous: D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0 { Texture2D: D3D11_TEX2D_VPIV { MipSlice: 0, ArraySlice: 0 } },
                     };
                     let mut v = None;
-                    self.vdev.CreateVideoProcessorInputView(src, &self.vpe, &d, Some(&mut v))?;
+                    vdev.CreateVideoProcessorInputView(src, &vpe, &d, Some(&mut v))?;
                     let v = v.unwrap(); self.in_view = Some((key, v.clone())); v
                 }
             };
@@ -231,10 +273,10 @@ impl Enc {
             self.ring_i = (self.ring_i + 1) % self.ring.len();
             let mut stream = D3D11_VIDEO_PROCESSOR_STREAM { Enable: TRUE, ..Default::default() };
             stream.pInputSurface = ManuallyDrop::new(Some(iv));
-            let r = self.vctx.VideoProcessorBlt(&self.vp, &ov, 0, &[stream.clone()]);
+            let r = vctx.VideoProcessorBlt(&vp, &ov, 0, &[stream.clone()]);
             ManuallyDrop::drop(&mut stream.pInputSurface);
             r?;
-            let buf = if let Some(st) = &self.staging {
+            if let Some(st) = &self.staging {
                 // Software MFT: GPU NV12 -> CPU memory buffer
                 self.ctx.CopyResource(st, &tex);
                 let mut m = D3D11_MAPPED_SUBRESOURCE::default();
@@ -254,6 +296,7 @@ impl Enc {
                 let b = MFCreateDXGISurfaceBuffer(&ID3D11Texture2D::IID, &tex, 0, false)?;
                 if let Ok(b2) = b.cast::<IMF2DBuffer>() { if let Ok(l) = b2.GetContiguousLength() { let _ = b.SetCurrentLength(l); } }
                 b
+            }
             };
             let s = MFCreateSample()?;
             s.AddBuffer(&buf)?;

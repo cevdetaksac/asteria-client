@@ -152,5 +152,15 @@ fn prime_frame(dup: &mut Dup, out: &Sender<MediaOut>) {
 fn open_dup(i: u32) -> Result<Dup, String> {
     let mut last = String::new();
     for _ in 0..20 { match Dup::new(i) { Ok(d) => return Ok(d), Err(e) => { last = format!("dxgi: {e}"); std::thread::sleep(Duration::from_millis(100)); } } }
-    Err(last)
+    Err(tr_dxgi(&last))
+}
+
+/// Raw DXGI HRESULTs -> clear Turkish reason (keeps the code for support).
+fn tr_dxgi(e: &str) -> String {
+    let u = e.to_uppercase();
+    let why = if u.contains("0X887A0004") { "Bu makinede ekran yakalama (DXGI masa\u{fc}st\u{fc} \u{e7}o\u{11f}altma) desteklenmiyor" }
+        else if u.contains("0X887A0022") || u.contains("0X887A0029") { "Konsol oturumu ba\u{11f}l\u{131} de\u{11f}il (makineye RDP ile ba\u{11f}lan\u{131}lm\u{131}\u{15f} olabilir); RDP oturumunu konsola aktar\u{131}n veya kapat\u{131}n" }
+        else if u.contains("0X80070005") { "Ekran yakalamaya eri\u{15f}im reddedildi (kilit/UAC ekran\u{131} veya oturum yok)" }
+        else { return e.to_string() };
+    format!("{why} [{e}]")
 }

@@ -78,12 +78,23 @@ impl Dup {
     unsafe fn open_on(a: &IDXGIAdapter1, o: &IDXGIOutput) -> Result<Self> {
         let d = a.GetDesc1()?;
         let name = String::from_utf16_lossy(&d.Description).trim_end_matches('\0').to_string();
-        let mut device = None; let mut ctx = None;
-        D3D11CreateDevice(a, D3D_DRIVER_TYPE_UNKNOWN, HMODULE::default(),
-            D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
-            Some(&[D3D_FEATURE_LEVEL_11_0]), D3D11_SDK_VERSION,
-            Some(&mut device), None, Some(&mut ctx)).map_err(|e| Error::new(e.code(), format!("D3D11CreateDevice: {}", e.message())))?;
-        let device: ID3D11Device = device.unwrap();
+        // GPU-less servers (Microsoft Basic Render Driver / WARP) reject VIDEO_SUPPORT and FL 11_0-only requests:
+        // try the output's adapter with video support, then without, then WARP; feature levels down to 9_1.
+        let fl = [D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_9_3, D3D_FEATURE_LEVEL_9_1];
+        let bgra = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+        let mut made: Option<(ID3D11Device, ID3D11DeviceContext)> = None;
+        let mut last = Error::new(E_FAIL, "D3D11CreateDevice");
+        let warp_only = std::env::var("ASTERIA_D3D_WARP").map(|v| v == "1").unwrap_or(false); // test switch: emulate GPU-less server
+        for (ad, ty, fl_) in [(Some(a), D3D_DRIVER_TYPE_UNKNOWN, bgra | D3D11_CREATE_DEVICE_VIDEO_SUPPORT), (Some(a), D3D_DRIVER_TYPE_UNKNOWN, bgra), (None, D3D_DRIVER_TYPE_WARP, bgra)].into_iter().skip(if warp_only { 1 } else { 0 }) {
+            let (mut device, mut ctx) = (None, None);
+            let ia: Option<IDXGIAdapter> = ad.and_then(|x| x.cast().ok());
+            match D3D11CreateDevice(ia.as_ref(), ty, HMODULE::default(), fl_, Some(&fl), D3D11_SDK_VERSION, Some(&mut device), None, Some(&mut ctx)) {
+                Ok(()) => { made = Some((device.unwrap(), ctx.unwrap())); break; }
+                Err(e) => last = Error::new(e.code(), format!("D3D11CreateDevice: {}", e.message())),
+            }
+        }
+        let (device, ctx) = made.ok_or(last)?;
+        let ctx = Some(ctx);
         if let Ok(mt) = device.cast::<ID3D11Multithread>() { let _ = mt.SetMultithreadProtected(true); }
         let output: IDXGIOutput1 = o.cast()?;
         let od = o.GetDesc()?;
