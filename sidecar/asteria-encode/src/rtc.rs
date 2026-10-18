@@ -164,6 +164,7 @@ pub fn run(
     let mut pt_video = None;
     let mut in_n: std::collections::BTreeMap<String, u32> = Default::default();
     let mut in_log = Instant::now();
+    let (mut cp_t, mut cp_full, mut cp_last) = (Instant::now(), Instant::now(), (i32::MIN, 0));
 
     let host_ip = &local_ip().unwrap_or(std::net::Ipv4Addr::LOCALHOST.into());
     let _ = evt.send(json!({"t":"rtc","state":"running"}));
@@ -204,6 +205,18 @@ pub fn run(
                 Err(TryRecvError::Disconnected) => {
                     return Ok(Stats { ice, frames_sent: frames, bytes_sent: bytes, last_enc_ms, bitrate_est_kbps: bitrate_est, keyframes: keys });
                 }
+            }
+        }
+        // Cursor position ~30 Hz on change, in captured-monitor pixels (DXGI frames never contain the pointer)
+        if cp_t.elapsed() >= Duration::from_millis(33) {
+            cp_t = Instant::now();
+            let mut pt = windows::Win32::Foundation::POINT::default();
+            if unsafe { windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt) }.is_ok() {
+                let m = inj.mons.get(inj.monitor).or(inj.mons.first());
+                let (ox, oy) = m.map(|m| (m["x"].as_i64().unwrap_or(0) as i32, m["y"].as_i64().unwrap_or(0) as i32)).unwrap_or((0, 0));
+                let p = (pt.x - ox, pt.y - oy);
+                if cp_full.elapsed() > Duration::from_secs(1) { cp_full = Instant::now(); cp_last = (i32::MIN, 0); } // resend so a late-opened DC gets it
+                if p != cp_last { cp_last = p; if let Some(mut ch) = rtc.channel(cid_ctrl) { let _ = ch.write(false, json!({"t":"cp","x":p.0,"y":p.1,"v":true}).to_string().as_bytes()); } }
             }
         }
         let seq = desk::clipboard_seq();

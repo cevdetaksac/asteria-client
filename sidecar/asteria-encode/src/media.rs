@@ -65,7 +65,7 @@ fn run(mut cfg: MediaCfg, ctl: Receiver<Ctl>, out: &Sender<MediaOut>) -> Result<
             }
         };
         if let Some(f) = &fi {
-            if let Some((x, y, v)) = f.pointer_pos { let _ = out.send(MediaOut::Event(json!({"t":"cp","x":x,"y":y,"v":v}))); }
+            // cp now sent by rtc (GetCursorPos 30 Hz); DXGI pointer_pos only updates on frame changes
             if let Some(s) = &f.pointer_shape { if let Some(j) = desk::cursor_json(s) { let _ = out.send(MediaOut::Event(j)); } }
         }
         let updated = fi.as_ref().map(|f| f.updated).unwrap_or(false);
