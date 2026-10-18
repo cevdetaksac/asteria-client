@@ -52,16 +52,37 @@ fn run(mut cfg: MediaCfg, ctl: Receiver<Ctl>, out: &Sender<MediaOut>) -> Result<
             if cur.is_some() && cur != desktop {
                 desktop = desk::follow_input_desktop();
                 let _ = out.send(MediaOut::Event(json!({"t":"desktop","name":desktop})));
-                match open_dup(cfg.output) { Ok(d) => { dup = d; enc = Enc::new(&dup.device, &dup.ctx, &dup.adapter_name, dup.w, dup.h, cfg.fps, enc.bitrate).map_err(|e| format!("mft: {e}"))?; work = None; snap = None; force_key = true; } Err(e) => { let _ = out.send(MediaOut::Event(json!({"t":"warn","msg":e}))); } }
+                match open_dup(cfg.output) {
+                    Ok(d) => {
+                        let resized = d.w != dup.w || d.h != dup.h;
+                        dup = d; work = None; snap = None; force_key = true;
+                        if resized { enc = Enc::new(&dup.device, &dup.ctx, &dup.adapter_name, dup.w, dup.h, cfg.fps, enc.bitrate).map_err(|e| format!("mft: {e}"))?; }
+                        let _ = out.send(MediaOut::Event(json!({"t":"media","encoder":enc.name,"adapter":dup.adapter_name,"w":dup.w,"h":dup.h,"desktop":desktop,"resized":resized})));
+                    }
+                    Err(e) => { let _ = out.send(MediaOut::Event(json!({"t":"warn","msg":format!("desk switch: {e}")}))); }
+                }
             }
         }
         let fi = match dup.next(0) {
             Ok(f) => f,
-            Err(_) => { // ACCESS_LOST: desktop switch / mode change
-                std::thread::sleep(Duration::from_millis(50));
-                desktop = desk::follow_input_desktop();
-                if let Ok(d) = open_dup(cfg.output) { if d.w != dup.w || d.h != dup.h { dup = d; enc = Enc::new(&dup.device, &dup.ctx, &dup.adapter_name, dup.w, dup.h, cfg.fps, enc.bitrate).map_err(|e| format!("mft: {e}"))?; work = None; snap = None; } else { dup = d; } }
-                force_key = true; None
+            Err(_) => { // ACCESS_LOST: secure desktop / mode change — follow input desktop, backoff, never exit
+                let _ = out.send(MediaOut::Event(json!({"t":"warn","msg":"dxgi ACCESS_LOST, reopening"})));
+                for backoff in [50u64, 100, 200, 400, 800] {
+                    std::thread::sleep(Duration::from_millis(backoff));
+                    desktop = desk::follow_input_desktop();
+                    match open_dup(cfg.output) {
+                        Ok(d) => {
+                            let resized = d.w != dup.w || d.h != dup.h;
+                            dup = d; work = None; snap = None; force_key = true;
+                            if resized { enc = Enc::new(&dup.device, &dup.ctx, &dup.adapter_name, dup.w, dup.h, cfg.fps, enc.bitrate).map_err(|e| format!("mft: {e}"))?; }
+                            let _ = out.send(MediaOut::Event(json!({"t":"desktop","name":desktop})));
+                            let _ = out.send(MediaOut::Event(json!({"t":"media","encoder":enc.name,"adapter":dup.adapter_name,"w":dup.w,"h":dup.h,"desktop":desktop,"resized":resized})));
+                            break;
+                        }
+                        Err(e) => { let _ = out.send(MediaOut::Event(json!({"t":"warn","msg":format!("reopen: {e}")}))); }
+                    }
+                }
+                None
             }
         };
         if let Some(f) = &fi {

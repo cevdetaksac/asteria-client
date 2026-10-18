@@ -73,38 +73,52 @@ fn ensure_igpu_pref(args: &[String]) -> Option<i32> {
     Some(st.code().unwrap_or(1))
 }
 
-/// `--session N|console`: when running as SYSTEM in another session (e.g. a SYSTEM scheduled task in session 0),
-/// relaunch self as SYSTEM inside session N on winsta0\\default (input desktop is followed by media/desk).
+/// `--session N|console`: when started as SYSTEM in session 0, hop into the console session.
+/// Loops on child exit so lock-screen capture survives and logout → new login screen is re-attached
+/// (C-RD-SESS-1). WebRTC stays in the session child; the page auto-renegotiates on pc_online.
 fn session_hop(args: &[String]) -> Option<i32> {
     use windows::core::PWSTR;
-    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
     use windows::Win32::Security::*;
     use windows::Win32::System::Threading::*;
-    let i = args.iter().position(|a| a == "--session")?;
-    let want = match args.get(i + 1).map(|s| s.as_str()) { Some("console") | None => unsafe { WTSGetActiveConsoleSessionId() }, Some(n) => n.parse().ok()? };
+    use windows::Win32::System::RemoteDesktop::{ProcessIdToSessionId, WTSGetActiveConsoleSessionId};
+    if !args.iter().any(|a| a == "--session") { return None; }
+    let i = args.iter().position(|a| a == "--session").unwrap();
+    let target = args.get(i + 1).map(|s| s.as_str()).unwrap_or("console");
     let mut cur = 0u32;
-    unsafe { let _ = windows::Win32::System::RemoteDesktop::ProcessIdToSessionId(GetCurrentProcessId(), &mut cur); }
-    if cur == want { return None; }
-    let rest: Vec<&String> = args.iter().enumerate().filter(|(j, _)| *j != i && *j != i + 1).map(|(_, a)| a).collect();
-    let mut cmd: Vec<u16> = rest.iter().map(|a| format!("\"{a}\"")).collect::<Vec<_>>().join(" ").encode_utf16().chain([0]).collect();
-    let mut desk: Vec<u16> = "winsta0\\default".encode_utf16().chain([0]).collect();
-    unsafe {
-        let (mut tok, mut dup) = (HANDLE::default(), HANDLE::default());
-        if let Err(e) = OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, &mut tok) { eprintln!("session hop: OpenProcessToken {e}"); return Some(1); }
-        if let Err(e) = DuplicateTokenEx(tok, TOKEN_ALL_ACCESS, None, SecurityImpersonation, TokenPrimary, &mut dup) { eprintln!("session hop: DuplicateTokenEx {e}"); return Some(1); }
-        if let Err(e) = SetTokenInformation(dup, TokenSessionId, &want as *const u32 as *const _, 4) { eprintln!("session hop: TokenSessionId {e} (needs SYSTEM)"); return Some(1); }
-        let si = STARTUPINFOW { cb: std::mem::size_of::<STARTUPINFOW>() as u32, lpDesktop: PWSTR(desk.as_mut_ptr()), ..Default::default() };
-        let mut pi = PROCESS_INFORMATION::default();
-        if let Err(e) = CreateProcessAsUserW(dup, None, PWSTR(cmd.as_mut_ptr()), None, None, false, CREATE_NO_WINDOW, None, None, &si, &mut pi) { eprintln!("session hop: CreateProcessAsUser {e}"); return Some(1); }
-        eprintln!("session hop: {cur} -> {want} pid {}", pi.dwProcessId);
-        WaitForSingleObject(pi.hProcess, INFINITE);
-        let mut code = 0u32; let _ = GetExitCodeProcess(pi.hProcess, &mut code);
-        let _ = (CloseHandle(pi.hProcess), CloseHandle(pi.hThread), CloseHandle(dup), CloseHandle(tok));
-        Some(code as i32)
+    unsafe { let _ = ProcessIdToSessionId(GetCurrentProcessId(), &mut cur); }
+    // Already in a real session (not 0): run in-process.
+    if cur != 0 && target != "0" { return None; }
+    if cur != 0 { return None; } // session 0 parent only
+    let rest: Vec<String> = args.iter().enumerate().filter(|(j,_)| *j != i && *j != i+1).map(|(_,a)| a.clone()).collect();
+    loop {
+        let want = if target == "console" { unsafe { WTSGetActiveConsoleSessionId() } } else { target.parse().unwrap_or(1) };
+        if want == 0 { eprintln!("session hop: console session 0, wait"); std::thread::sleep(std::time::Duration::from_secs(2)); continue; }
+        let mut cmd: Vec<u16> = rest.iter().map(|a| format!("\"{a}\"")).collect::<Vec<_>>().join(" ").encode_utf16().chain([0]).collect();
+        let mut desk: Vec<u16> = "winsta0\\default".encode_utf16().chain([0]).collect();
+        unsafe {
+            let (mut tok, mut dup) = (HANDLE::default(), HANDLE::default());
+            if let Err(e) = OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, &mut tok) { eprintln!("session hop: OpenProcessToken {e}"); return Some(1); }
+            if let Err(e) = DuplicateTokenEx(tok, TOKEN_ALL_ACCESS, None, SecurityImpersonation, TokenPrimary, &mut dup) { eprintln!("session hop: DuplicateTokenEx {e}"); return Some(1); }
+            if let Err(e) = SetTokenInformation(dup, TokenSessionId, &want as *const u32 as *const _, 4) { eprintln!("session hop: TokenSessionId {e}"); return Some(1); }
+            let si = STARTUPINFOW { cb: std::mem::size_of::<STARTUPINFOW>() as u32, lpDesktop: PWSTR(desk.as_mut_ptr()), ..Default::default() };
+            let mut pi = PROCESS_INFORMATION::default();
+            if let Err(e) = CreateProcessAsUserW(dup, None, PWSTR(cmd.as_mut_ptr()), None, None, false, CREATE_NO_WINDOW, None, None, &si, &mut pi) {
+                eprintln!("session hop: CreateProcessAsUser {e}"); let _ = (CloseHandle(dup), CloseHandle(tok)); std::thread::sleep(std::time::Duration::from_secs(2)); continue;
+            }
+            eprintln!("session hop: {cur} -> {want} pid {}", pi.dwProcessId);
+            let _ = (CloseHandle(dup), CloseHandle(tok));
+            WaitForSingleObject(pi.hProcess, INFINITE);
+            let mut code = 0u32; let _ = GetExitCodeProcess(pi.hProcess, &mut code);
+            let _ = (CloseHandle(pi.hProcess), CloseHandle(pi.hThread));
+            eprintln!("session hop: child exit {code}, re-hop in 1s");
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        }
     }
 }
 
 fn main() {
+
     unsafe { let _ = windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2); }
     let args: Vec<String> = std::env::args().collect();
     if let Some(code) = session_hop(&args) { std::process::exit(code); }
