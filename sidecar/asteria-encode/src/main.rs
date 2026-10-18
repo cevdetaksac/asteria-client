@@ -117,6 +117,27 @@ fn session_hop(args: &[String]) -> Option<i32> {
     }
 }
 
+fn require_media_foundation() {
+    use windows::Win32::Media::MediaFoundation::*;
+    use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        if let Err(e) = MFStartup(MF_VERSION, MFSTARTUP_FULL) {
+            eprintln!("error: MFStartup failed ({e}). On Windows Server run: Install-WindowsFeature Server-Media-Foundation  (then reboot).");
+            std::process::exit(3);
+        }
+    }
+    let hw = h264_encoders(MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER);
+    let sw = h264_encoders(MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER);
+    if hw.is_empty() && sw.is_empty() {
+        eprintln!("error: no H.264 Media Foundation encoder (MFT). On Windows Server run: Install-WindowsFeature Server-Media-Foundation  (then reboot). On desktop, install a GPU driver; software MFT (H264 Encoder MFT) ships with MF.");
+        std::process::exit(3);
+    }
+    if outputs().is_empty() {
+        eprintln!("warn: no DXGI outputs yet (headless/Basic Display?). Capture will retry after session hop / desktop attach.");
+    }
+}
+
 fn main() {
 
     unsafe { let _ = windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2); }
@@ -124,11 +145,12 @@ fn main() {
     if let Some(code) = session_hop(&args) { std::process::exit(code); }
     if let Some(code) = ensure_igpu_pref(&args) { std::process::exit(code); }
     if args.iter().any(|a| a == "--version") { println!("{}", env!("CARGO_PKG_VERSION")); return; }
+    if args.iter().any(|a| matches!(a.as_str(), "--agent" | "--relay" | "--loopback" | "--bench")) { require_media_foundation(); }
     if args.iter().any(|a| a == "--agent") { std::process::exit(agent::run(&args)); }
     if args.iter().any(|a| a == "--relay") { std::process::exit(relay::run(&args)); }
     if args.iter().any(|a| a == "--loopback") { std::process::exit(loopback::run(&args)); }
     if args.iter().any(|a| a == "--bench") { std::process::exit(bench::run(&args)); }
-    if !args.iter().any(|a| a == "--selftest") { eprintln!("usage: asteria-encode --selftest|--bench|--loopback|--agent|--version"); std::process::exit(2); }
+    if !args.iter().any(|a| a == "--selftest") { eprintln!("usage: asteria-encode --selftest|--bench|--loopback|--agent|--relay <url> [--session console] [--debug]|--version"); std::process::exit(2); }
     unsafe { let _ = CoInitializeEx(None, COINIT_MULTITHREADED); let _ = MFStartup(MF_VERSION, MFSTARTUP_FULL); }
     let hw = h264_encoders(MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER);
     let sw = h264_encoders(MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER);

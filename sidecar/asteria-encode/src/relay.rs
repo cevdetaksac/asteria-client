@@ -7,10 +7,20 @@ use std::sync::mpsc;
 use std::time::Duration;
 use tungstenite::{stream::MaybeTlsStream, Message};
 
-fn flog(dir: &str, s: &str) {
+fn flog(dir: &str, level: &str, s: &str) {
+    static DEBUG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if level == "DEBUG_SET" { DEBUG.store(s == "1", std::sync::atomic::Ordering::Relaxed); return; }
+    if level == "info" && !DEBUG.load(std::sync::atomic::Ordering::Relaxed) { return; }
     let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(format!("{dir}\\rdtest.log")) { let _ = writeln!(f, "{ts} {s}"); }
+    let path = format!("{dir}\\rdtest.log");
+    if let Ok(meta) = std::fs::metadata(&path) {
+        if meta.len() > 1_000_000 { let _ = std::fs::rename(&path, format!("{dir}\\rdtest.log.1")); }
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "{ts} [{level}] {s}");
+    }
 }
+
 fn short(t: &str) -> String { // SDP: keep candidate/fmtp/rtpmap lines only
     if !t.contains("\"sdp\"") { return t.chars().take(600).collect(); }
     let v: Value = serde_json::from_str(t).unwrap_or(Value::Null);
@@ -22,7 +32,7 @@ pub fn run(args: &[String]) -> i32 {
     let url = args.iter().position(|a| a == "--relay").and_then(|i| args.get(i + 1)).cloned().unwrap_or_default();
     let fps: u32 = crate::bench::arg(args, "--fps", 30);
     loop {
-        if let Err(e) = session(&url, fps) { eprintln!("relay: {e}; reconnect in 3s"); }
+        if let Err(e) = session(&url, fps, args) { eprintln!("relay: {e}; reconnect in 3s"); let dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_string_lossy().to_string())).unwrap_or(".".into()); flog(&dir, "error", &format!("relay: {e}")); }
         std::thread::sleep(Duration::from_secs(3));
     }
 }
@@ -34,7 +44,7 @@ fn kill(c: &mut Option<(Child, ChildStdin)>) {
     }
 }
 
-fn session(url: &str, fps: u32) -> Result<(), String> {
+fn session(url: &str, fps: u32, args: &[String]) -> Result<(), String> {
     let (mut ws, _) = tungstenite::connect(url).map_err(|e| e.to_string())?;
     let to = Some(Duration::from_millis(15));
     let _ = match ws.get_mut() { MaybeTlsStream::Plain(s) => s.set_read_timeout(to), MaybeTlsStream::NativeTls(s) => s.get_ref().set_read_timeout(to), _ => Ok(()) };
@@ -43,11 +53,12 @@ fn session(url: &str, fps: u32) -> Result<(), String> {
     let (tx, rx) = mpsc::channel::<String>();
     let mut child: Option<(Child, ChildStdin)> = None;
     let dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_string_lossy().to_string())).unwrap_or(".".into());
-    flog(&dir, "relay connected");
+    flog(&dir, "DEBUG_SET", if args.iter().any(|a| a == "--debug") { "1" } else { "0" });
+    flog(&dir, "warn", "relay connected");
     let res = loop {
         match ws.read() {
             Ok(Message::Text(t)) => {
-                flog(&dir, &format!("<viewer {}", short(&t)));
+                flog(&dir, "info", &format!("<viewer {}", short(&t)));
                 let v: Value = serde_json::from_str(&t).unwrap_or(Value::Null);
                 match v["t"].as_str() {
                     Some("join") => {
@@ -73,7 +84,7 @@ fn session(url: &str, fps: u32) -> Result<(), String> {
             Err(tungstenite::Error::Io(e)) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
             Err(e) => break Err(e.to_string()),
         }
-        while let Ok(l) = rx.try_recv() { flog(&dir, &format!(">pc {}", short(&l))); if ws.send(Message::text(l)).is_err() { break } }
+        while let Ok(l) = rx.try_recv() { flog(&dir, "info", &format!(">pc {}", short(&l))); if ws.send(Message::text(l)).is_err() { break } }
     };
     kill(&mut child);
     res
