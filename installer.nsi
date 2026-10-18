@@ -823,6 +823,13 @@ Section "Asteria Client (Required)" SEC_MAIN
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}" "InstallLocation" "$\"$INSTDIR$\""
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}" "DisplayIcon" "$\"$INSTDIR\asteria-gui.exe$\""
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}" "Publisher" "${COMPANYNAME}"
+    ; Phase4: GpuPreference for asteria-encode (Optimus Dual-GPU)
+    !insertmacro LOG "[CONFIG] Setting GpuPreference=1 for asteria-encode (Optimus)..."
+    WriteRegStr HKCU "Software\Microsoft\DirectX\UserGpuPreferences" "$INSTDIR\asteria-encode.exe" "GpuPreference=1;"
+    WriteRegStr HKLM "Software\Microsoft\DirectX\UserGpuPreferences" "$INSTDIR\asteria-encode.exe" "GpuPreference=1;"
+    WriteRegStr HKCU "Software\Microsoft\DirectX\UserGpuPreferences" "$INSTDIR\bin\asteria-encode.exe" "GpuPreference=1;"
+    WriteRegStr HKLM "Software\Microsoft\DirectX\UserGpuPreferences" "$INSTDIR\bin\asteria-encode.exe" "GpuPreference=1;"
+
     WriteRegStr HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}" "DisplayVersion" "${VERSIONMAJOR}.${VERSIONMINOR}.${VERSIONBUILD}"
     WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}" "VersionMajor" ${VERSIONMAJOR}
     WriteRegDWORD HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APPNAME}" "VersionMinor" ${VERSIONMINOR}

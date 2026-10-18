@@ -491,6 +491,13 @@ class RemoteDesktopStreamer:
         media is truly ready (healthy frame + ICE/DTLS connected).
         """
         prefer_l = str(prefer or "").strip().lower()
+        # Phase 4 session picker: attach live to chosen WTS session without creating one
+        if session_id is None and isinstance(session_target, dict):
+            try:
+                if str(session_target.get("kind") or "").lower() == "session":
+                    session_id = int(session_target.get("session_id"))
+            except Exception:
+                pass
         desktop_l = str(desktop or "").strip().lower()
         from client_rd_winlogon import resolve_start_topology
         topo_mode, force_secure = resolve_start_topology(
@@ -507,6 +514,12 @@ class RemoteDesktopStreamer:
         with self._lock:
             self._command_id = str(command_id or "").strip()
             self._stream_id = uuid.uuid4().hex
+            self._viewer_backend = (viewer_backend or 'auto').strip().lower()
+            self._notify_user = bool(notify_user)
+            self._session_target = session_target if isinstance(session_target, dict) else None
+            self._hw_sidecar = None
+            self._hw_active = False
+            self._hw_fallback_reason = None
             self._progress_live_emitted = False
             self._progress_last_phase = ""
             self._progress_last_emit = 0.0
@@ -545,6 +558,20 @@ class RemoteDesktopStreamer:
             self._seq = 0
             self._last_activity = time.time()
             self._stop.clear()
+            # Phase 4: try HW sidecar when requested; JPEG path continues as fallback
+            if self._hw_want():
+                if self._start_hw_sidecar():
+                    self._transport = "webrtc_hw"
+                    self.emit_stream_progress("webrtc_hw", "HW encode sidecar started")
+                else:
+                    log(f"[REMOTE-DESKTOP] HW unavailable -> JPEG ({self._hw_fallback_reason})")
+                    self._emit_agent_ws({
+                        "type": "remote_meta",
+                        "backend": "jpeg",
+                        "fallback_reason": self._hw_fallback_reason,
+                        "stream_id": self._stream_id,
+                    })
+
             self._stats["frames_sent"] = 0
             self._stats["bytes_sent"] = 0
             self._stats["frames_failed"] = 0
@@ -1407,6 +1434,205 @@ class RemoteDesktopStreamer:
         )
         self._ws_thread.start()
 
+
+    # ===================== Phase 4 HW sidecar (C-RD-HW) ===================== #
+
+    def _hw_want(self) -> bool:
+        """True when this start should try webrtc_hw (flag/caps permitting)."""
+        vb = str(getattr(self, "_viewer_backend", "auto") or "auto").strip().lower()
+        if vb == "jpeg":
+            return False
+        if vb not in ("auto", "webrtc_hw", "hw"):
+            return False
+        # Cloud may set preferred_transport; agent also checks binary + selftest.
+        if not _rd_hw.sidecar_path():
+            return False
+        try:
+            caps = _rd_hw.caps_from_selftest()
+            return bool(caps.get("webrtc_hw"))
+        except Exception:
+            return False
+
+    def _hw_on_msg(self, msg: dict) -> None:
+        """Forward sidecar JSON-lines into the existing remote WS / meta path."""
+        if not isinstance(msg, dict):
+            return
+        t = msg.get("t")
+        try:
+            if t == "offer":
+                sdp = msg.get("sdp") or ""
+                self._emit_agent_ws({
+                    "type": "webrtc_offer",
+                    "backend": "webrtc_hw",
+                    "sdp": sdp,
+                    "stream_id": getattr(self, "_stream_id", ""),
+                })
+            elif t == "ice":
+                self._emit_agent_ws({
+                    "type": "webrtc_ice",
+                    "backend": "webrtc_hw",
+                    "candidate": msg.get("candidate"),
+                    "sdpMid": msg.get("sdpMid"),
+                    "sdpMLineIndex": msg.get("sdpMLineIndex"),
+                    "stream_id": getattr(self, "_stream_id", ""),
+                })
+            elif t == "stats":
+                self._hw_last_stats = msg
+                self._emit_agent_ws({
+                    "type": "remote_meta",
+                    "backend": "webrtc_hw",
+                    "stats": msg,
+                    "stream_id": getattr(self, "_stream_id", ""),
+                })
+            elif t in ("media", "desktop", "mons", "bwe", "warn", "error", "ice", "rtc", "pli", "channel", "bye"):
+                if t == "error":
+                    self._hw_fallback_reason = str(msg.get("msg") or "sidecar_error")[:200]
+                self._emit_agent_ws({
+                    "type": "remote_meta",
+                    "backend": "webrtc_hw",
+                    "event": msg,
+                    "stream_id": getattr(self, "_stream_id", ""),
+                })
+            elif t == "sidecar_exit":
+                self._hw_active = False
+                self._hw_fallback_reason = self._hw_fallback_reason or f"sidecar_exit:{msg.get('code')}"
+                log(f"[REMOTE-DESKTOP] HW sidecar exited; JPEG fallback ({self._hw_fallback_reason})")
+                self._emit_agent_ws({
+                    "type": "remote_meta",
+                    "backend": "jpeg",
+                    "fallback_reason": self._hw_fallback_reason,
+                    "stream_id": getattr(self, "_stream_id", ""),
+                })
+        except Exception as e:
+            log(f"[REMOTE-DESKTOP] HW on_msg failed: {e}")
+
+    def _emit_agent_ws(self, payload: dict) -> None:
+        """Queue a JSON message onto the agent WS text outbox (_q_put_text)."""
+        if not isinstance(payload, dict):
+            return
+        try:
+            import json as _json
+            self._q_put_text(_json.dumps(payload, separators=(",", ":")))
+            self._last_hw_meta = payload
+        except Exception as e:
+            log(f"[REMOTE-DESKTOP] HW emit failed: {e}")
+
+    def _start_hw_sidecar(self) -> bool:
+        """Spawn asteria-encode --agent. Returns True if offer path is live."""
+        try:
+            sc = _rd_hw.HwSidecar(self._hw_on_msg)
+            ice = None
+            try:
+                ice = self._media.capabilities().get("ice_servers") if self._media else None
+            except Exception:
+                ice = None
+            sid = None
+            st = getattr(self, "_session_target", None) or {}
+            if isinstance(st, dict) and st.get("kind") == "session":
+                try:
+                    sid = int(st.get("session_id"))
+                except Exception:
+                    sid = getattr(self, "_session_id", None)
+            else:
+                sid = getattr(self, "_session_id", None)
+            ok = sc.start(
+                fps=int(getattr(self, "_fps", 30) or 30),
+                bitrate=3_000_000,
+                monitor=int(getattr(self, "_monitor_index", 0) or 0),
+                session_id=sid,
+                notify_user=bool(getattr(self, "_notify_user", False)),
+                ice_servers=ice or [],
+            )
+            if not ok:
+                self._hw_fallback_reason = sc.fallback_reason or "start_failed"
+                return False
+            self._hw_sidecar = sc
+            self._hw_active = True
+            # brief wait for hello (offer comes async via on_msg)
+            import time as _t
+            _t.sleep(0.05)
+            if getattr(self, "_notify_user", False):
+                self._show_rd_notify_toast(True)
+            log("[REMOTE-DESKTOP] HW sidecar started (webrtc_hw)")
+            return True
+        except Exception as e:
+            self._hw_fallback_reason = f"exception:{e}"[:200]
+            log(f"[REMOTE-DESKTOP] HW sidecar start failed: {e}")
+            return False
+
+    def _stop_hw_sidecar(self, reason: str = "stop") -> None:
+        sc = getattr(self, "_hw_sidecar", None)
+        self._hw_sidecar = None
+        self._hw_active = False
+        if sc is not None:
+            try:
+                sc.stop(reason)
+            except Exception:
+                pass
+        if getattr(self, "_notify_user", False):
+            try:
+                self._show_rd_notify_toast(False)
+            except Exception:
+                pass
+
+    def _show_rd_notify_toast(self, active: bool) -> None:
+        """Non-blocking toast in the target session (C-RD-HW-NOTIFY-2)."""
+        try:
+            import threading
+            def _run():
+                try:
+                    import ctypes
+                    from ctypes import wintypes
+                    user32 = ctypes.windll.user32
+                    # MessageBox timeout via MB_TOPMOST informational — use Balloon via PowerShell for non-blocking
+                    import subprocess
+                    title = "Asteria Remote Desktop"
+                    if active:
+                        text = "An administrator is viewing this screen."
+                    else:
+                        text = "Remote viewing session ended."
+                    # Toast via PowerShell BurntToast not assumed; use tray balloon if available, else timed msg
+                    ps = (
+                        f"[void][System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms');"
+                        f"$n=New-Object System.Windows.Forms.NotifyIcon;"
+                        f"$n.Icon=[System.Drawing.SystemIcons]::Information;"
+                        f"$n.Visible=$true;"
+                        f"$n.ShowBalloonTip(5000,'{title}','{text}',[System.Windows.Forms.ToolTipIcon]::Info);"
+                        f"Start-Sleep -Seconds 6; $n.Dispose()"
+                    )
+                    subprocess.Popen(
+                        ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps],
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    )
+                except Exception as e:
+                    log(f"[REMOTE-DESKTOP] notify toast failed: {e}")
+            threading.Thread(target=_run, name="rd-notify", daemon=True).start()
+        except Exception as e:
+            log(f"[REMOTE-DESKTOP] notify toast spawn failed: {e}")
+
+    def _hw_handle_signal(self, action: str, payload: dict) -> dict:
+        """Route viewer answer/ICE to the sidecar when HW is active."""
+        sc = getattr(self, "_hw_sidecar", None)
+        if not sc or not getattr(self, "_hw_active", False):
+            return {"accepted": False, "error": "hw_inactive"}
+        try:
+            if action == "answer":
+                sc.send_answer(str(payload.get("sdp") or ""))
+                return {"accepted": True, "backend": "webrtc_hw"}
+            if action == "ice":
+                sc.send_ice(
+                    str(payload.get("candidate") or ""),
+                    payload.get("sdpMid"),
+                    payload.get("sdpMLineIndex"),
+                )
+                return {"accepted": True, "backend": "webrtc_hw"}
+            if action == "offer":
+                # we are the offerer; ignore remote offers
+                return {"accepted": False, "error": "hw_is_offerer"}
+            return {"accepted": False, "error": "unsupported"}
+        except Exception as e:
+            return {"accepted": False, "error": str(e)[:200]}
+
     def stop(self, reason: str = "user") -> dict:
         """Stop capture; leave agent WS connected (cloud wants websocket:true)."""
         with self._lock:
@@ -1416,6 +1642,10 @@ class RemoteDesktopStreamer:
         # Release any locally-held buttons so a drag can't leave one stuck.
         try:
             self._release_all_buttons()
+        except Exception:
+            pass
+        try:
+            self._stop_hw_sidecar("stream_stop")
         except Exception:
             pass
         try:
@@ -5867,6 +6097,15 @@ class RemoteDesktopStreamer:
 
     def _handle_webrtc_signal(self, message: dict) -> dict:
         """Validate signaling identity before crossing into the media thread."""
+        # Phase 4: HW sidecar owns answer/ICE when active
+        if getattr(self, "_hw_active", False) and getattr(self, "_hw_sidecar", None):
+            act = str(message.get("action") or "").lower()
+            if not act:
+                tt = str(message.get("t") or message.get("type") or "").lower()
+                act = {"webrtc_offer": "offer", "webrtc_answer": "answer", "webrtc_ice": "ice"}.get(tt, tt)
+            if act.startswith("webrtc_"):
+                act = act[7:]
+            return self._hw_handle_signal(act, message or {})
         action = str(message.get("action") or "").lower()
         if not action:
             t = str(message.get("t") or message.get("type") or "").lower()

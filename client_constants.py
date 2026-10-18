@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.128"  # Phase 4: HW sidecar (rd_hw_enabled default off)
+VERSION = "4.9.129"  # Phase 4 wiring complete; rd_hw_enabled still default off (labs incomplete)
 
 
 

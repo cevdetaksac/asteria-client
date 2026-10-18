@@ -46,6 +46,28 @@ def sidecar_path() -> Optional[Path]:
     return None
 
 
+
+def _ensure_gpu_preference(exe: Path) -> None:
+    """Optimus: prefer power-saving GPU so DXGI DuplicateOutput works (Intel).
+
+    High-perf (NVIDIA) often returns DXGI_ERROR_UNSUPPORTED for duplication on
+    laptop hybrid graphics. NVENC remains enumerated for machines where the
+    dGPU can duplicate.
+    """
+    try:
+        import winreg
+        for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+            try:
+                key = winreg.CreateKey(root, r"Software\Microsoft\DirectX\UserGpuPreferences")
+                winreg.SetValueEx(key, str(exe.resolve()), 0, winreg.REG_SZ, "GpuPreference=1;")
+                winreg.CloseKey(key)
+            except OSError:
+                pass
+    except Exception as e:
+        log.debug("GpuPreference set skipped: %s", e)
+
+
+
 def selftest(timeout: float = 15.0) -> Dict[str, Any]:
     p = sidecar_path()
     if not p:
@@ -101,6 +123,7 @@ class HwSidecar:
         with self._lock:
             self.stop_locked("restart")
             try:
+                _ensure_gpu_preference(Path(self._path))
                 self._proc = subprocess.Popen(
                     [str(self._path), "--agent"],
                     stdin=subprocess.PIPE,
