@@ -192,12 +192,19 @@ class TestWinlogonStartContract(unittest.TestCase):
             rd, "_grab_via_user_helper", return_value=(None, 0, 0)
         ), mock.patch.object(
             rd, "emit_stream_progress"
+        ), mock.patch.object(
+            rd, "_hw_want", return_value=False
+        ), mock.patch.object(
+            rd, "_start_hw_sidecar", return_value=False
         ):
+            # Force viewer_backend jpeg-skip path off: video-only treats auto as required
+            rd._viewer_backend = "jpeg"
             result = rd.start(
                 prefer="winlogon",
                 pre_logon=True,
                 desktop="Winlogon",
                 username="should-be-ignored",
+                viewer_backend="jpeg",
             )
         self.assertEqual(rd._target_session_id, 3)
         self.assertEqual(rd._target_username, "")
@@ -251,11 +258,16 @@ class TestWinlogonStartContract(unittest.TestCase):
             rd, "emit_stream_progress"
         ), mock.patch.object(
             rd, "_session_connect_state", return_value="Active"
+        ), mock.patch.object(
+            rd, "_start_hw_sidecar", return_value=True
+        ), mock.patch.object(
+            rd, "_hw_want", return_value=True
         ):
             rd._thread = None
             result = rd.start(
                 topology="follow",
                 fps=12,
+                viewer_backend="webrtc_hw",
             )
             try:
                 self.assertTrue(result.get("success"), result)

@@ -569,31 +569,13 @@ class RemoteDesktopStreamer:
             self._seq = 0
             self._last_activity = time.time()
             self._stop.clear()
-            # Phase 4: try HW sidecar when requested; JPEG continues as fallback only
-            if self._hw_want():
-                # Prefer webrtc so _jpeg_ws_primary flips off once HW is up
+            # 4.9.138+: live prefers WebRTC; actual sidecar spawn waits until
+            # target session_id is resolved (CreateProcessAsUser needs it).
+            if self._hw_want() or str(getattr(self, "_viewer_backend", "") or "").lower() in (
+                "webrtc_hw", "hw", "webrtc", "auto",
+            ):
                 if self._preferred_transport != "webrtc":
                     self._preferred_transport = "webrtc"
-                if self._start_hw_sidecar():
-                    self._transport = "webrtc_hw"
-                    self.emit_stream_progress("webrtc_hw", "HW encode sidecar started")
-                    self._emit_agent_ws({
-                        "t": "remote_meta",
-                        "type": "remote_meta",
-                        "backend": "webrtc_hw",
-                        "stream_id": self._stream_id,
-                        "jpeg_primary": False,
-                    })
-                else:
-                    log(f"[REMOTE-DESKTOP] HW unavailable -> JPEG ({self._hw_fallback_reason})")
-                    self._preferred_transport = "websocket"
-                    self._emit_agent_ws({
-                        "t": "remote_meta",
-                        "type": "remote_meta",
-                        "backend": "jpeg",
-                        "fallback_reason": self._hw_fallback_reason,
-                        "stream_id": self._stream_id,
-                    })
 
             self._stats["frames_sent"] = 0
             self._stats["bytes_sent"] = 0
@@ -829,6 +811,62 @@ class RemoteDesktopStreamer:
                 f"pid_session={pid_sid} console={csid} helper={need_helper} "
                 f"winlogon={self._winlogon_mode}"
             )
+            # Live video only: spawn sidecar into the resolved session (no JPEG live).
+            self._session_id = int(self._target_session_id or 0) or None
+            if self._hw_want():
+                if self._start_hw_sidecar():
+                    self._transport = "webrtc_hw"
+                    self.emit_stream_progress("webrtc_hw", "Video encoder started")
+                    self._emit_agent_ws({
+                        "t": "remote_meta",
+                        "type": "remote_meta",
+                        "backend": "webrtc_hw",
+                        "stream_id": self._stream_id,
+                        "jpeg_primary": False,
+                    })
+                else:
+                    reason = str(self._hw_fallback_reason or "encoder_start_failed")
+                    log(f"[REMOTE-DESKTOP] video encoder failed (no JPEG live): {reason}")
+                    self._capture_method = "none"
+                    self.emit_stream_progress(
+                        "failed",
+                        "Video kodlayıcı başlatılamadı",
+                        error="VIDEO_ENCODER_FAILED",
+                        force=True,
+                    )
+                    self._emit_agent_ws({
+                        "t": "remote_meta",
+                        "type": "remote_meta",
+                        "backend": "none",
+                        "error": "VIDEO_ENCODER_FAILED",
+                        "detail": reason,
+                        "stream_id": self._stream_id,
+                    })
+                    return {
+                        "success": False,
+                        "error": "VIDEO_ENCODER_FAILED",
+                        "message": "Video kodlayıcı başlatılamadı",
+                        "detail": reason,
+                        "data": self.get_status(),
+                    }
+            elif str(getattr(self, "_viewer_backend", "") or "").lower() in (
+                "webrtc_hw", "hw", "webrtc", "auto",
+            ):
+                reason = str(getattr(self, "_hw_fallback_reason", None) or "sidecar_missing")
+                log("[REMOTE-DESKTOP] video required but sidecar missing")
+                self.emit_stream_progress(
+                    "failed",
+                    "Video kodlayıcı başlatılamadı",
+                    error="VIDEO_ENCODER_FAILED",
+                    force=True,
+                )
+                return {
+                    "success": False,
+                    "error": "VIDEO_ENCODER_FAILED",
+                    "message": "Video kodlayıcı başlatılamadı",
+                    "detail": reason,
+                    "data": self.get_status(),
+                }
             self.emit_stream_progress(
                 "capture_start",
                 (
@@ -1638,11 +1676,7 @@ class RemoteDesktopStreamer:
                 ice_servers=ice or [],
                 session_target=getattr(self, "_session_target", None),
                 winlogon=bool(getattr(self, "_winlogon_mode", False) or winlogon),
-                desktop=(
-                    r"winsta0\Winlogon"
-                    if getattr(self, "_winlogon_mode", False)
-                    else None
-                ),
+                desktop=self._helper_desktop(),
             )
             if not ok:
                 self._hw_fallback_reason = sc.fallback_reason or "start_failed"
@@ -6213,12 +6247,53 @@ class RemoteDesktopStreamer:
                 ctypes.byref(pi),
             )
             last_err = int(kernel.GetLastError() or 0)
+            # Memory/resource thrash or LogonUI token: retry once with SYSTEM+TokenSessionId
+            if (not ok) and last_err in (8, 1450, 1455, 5) and token_src != "system_session":
+                try:
+                    kernel.CloseHandle(h_token)
+                except Exception:
+                    pass
+                h_token = None
+                try:
+                    from client_rd_winlogon import open_session_interactive_token
+                    # Force SYSTEM path by calling with secure + empty winlogon images already tried
+                    # Re-open preferring system_session via for_secure_desktop after winlogon miss
+                    h2, src2 = open_session_interactive_token(
+                        int(session_id), for_secure_desktop=True
+                    )
+                    if h2 and src2 == "system_session":
+                        h_token, token_src = h2, src2
+                        self._last_helper_token_source = token_src
+                        ok = adv.CreateProcessAsUserW(
+                            h_token,
+                            None,
+                            cmd_buf,
+                            None,
+                            None,
+                            False,
+                            0,
+                            None,
+                            None,
+                            ctypes.byref(si),
+                            ctypes.byref(pi),
+                        )
+                        last_err = int(kernel.GetLastError() or 0)
+                        log(
+                            f"[REMOTE-DESKTOP] CreateProcessAsUser retry "
+                            f"token={token_src} ok={bool(ok)} err={last_err}"
+                        )
+                except Exception as _retry_exc:
+                    log(f"[REMOTE-DESKTOP] CreateProcessAsUser retry error: {_retry_exc}")
             if env_block and env_block.value:
                 try:
                     adv.DestroyEnvironmentBlock(env_block)
                 except Exception:
                     pass
-            kernel.CloseHandle(h_token)
+            if h_token:
+                try:
+                    kernel.CloseHandle(h_token)
+                except Exception:
+                    pass
             if not ok:
                 self._last_helper_fail_phase = "create"
                 self._last_helper_fail_detail = f"CreateProcessAsUser err={last_err}"
@@ -6266,9 +6341,9 @@ class RemoteDesktopStreamer:
             ),
             "preferred_codec": "jpeg" if self._jpeg_ws_primary() else "h264",
             "transports": transports,
-            "fallback": "jpeg-ws",
+            "fallback": "none",
             "codecs": codecs,
-            "rd_backends": (["jpeg", "webrtc_hw"] if _rd_hw.sidecar_path() else ["jpeg"]),
+            "rd_backends": (["webrtc_hw"] if _rd_hw.sidecar_path() else []),
             "hw_sidecar": _rd_hw.caps_from_selftest(),
             "webrtc": {
                 "available": bool(media.get("webrtc")),

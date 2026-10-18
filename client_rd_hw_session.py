@@ -228,6 +228,36 @@ def spawn_in_session(
         ctypes.byref(pi),
     )
     last_err = int(kernel.GetLastError() or 0)
+    # Prefer SYSTEM+TokenSessionId over LogonUI when spawn hits memory/access errors
+    if (not ok) and last_err in (8, 1450, 1455, 5) and token_src != "system_session":
+        try:
+            kernel.CloseHandle(h_token)
+        except Exception:
+            pass
+        h_token = None
+        h2, src2 = open_session_interactive_token(
+            int(session_id), for_secure_desktop=True
+        )
+        if h2 and src2 == "system_session":
+            h_token, token_src = h2, src2
+            ok = adv.CreateProcessAsUserW(
+                h_token,
+                None,
+                cmd_buf,
+                None,
+                None,
+                True,
+                0,
+                None,
+                None,
+                ctypes.byref(si),
+                ctypes.byref(pi),
+            )
+            last_err = int(kernel.GetLastError() or 0)
+            log.info(
+                "HW encode CreateProcessAsUser retry token=%s ok=%s err=%s",
+                token_src, bool(ok), last_err,
+            )
     # Close child-side ends in parent
     for h in (child_stdin_r, child_stdout_w, child_stderr_w):
         try:
@@ -239,10 +269,11 @@ def spawn_in_session(
             adv.DestroyEnvironmentBlock(env_block)
         except Exception:
             pass
-    try:
-        kernel.CloseHandle(h_token)
-    except Exception:
-        pass
+    if h_token:
+        try:
+            kernel.CloseHandle(h_token)
+        except Exception:
+            pass
 
     if not ok:
         for h in (parent_stdin_w, parent_stdout_r, parent_stderr_r):

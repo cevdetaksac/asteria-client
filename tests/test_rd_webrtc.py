@@ -90,7 +90,7 @@ class TestCapabilities(unittest.TestCase):
         self.assertFalse(capabilities["webrtc"]["available"])
         self.assertNotIn("webrtc", capabilities["transports"])
         self.assertEqual(capabilities["codecs"], ["jpeg"])
-        self.assertEqual(capabilities["fallback"], "jpeg-ws")
+        self.assertEqual(capabilities["fallback"], "none")
         self.assertTrue(capabilities["input_v2"])
         self.assertTrue(capabilities["winlogon"])
         self.assertTrue(capabilities["pre_logon"])

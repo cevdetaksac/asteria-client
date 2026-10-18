@@ -631,9 +631,11 @@ def open_session_interactive_token(
 ):
     """C-RD-S0-4 token chain for Session-0 → interactive helper spawn.
 
-    Default (Default desktop DXGI): user token first.
-    Winlogon/lock: ``winlogon.exe`` / LogonUI token first — a logged-on user
-    token cannot BitBlt ``winsta0\\Winlogon`` (lab gdi+black).
+    Default desktop: WTS user token first.
+    Secure / lock: ``winlogon.exe`` token, then **SYSTEM+TokenSessionId**
+    (preferred over LogonUI — LogonUI tokens often fail CreateProcessAsUser
+    with ERROR_NOT_ENOUGH_MEMORY / COMMITMENT_LIMIT under thrash). LogonUI /
+    LockApp tokens are last-resort only.
 
     Returns ``(HANDLE|None, source_tag)``. Caller must ``CloseHandle`` the token.
     """
@@ -648,8 +650,8 @@ def open_session_interactive_token(
         "SeIncreaseQuotaPrivilege",
     )
 
-    def _from_secure_processes():
-        for image in ("winlogon.exe", "LogonUI.exe", "logonui.exe", "LockApp.exe"):
+    def _from_images(images):
+        for image in images:
             for pid in _pids_named(image):
                 if _session_of_pid(pid) != sid:
                     continue
@@ -662,76 +664,88 @@ def open_session_interactive_token(
                     return h_dup, f"process:{image}"
         return None, ""
 
+    def _system_session_token(user_err: int = 0):
+        h_proc = wintypes.HANDLE()
+        if not _advapi32.OpenProcessToken(
+            _kernel32.GetCurrentProcess(), TOKEN_ALL_ACCESS, ctypes.byref(h_proc)
+        ):
+            log(
+                f"[RD-WINLOGON] OpenProcessToken(self) err={_kernel32.GetLastError()} "
+                f"session={sid} wts_err={user_err}"
+            )
+            return None, "no_token"
+        h_dup = wintypes.HANDLE()
+        ok_dup = _advapi32.DuplicateTokenEx(
+            h_proc,
+            TOKEN_ALL_ACCESS,
+            None,
+            SecurityImpersonation,
+            TokenPrimary,
+            ctypes.byref(h_dup),
+        )
+        _kernel32.CloseHandle(h_proc)
+        if not ok_dup:
+            log(
+                f"[RD-WINLOGON] DuplicateTokenEx err={_kernel32.GetLastError()} "
+                f"session={sid}"
+            )
+            return None, "no_token"
+        sess = wintypes.DWORD(sid)
+        if not _advapi32.SetTokenInformation(
+            h_dup, TokenSessionId, ctypes.byref(sess), ctypes.sizeof(sess)
+        ):
+            err = int(_kernel32.GetLastError() or 0)
+            _kernel32.CloseHandle(h_dup)
+            log(
+                f"[RD-WINLOGON] SetTokenInformation(TokenSessionId) err={err} "
+                f"session={sid}"
+            )
+            return None, "no_token"
+        log(
+            f"[RD-WINLOGON] session token via SYSTEM+TokenSessionId "
+            f"session={sid} (WTS user err={user_err})"
+        )
+        return h_dup, "system_session"
+
+    user_err = 0
     if for_secure_desktop:
-        h_sec, tag = _from_secure_processes()
+        # winlogon.exe only first — not LogonUI (C-RD-S0-4 / 4.9.138)
+        h_sec, tag = _from_images(("winlogon.exe",))
         if h_sec:
             return h_sec, tag
-    else:
+        h_sys, tag = _system_session_token(0)
+        if h_sys:
+            return h_sys, tag
+        h_sec, tag = _from_images(
+            ("LogonUI.exe", "logonui.exe", "LockApp.exe", "LockAppHost.exe")
+        )
+        if h_sec:
+            return h_sec, tag
         h_token = wintypes.HANDLE()
         if _wtsapi32.WTSQueryUserToken(sid, ctypes.byref(h_token)):
-            return h_token, "user"
-        user_err = int(_kernel32.GetLastError() or 0)
-        h_sec, tag = _from_secure_processes()
-        if h_sec:
-            log(
-                f"[RD-WINLOGON] session token via {tag} "
-                f"session={sid} (WTS user err={user_err})"
-            )
-            return h_sec, tag
+            return h_token, "user_last"
+        return None, "no_token"
 
     h_token = wintypes.HANDLE()
-    if not for_secure_desktop:
-        user_err = int(_kernel32.GetLastError() or 0)
-    else:
-        user_err = 0
-        if _wtsapi32.WTSQueryUserToken(sid, ctypes.byref(h_token)):
-            return h_token, "user_last"
-
-    # SYSTEM + TokenSessionId fallback
-    h_proc = wintypes.HANDLE()
-    if not _advapi32.OpenProcessToken(
-        _kernel32.GetCurrentProcess(), TOKEN_ALL_ACCESS, ctypes.byref(h_proc)
-    ):
+    if _wtsapi32.WTSQueryUserToken(sid, ctypes.byref(h_token)):
+        return h_token, "user"
+    user_err = int(_kernel32.GetLastError() or 0)
+    h_sec, tag = _from_images(("winlogon.exe",))
+    if h_sec:
         log(
-            f"[RD-WINLOGON] WTSQueryUserToken({sid}) err={user_err}; "
-            f"no winlogon/LogonUI token; OpenProcessToken err={_kernel32.GetLastError()}"
+            f"[RD-WINLOGON] session token via {tag} "
+            f"session={sid} (WTS user err={user_err})"
         )
-        return None, "no_token"
-
-    h_dup = wintypes.HANDLE()
-    ok_dup = _advapi32.DuplicateTokenEx(
-        h_proc,
-        TOKEN_ALL_ACCESS,
-        None,
-        SecurityImpersonation,
-        TokenPrimary,
-        ctypes.byref(h_dup),
+        return h_sec, tag
+    h_sys, tag = _system_session_token(user_err)
+    if h_sys:
+        return h_sys, tag
+    h_sec, tag = _from_images(
+        ("LogonUI.exe", "logonui.exe", "LockApp.exe", "LockAppHost.exe")
     )
-    _kernel32.CloseHandle(h_proc)
-    if not ok_dup:
-        log(
-            f"[RD-WINLOGON] WTSQueryUserToken({sid}) err={user_err}; "
-            f"DuplicateTokenEx err={_kernel32.GetLastError()}"
-        )
-        return None, "no_token"
-
-    sess = wintypes.DWORD(sid)
-    if not _advapi32.SetTokenInformation(
-        h_dup, TokenSessionId, ctypes.byref(sess), ctypes.sizeof(sess)
-    ):
-        err = int(_kernel32.GetLastError() or 0)
-        _kernel32.CloseHandle(h_dup)
-        log(
-            f"[RD-WINLOGON] WTSQueryUserToken({sid}) err={user_err}; "
-            f"SetTokenInformation(TokenSessionId) err={err}"
-        )
-        return None, "no_token"
-
-    log(
-        f"[RD-WINLOGON] session token via SYSTEM+TokenSessionId "
-        f"session={sid} (WTS user err={user_err})"
-    )
-    return h_dup, "system_session"
+    if h_sec:
+        return h_sec, tag
+    return None, "no_token"
 
 
 def software_sas_generation() -> Optional[int]:

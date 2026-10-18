@@ -51,24 +51,52 @@ impl Enc {
             // --- pick HW MFT matching capture adapter vendor
             let info_out = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: MFVideoFormat_H264 };
             let mut acts: *mut Option<IMFActivate> = std::ptr::null_mut(); let mut n = 0u32;
+            // Prefer hardware MFT (QSV/NVENC/AMF); fall back to Microsoft software H.264 MFT.
             MFTEnumEx(MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER, None, Some(&info_out), &mut acts, &mut n)?;
-            let list: Vec<IMFActivate> = std::slice::from_raw_parts(acts, n as usize).iter().filter_map(|a| a.clone()).collect();
+            let mut list: Vec<IMFActivate> = std::slice::from_raw_parts(acts, n as usize).iter().filter_map(|a| a.clone()).collect();
             CoTaskMemFree(Some(acts as _));
+            let mut hardware = !list.is_empty();
+            if list.is_empty() {
+                acts = std::ptr::null_mut(); n = 0;
+                MFTEnumEx(
+                    MFT_CATEGORY_VIDEO_ENCODER,
+                    MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_ASYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER,
+                    None,
+                    Some(&info_out),
+                    &mut acts,
+                    &mut n,
+                )?;
+                list = std::slice::from_raw_parts(acts, n as usize).iter().filter_map(|a| a.clone()).collect();
+                CoTaskMemFree(Some(acts as _));
+                hardware = false;
+            }
             let hint = vendor_hint(adapter_name);
-            let chosen = list.iter().find(|a| friendly(a).to_lowercase().contains(hint)).or(list.first())
-                .ok_or_else(|| Error::new(E_FAIL, "no hardware H.264 MFT"))?;
-            let name = friendly(chosen);
+            let chosen = if hardware {
+                list.iter().find(|a| friendly(a).to_lowercase().contains(hint)).or(list.first())
+            } else {
+                // Prefer Microsoft software encoder name when present
+                list.iter().find(|a| {
+                    let n = friendly(a).to_lowercase();
+                    n.contains("microsoft") || n.contains("h264") || n.contains("h.264")
+                }).or(list.first())
+            }
+                .ok_or_else(|| Error::new(E_FAIL, "no H.264 MFT (hardware or software)"))?;
+            let name = format!("{}{}", friendly(chosen), if hardware { "" } else { " (software)" });
             let mft: IMFTransform = chosen.ActivateObject()?;
             let attrs = mft.GetAttributes()?;
             let _ = attrs.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1);
             let _ = attrs.SetUINT32(&MF_LOW_LATENCY, 1);
 
-            // --- D3D manager
+            // --- D3D manager (HW path). Software MFT may reject D3D manager — continue without.
             let mut token = 0u32; let mut mgr = None;
             MFCreateDXGIDeviceManager(&mut token, &mut mgr)?;
             let mgr: IMFDXGIDeviceManager = mgr.unwrap();
             mgr.ResetDevice(device, token)?;
-            mft.ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, mgr.as_raw() as usize)?;
+            if hardware {
+                mft.ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, mgr.as_raw() as usize)?;
+            } else {
+                let _ = mft.ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, mgr.as_raw() as usize);
+            }
 
             let codec: Option<ICodecAPI> = mft.cast().ok();
             if let Some(c) = &codec {
