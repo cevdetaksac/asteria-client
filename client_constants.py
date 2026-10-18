@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 Asteria Client - Constants and Configuration
@@ -19,10 +19,10 @@ Notes:
 - All intervals can be overridden in client_config.json
 - Wire identities: ProgramData\\Asteria, Asteria-* tasks, AsteriaGuardian;
   legacy YesNext / CloudHoneypot-* cleaned on install/update. Signing
-  context emits ``asteria-chp-v1`` / ``asteria-heartbeat-v1`` (contract ≥1.4.32).
+  context emits ``asteria-chp-v1`` / ``asteria-heartbeat-v1`` (contract â‰¥1.4.32).
   Verify still accepts legacy ``yesnext-*`` during fleet cutover until the
-  dual-brand sunset target **2026-10-01** (PRODUCT_BRANDING.md §Sunset).
-  per contract agent/rebrand-asteria.md — display brand is Asteria.
+  dual-brand sunset target **2026-10-01** (PRODUCT_BRANDING.md Â§Sunset).
+  per contract agent/rebrand-asteria.md â€” display brand is Asteria.
 """
 
 import os
@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.131"  # Hotfix: RD __init__ NameError viewer_backend broke all stream start
+VERSION = "4.9.132"  # Fix: winlogon helper sent empty tile deltas on static lock screen (HELPER_NO_FRAME)
 
 
 
@@ -67,14 +67,14 @@ GITHUB_OWNER = "cevdetaksac"
 GITHUB_REPO = "asteria-client"
 GITHUB_REPO_LEGACY = "yesnext-cloud-honeypot-client"
 
-# Release installer asset (single name — no legacy cloud-client-installer alias).
+# Release installer asset (single name â€” no legacy cloud-client-installer alias).
 INSTALLER_ASSET_NAME = "asteria-client-installer.exe"
 # Cleanup still recognizes leftover staged files from the rename era.
 INSTALLER_FILE_PREFIXES = ("asteria-client-installer", "cloud-client-installer")
 
 # ===================== NETWORK CONFIGURATION ===================== #
 
-# API Configuration — primary asteria.run; legacy YesNext host for failover
+# API Configuration â€” primary asteria.run; legacy YesNext host for failover
 API_URL = get_from_config("api.base_url", "https://asteria.run/api")
 API_URL_LEGACY = get_from_config(
     "api.legacy_base_url", "https://honeypot.yesnext.com.tr/api"
@@ -116,7 +116,7 @@ DEFENDER_MARKERS = {
 # ===================== FILE PATHS ===================== #
 
 def _is_system_profile_context() -> bool:
-    """True for SYSTEM / Session 0 — Roaming APPDATA under systemprofile is fragile."""
+    """True for SYSTEM / Session 0 â€” Roaming APPDATA under systemprofile is fragile."""
     try:
         appdata = (os.environ.get("APPDATA") or "").lower()
         if "systemprofile" in appdata:
@@ -160,7 +160,7 @@ def _ensure_directory(path: str) -> bool:
         # WinError 183: cannot create a file when that file already exists
         if os.path.isdir(path):
             return True
-        # Parent component may be a file — try sibling name
+        # Parent component may be a file â€” try sibling name
         try:
             alt = path + "_dir"
             os.makedirs(alt, exist_ok=True)
@@ -168,13 +168,13 @@ def _ensure_directory(path: str) -> bool:
                 return False  # caller should not use alt via this bool alone
         except OSError:
             pass
-        # Last resort: ignore — caller picks fallback path
+        # Last resort: ignore â€” caller picks fallback path
         _ = e
         return os.path.isdir(path)
 
 
 def get_app_directory() -> str:
-    """Application data directory — always %ProgramData%\\Asteria (brand SoT).
+    """Application data directory â€” always %ProgramData%\\Asteria (brand SoT).
 
     SYSTEM daemon and interactive GUI share one machine-wide tree so token,
     consent, logs, and lock state stay aligned. Legacy YesNext trees are
@@ -245,7 +245,7 @@ TRY_TRAY = get_from_config("advanced.minimize_to_tray", True)
 # Honeypot bind address (0.0.0.0 = all interfaces)
 HONEYPOT_BIND_ADDRESS = get_from_config("services.bind_address", "0.0.0.0")
 
-# Service definitions — each honeypot service the client can run locally
+# Service definitions â€” each honeypot service the client can run locally
 HONEYPOT_SERVICES = {
     "RDP":   {"port": 3389, "protocol": "tcp", "description": "Remote Desktop Protocol"},
     "SSH":   {"port": 22,   "protocol": "tcp", "description": "Secure Shell"},
@@ -308,7 +308,7 @@ APP_STARTUP_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
 # Operation modes
 GUI_MODE = "gui"        # Interactive frontend (prefers SYSTEM daemon motor)
-DAEMON_MODE = "daemon"  # Session-0 SYSTEM motor — owns protection/RD/API
+DAEMON_MODE = "daemon"  # Session-0 SYSTEM motor â€” owns protection/RD/API
 FRONTEND_MODE = "frontend"  # Explicit UI-only alias of gui
 
 # ===================== HEARTBEAT CONFIGURATION ===================== #
@@ -316,7 +316,7 @@ FRONTEND_MODE = "frontend"  # Explicit UI-only alias of gui
 HEARTBEAT_FILE = "heartbeat.json"
 FILE_HEARTBEAT_INTERVAL = 60  # File heartbeat interval (was 10s, optimized to 60s for performance)
 
-# Singleton mutex — DAEMON only (GUI frontends do not take this)
+# Singleton mutex â€” DAEMON only (GUI frontends do not take this)
 SINGLETON_MUTEX_NAME = "Global\\AsteriaClient_Singleton"
 DAEMON_MUTEX_NAME = "Global\\AsteriaClient_Daemon"
 # Cross-process single-flight for installer download (JSON gate is racy).
@@ -401,7 +401,7 @@ SECURITY_METADATA = {
     "product_version": __version__,
     "vendor_name": "Asteria",
     "product_state": "Enabled and Up-to-date",
-    # Honest until SUP-001 production signing is active — do not claim verified.
+    # Honest until SUP-001 production signing is active â€” do not claim verified.
     "signature_status": "authenticode_unknown",
     "installation_source": "Legitimate software distribution",
 }
@@ -409,7 +409,7 @@ SECURITY_METADATA = {
 # Registry security markers
 # RDP registry key path (without HKEY_LOCAL_MACHINE prefix for reg add command)
 RDP_REGISTRY_KEY_PATH = r"HKLM\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp"
-# App registry key path (wire identity — do not relocate)
+# App registry key path (wire identity â€” do not relocate)
 REGISTRY_KEY_PATH = r"SOFTWARE\Asteria"
 
 # Legitimate domains for network behavior
@@ -444,7 +444,7 @@ ENABLE_AUTO_UPDATE = get_from_config("advanced.auto_update", True)
 ENABLE_TRAY_ICON = get_from_config("advanced.minimize_to_tray", True)
 ENABLE_ADMIN_ELEVATION = get_from_config("advanced.request_admin_privileges", True)
 
-# GUI refresh — dashboard tick interval (milliseconds)
+# GUI refresh â€” dashboard tick interval (milliseconds)
 GUI_DASHBOARD_REFRESH_MS = int(get_from_config("ui.dashboard_refresh_seconds", 10)) * 1000
 
 # Debug and development flags
@@ -460,15 +460,15 @@ SKIP_USER_DIALOGS = get_from_config("deployment.skip_dialogs", False)  # Skip al
 # Enable/disable threat detection engine
 ENABLE_THREAT_DETECTION = get_from_config("threat_detection.enabled", True)
 
-# EventLog Watcher — refresh & watchdog intervals
+# EventLog Watcher â€” refresh & watchdog intervals
 EVENTLOG_WATCHDOG_INTERVAL = 60           # Check subscription health every 60s
 
-# Threat Engine — scoring & correlation
+# Threat Engine â€” scoring & correlation
 THREAT_SCORE_DECAY_INTERVAL = 300         # Decay scores every 5 min
 THREAT_CONTEXT_MAX_AGE = 86400            # Remove IP context after 24h inactivity
 THREAT_ALERT_MIN_SCORE = 31              # Minimum score to generate an alert
 
-# Alert Pipeline — batch & rate limiting
+# Alert Pipeline â€” batch & rate limiting
 ALERT_BATCH_FLUSH_INTERVAL = 120          # Flush batch buffer every 2 min (V4)
 ALERT_BATCH_MAX_SIZE = 500                # Force flush at 500 buffered events
 ALERT_URGENT_COOLDOWN = 300               # Same threat_type+IP: max 1 urgent / 5 min
@@ -479,15 +479,15 @@ ALERT_THREAT_LOG_MAX_BYTES = 5 * 1024 * 1024  # 5 MB
 ALERT_THREAT_LOG_BACKUP_COUNT = 3
 
 # Dashboard refresh for threat data
-THREAT_DASHBOARD_REFRESH = 5000           # ms — refresh threat cards every 5s
+THREAT_DASHBOARD_REFRESH = 5000           # ms â€” refresh threat cards every 5s
 
-# Auto-Response Engine — rate limits & safety
+# Auto-Response Engine â€” rate limits & safety
 AUTO_RESPONSE_MAX_BLOCKS_PER_HOUR = 50    # Max firewall blocks per hour
 AUTO_RESPONSE_MAX_BLOCKS_PER_DAY = 200    # Max firewall blocks per day
 AUTO_RESPONSE_DEFAULT_BLOCK_HOURS = 24    # Default block duration (hours)
 
-# Remote Command Executor — polling & security
-# IR (kill/logoff/block): sub-second poll — dashboard must feel instant
+# Remote Command Executor â€” polling & security
+# IR (kill/logoff/block): sub-second poll â€” dashboard must feel instant
 REMOTE_CMD_POLL_INTERVAL = max(1, int(get_from_config(
     "threat_detection.command_poll_interval", 1)))
 REMOTE_CMD_IR_POLL_INTERVAL = 0.5         # Fast poll while IR / after IR burst
@@ -495,51 +495,51 @@ REMOTE_CMD_IR_STICKY_SECONDS = 45         # Stay on IR cadence after urgent cmd
 REMOTE_CMD_EXPIRY_SECONDS = 300           # Commands expire after 5 minutes
 REMOTE_CMD_MAX_PER_MINUTE = 30            # Rate limit for non-IR cmds (IR exempt)
 
-# Silent Hours — defaults (OFF; alert-only when enabled — never auto-disable)
+# Silent Hours â€” defaults (OFF; alert-only when enabled â€” never auto-disable)
 SILENT_HOURS_ENABLED = get_from_config("silent_hours.enabled", False)
 SILENT_HOURS_DEFAULT_MODE = "night_only"  # night_only | outside_working | always | custom
 SILENT_HOURS_NIGHT_START = "00:00"
 SILENT_HOURS_NIGHT_END = "07:00"
 SILENT_HOURS_WORK_START = "08:00"
 SILENT_HOURS_WORK_END = "18:00"
-SILENT_HOURS_WEEKEND_SILENT = False       # Was True → weekend false positives
+SILENT_HOURS_WEEKEND_SILENT = False       # Was True â†’ weekend false positives
 
-# Config sync — pull threat/silent hours config from backend
+# Config sync â€” pull threat/silent hours config from backend
 THREAT_CONFIG_SYNC_INTERVAL = 300         # Re-fetch threat config every 5 min (V4)
 
-# Ransomware Shield — canary & detection intervals
+# Ransomware Shield â€” canary & detection intervals
 RANSOMWARE_CANARY_CHECK_INTERVAL = 30     # Canary integrity check (seconds)
-# Soft single-file MODIFIED debounce (all paths) — hygiene §3 / 30 dk loop
+# Soft single-file MODIFIED debounce (all paths) â€” hygiene Â§3 / 30 dk loop
 CANARY_SOFT_DEBOUNCE_SEC = 1800
 
 RANSOMWARE_PROCESS_CHECK_INTERVAL = 2     # Suspicious process poll (VSS wipe race)
 RANSOMWARE_VSS_CHECK_INTERVAL = 120       # Check VSS shadow copies every 2min
 ENABLE_RANSOMWARE_SHIELD = get_from_config("ransomware_shield.enabled", True)
 
-# System Health Monitor — collection & reporting
+# System Health Monitor â€” collection & reporting
 HEALTH_COLLECT_INTERVAL = 10              # Collect metrics every 10s
 HEALTH_REPORT_INTERVAL = 60               # Report to API every 60s (V4)
 HEALTH_ANOMALY_Z_THRESHOLD = 3.0          # Z-score threshold for anomaly
 
-# Self-Protection — last breath & DACL
+# Self-Protection â€” last breath & DACL
 ENABLE_SELF_PROTECTION = get_from_config("self_protection.enabled", True)
 LAST_BREATH_THREAT_WINDOW = 60            # Consider threats within 60s
 LAST_BREATH_MIN_SCORE = 70                # Min threat score to trigger block
 
-# Performance Optimizer — adaptive throttling (v4.0 Faz 4)
+# Performance Optimizer â€” adaptive throttling (v4.0 Faz 4)
 PERF_ADAPTIVE_CHECK_INTERVAL = 30         # Re-evaluate resource usage every 30s
 PERF_CPU_HIGH_THRESHOLD = 85              # Start throttling above 85% CPU
 PERF_CPU_CRITICAL_THRESHOLD = 95          # Aggressive throttling above 95%
 PERF_MAX_EVENTS_PER_SECOND = 50           # Event processing rate limit
 ENABLE_PERFORMANCE_OPTIMIZER = get_from_config("performance_optimizer.enabled", True)
 
-# False Positive Tuner — cooldown & whitelist learning (v4.0 Faz 4)
+# False Positive Tuner â€” cooldown & whitelist learning (v4.0 Faz 4)
 FP_AUTO_WHITELIST_MIN_EVENTS = 50         # Min events before auto-whitelist
 FP_AUTO_WHITELIST_MAX_SCORE = 10          # Max score for auto-whitelist
 FP_COOLDOWN_CLEANUP_INTERVAL = 3600       # Clean stale cooldowns every hour
 ENABLE_FALSE_POSITIVE_TUNER = get_from_config("false_positive_tuner.enabled", True)
 
-# Threat Summary — periodic fetch (v4.0 Faz 4)
+# Threat Summary â€” periodic fetch (v4.0 Faz 4)
 THREAT_SUMMARY_FETCH_INTERVAL = 300       # Fetch threat summary every 5 min
 
 

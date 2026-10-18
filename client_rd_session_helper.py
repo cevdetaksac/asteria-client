@@ -493,6 +493,7 @@ def run_session_helper(
     from client_remote_desktop import RemoteDesktopStreamer
 
     rd = RemoteDesktopStreamer()
+    rd._disable_tiles = True  # C-RD-HELPER-JPEG: full JPEG every tick
     rd._running = True
     # Already inside the target session process — never spawn nested helpers.
     rd._in_session_helper = True

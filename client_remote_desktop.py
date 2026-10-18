@@ -3501,7 +3501,11 @@ class RemoteDesktopStreamer:
         quality = effective_quality
 
         # Phase 3: dirty-tile pack (periodic full keyframe). Falls back to full JPEG.
+        # C-RD-HELPER-JPEG: session helper ships full JPEGs; a static lock screen
+        # produced 16B empty tile deltas -> agent HELPER_NO_FRAME restart loop.
         try:
+            if getattr(self, "_disable_tiles", False):
+                raise RuntimeError("tiles disabled")
             from client_rd_tiles import DirtyTileEncoder
             if self._tile_encoder is None:
                 self._tile_encoder = DirtyTileEncoder()
@@ -3519,7 +3523,8 @@ class RemoteDesktopStreamer:
                 self._last_tile_meta = tile_meta
                 return payload, self._capture_w, self._capture_h
         except Exception as exc:
-            log(f"[REMOTE-DESKTOP] dirty-tile encode fallback: {exc}")
+            if not getattr(self, "_disable_tiles", False):
+                log(f"[REMOTE-DESKTOP] dirty-tile encode fallback: {exc}")
             self._last_tile_meta = {}
 
         jpeg = None
