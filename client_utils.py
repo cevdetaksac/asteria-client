@@ -1301,15 +1301,31 @@ class InstallerUpdateManager:
                     "message": "Güncel sürüm kullanılıyor"
                 }
             
-            # Installer asset'ini bul
-            assets = data.get("assets", [])
+            # Installer asset: prefer versioned name, then any *installer*.exe
+            # (fleet-safe: older agents only accepted names ending in installer.exe;
+            # 4.9.134–136 shipped only *-installer-X.Y.Z.exe and blocked self-update.)
+            assets = data.get("assets", []) or []
             installer_asset = None
-            
+            ver_needle = f"-installer-{latest_version}.exe".lower()
+            scored = []
             for asset in assets:
-                name = asset.get("name", "").lower()
-                if name.endswith("-installer.exe") or name.endswith("installer.exe"):
-                    installer_asset = asset
-                    break
+                name = str(asset.get("name") or "").lower()
+                if not name.endswith(".exe"):
+                    continue
+                if "installer" not in name:
+                    continue
+                if name.endswith(ver_needle) or name == f"asteria-client-installer-{latest_version}.exe":
+                    score = 3
+                elif name.endswith("-installer.exe") or name == "asteria-client-installer.exe":
+                    score = 2
+                elif "installer" in name:
+                    score = 1
+                else:
+                    continue
+                scored.append((score, asset))
+            if scored:
+                scored.sort(key=lambda x: -x[0])
+                installer_asset = scored[0][1]
             
             if not installer_asset:
                 return {"error": "Installer dosyası bulunamadı", "current_version": current_version}

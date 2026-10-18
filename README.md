@@ -58,7 +58,7 @@ Output: `asteria-client-installer.exe` containing motor-only
 
 ```powershell
 .\build.ps1 -Clean -WebRTC -Sign -Release
-gh release create vX.Y.Z asteria-client-installer.exe `
+gh release create vX.Y.Z asteria-client-installer.exe `  # OR: .\scripts\release.ps1 -Version X.Y.Z (uploads BOTH asteria-client-installer-X.Y.Z.exe and the fleet-safe alias asteria-client-installer.exe)
   --title "vX.Y.Z" --notes "short summary"
 ```
 
