@@ -90,6 +90,7 @@ fn session_hop(args: &[String]) -> Option<i32> {
     // Already in a real session (not 0): run in-process.
     if cur != 0 && target != "0" { return None; }
     if cur != 0 { return None; } // session 0 parent only
+    crate::desk::sas_broker(); // session-0 SYSTEM parent owns SendSAS
     let rest: Vec<String> = args.iter().enumerate().filter(|(j,_)| *j != i && *j != i+1).map(|(_,a)| a.clone()).collect();
     loop {
         let want = if target == "console" { unsafe { WTSGetActiveConsoleSessionId() } } else { target.parse().unwrap_or(1) };

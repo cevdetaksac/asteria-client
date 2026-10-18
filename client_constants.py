@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.141"  # C-RD-PROD-1: embedded asteria-encode --relay (one WebRTC path)
+VERSION = "4.9.142"  # C-RD-CAD-4: SendSAS brokered by session-0 SYSTEM parent
 
 
 

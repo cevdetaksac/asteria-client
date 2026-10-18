@@ -244,7 +244,7 @@ impl Injector {
                     self.mouse(0, 0, if b == 3 { 1 } else if b == 4 { 2 } else { 0 }, fl);
                 }
             }
-            "sas" => return Some(json!({"t":"sas_result","ok":send_sas()})),
+            "sas" => { let r = send_sas(); return Some(json!({"t":"sas_result","ok":r.is_ok(),"reason":r.err()})); }
             "clip" => set_clipboard(m["s"].as_str().unwrap_or("")),
             "ping" => return Some(json!({"t":"pong","ts":m["ts"].clone()})),
             _ => {}
@@ -253,13 +253,46 @@ impl Injector {
     }
 }
 
-pub fn send_sas() -> bool {
+// SendSAS only works from a session-0 SYSTEM (service-launched) process with SoftwareSASGeneration 1|3.
+// The session-0 hop parent runs sas_broker(); the console child signals it and waits for the ack.
+const SAS_REQ: windows::core::PCWSTR = w!("Global\\AsteriaRdSasReq");
+const SAS_ACK: windows::core::PCWSTR = w!("Global\\AsteriaRdSasAck");
+
+fn sas_policy_ok() -> bool {
+    use windows::Win32::System::Registry::*;
+    let mut v = 0u32; let mut n = 4u32;
+    unsafe { RegGetValueW(HKEY_LOCAL_MACHINE, w!("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System"), w!("SoftwareSASGeneration"), RRF_RT_REG_DWORD, None, Some(&mut v as *mut u32 as *mut _), Some(&mut n)).is_ok() && (v == 1 || v == 3) }
+}
+
+fn send_sas_direct() -> std::result::Result<(), String> {
+    if !sas_policy_ok() { return Err("SoftwareSASGeneration policy not 1/3".into()); }
     unsafe {
-        let Ok(lib) = windows::Win32::System::LibraryLoader::LoadLibraryW(w!("sas.dll")) else { return false };
-        let Some(p) = windows::Win32::System::LibraryLoader::GetProcAddress(lib, s!("SendSAS")) else { return false };
+        let lib = windows::Win32::System::LibraryLoader::LoadLibraryW(w!("sas.dll")).map_err(|e| format!("sas.dll: {e}"))?;
+        let p = windows::Win32::System::LibraryLoader::GetProcAddress(lib, s!("SendSAS")).ok_or("SendSAS missing")?;
         let f: extern "system" fn(BOOL) = std::mem::transmute(p);
         f(FALSE);
-        true
+    }
+    Ok(())
+}
+
+pub fn sas_broker() {
+    use windows::Win32::System::Threading::*;
+    std::thread::spawn(|| unsafe {
+        let (Ok(req), Ok(ack)) = (CreateEventW(None, false, false, SAS_REQ), CreateEventW(None, false, false, SAS_ACK)) else { eprintln!("sas broker: CreateEvent failed"); return };
+        loop {
+            if WaitForSingleObject(req, INFINITE) != windows::Win32::Foundation::WAIT_OBJECT_0 { return; }
+            match send_sas_direct() { Ok(()) => { let _ = SetEvent(ack); } Err(e) => eprintln!("sas broker: {e}") }
+        }
+    });
+}
+
+pub fn send_sas() -> std::result::Result<(), String> {
+    use windows::Win32::System::Threading::*;
+    unsafe {
+        let Ok(req) = OpenEventW(EVENT_MODIFY_STATE, false, SAS_REQ) else { return send_sas_direct() }; // no broker: standalone/user mode
+        let ack = OpenEventW(SYNCHRONIZATION_SYNCHRONIZE, false, SAS_ACK).map_err(|e| format!("ack event: {e}"))?;
+        let _ = SetEvent(req);
+        if WaitForSingleObject(ack, 1500) == windows::Win32::Foundation::WAIT_OBJECT_0 { Ok(()) } else { Err("SYSTEM broker did not confirm (policy / not a service?)".into()) }
     }
 }
 

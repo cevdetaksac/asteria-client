@@ -57,6 +57,13 @@ class RdRelaySupervisor:
 
     def _loop(self) -> None:
         from client_rd_hw_sidecar import sidecar_path
+        try:  # Ctrl+Alt+Del: SendSAS from the SYSTEM parent needs SoftwareSASGeneration 1|3 (no reboot)
+            from client_rd_winlogon import ensure_software_sas_generation
+            pol, note = ensure_software_sas_generation()
+            if note != "policy_ok":
+                log(f"[RD] WARN SoftwareSASGeneration -> {pol} ({note})")
+        except Exception as e:
+            log(f"[RD] WARN SAS policy check failed: {e}")
         delay = 2.0
         while not self._stop.is_set():
             exe = sidecar_path()
