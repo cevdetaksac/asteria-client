@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.135"  # CRD touch: trackpad relative+tap-at-cursor; sync _last after rmove
+VERSION = "4.9.136"  # HW negotiate timeout 8s -> JPEG; pairs with v2 first-frame watchdog
 
 
 

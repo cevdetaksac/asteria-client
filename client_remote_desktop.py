@@ -1457,6 +1457,49 @@ class RemoteDesktopStreamer:
 
     # ===================== Phase 4 HW sidecar (C-RD-HW) ===================== #
 
+
+    def _arm_hw_negotiate_timeout(self, seconds: float = 8.0) -> None:
+        """If viewer never answers / ICE never completes, fall back to JPEG-WS."""
+        import threading
+        self._cancel_hw_negotiate_timeout()
+        def _fire():
+            try:
+                if not getattr(self, "_hw_active", False):
+                    return
+                if getattr(self, "_hw_answer_ok", False):
+                    return
+                log("[REMOTE-DESKTOP] HW negotiate timeout -> JPEG fallback")
+                self._hw_fallback_reason = "negotiate_timeout"
+                self._stop_hw_sidecar("negotiate_timeout")
+                self._preferred_transport = "websocket"
+                try:
+                    self._emit_agent_ws({
+                        "t": "remote_meta",
+                        "type": "remote_meta",
+                        "backend": "jpeg",
+                        "fallback_reason": "negotiate_timeout",
+                        "stream_id": self._stream_id,
+                        "jpeg_primary": True,
+                    })
+                except Exception:
+                    pass
+            except Exception as e:
+                log(f"[REMOTE-DESKTOP] HW timeout handler: {e}")
+        t = threading.Timer(float(seconds), _fire)
+        t.daemon = True
+        self._hw_negotiate_timer = t
+        t.start()
+
+    def _cancel_hw_negotiate_timeout(self) -> None:
+        t = getattr(self, "_hw_negotiate_timer", None)
+        self._hw_negotiate_timer = None
+        if t is not None:
+            try:
+                t.cancel()
+            except Exception:
+                pass
+
+
     def _hw_want(self) -> bool:
         """True when this start should try webrtc_hw.
 
@@ -1601,6 +1644,8 @@ class RemoteDesktopStreamer:
                 return False
             self._hw_sidecar = sc
             self._hw_active = True
+            self._hw_answer_ok = False
+            self._arm_hw_negotiate_timeout(8.0)
             # brief wait for hello (offer comes async via on_msg)
             import time as _t
             _t.sleep(0.05)
@@ -1614,6 +1659,7 @@ class RemoteDesktopStreamer:
             return False
 
     def _stop_hw_sidecar(self, reason: str = "stop") -> None:
+        self._cancel_hw_negotiate_timeout()
         sc = getattr(self, "_hw_sidecar", None)
         self._hw_sidecar = None
         self._hw_active = False
@@ -1670,6 +1716,8 @@ class RemoteDesktopStreamer:
             return {"accepted": False, "error": "hw_inactive"}
         try:
             if action == "answer":
+                self._hw_answer_ok = True
+                self._cancel_hw_negotiate_timeout()
                 sc.send_answer(str(payload.get("sdp") or ""))
                 return {"accepted": True, "backend": "webrtc_hw"}
             if action == "ice":
