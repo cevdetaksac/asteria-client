@@ -57,13 +57,18 @@ fn run(mut cfg: MediaCfg, ctl: Receiver<Ctl>, out: &Sender<MediaOut>) -> Result<
                         let resized = d.w != dup.w || d.h != dup.h;
                         dup = d; work = None; snap = None; force_key = true;
                         if resized { enc = Enc::new(&dup.device, &dup.ctx, &dup.adapter_name, dup.w, dup.h, cfg.fps, enc.bitrate).map_err(|e| format!("mft: {e}"))?; }
+                        prime_frame(&mut dup, out);
                         let _ = out.send(MediaOut::Event(json!({"t":"media","encoder":enc.name,"adapter":dup.adapter_name,"w":dup.w,"h":dup.h,"desktop":desktop,"resized":resized})));
                     }
                     Err(e) => { let _ = out.send(MediaOut::Event(json!({"t":"warn","msg":format!("desk switch: {e}")}))); }
                 }
             }
         }
-        let fi = match dup.next(0) {
+        // Lock/Winlogon or stall: force IDR every 2s so a static curtain still refreshes the viewer
+        let lockish = desktop.as_deref().map(|d| d.eq_ignore_ascii_case("Winlogon") || d.to_ascii_lowercase().contains("secure")).unwrap_or(false);
+        if lockish || last_sent.elapsed() > Duration::from_secs(2) { force_key = true; }
+        let wait = if !dup.have_frame || force_key { 50u32 } else { 0u32 };
+        let fi = match dup.next(wait) {
             Ok(f) => f,
             Err(_) => { // ACCESS_LOST: secure desktop / mode change — follow input desktop, backoff, never exit
                 let _ = out.send(MediaOut::Event(json!({"t":"warn","msg":"dxgi ACCESS_LOST, reopening"})));
@@ -75,6 +80,7 @@ fn run(mut cfg: MediaCfg, ctl: Receiver<Ctl>, out: &Sender<MediaOut>) -> Result<
                             let resized = d.w != dup.w || d.h != dup.h;
                             dup = d; work = None; snap = None; force_key = true;
                             if resized { enc = Enc::new(&dup.device, &dup.ctx, &dup.adapter_name, dup.w, dup.h, cfg.fps, enc.bitrate).map_err(|e| format!("mft: {e}"))?; }
+                            prime_frame(&mut dup, out);
                             let _ = out.send(MediaOut::Event(json!({"t":"desktop","name":desktop})));
                             let _ = out.send(MediaOut::Event(json!({"t":"media","encoder":enc.name,"adapter":dup.adapter_name,"w":dup.w,"h":dup.h,"desktop":desktop,"resized":resized})));
                             break;
@@ -125,6 +131,22 @@ fn run(mut cfg: MediaCfg, ctl: Receiver<Ctl>, out: &Sender<MediaOut>) -> Result<
         let now = Instant::now();
         if next > now { std::thread::sleep(next - now) } else { next = now }
     }
+}
+
+
+fn prime_frame(dup: &mut Dup, out: &Sender<MediaOut>) {
+    // After DuplicateOutput, have_frame is false until a Present; lock screen may be static — wait up to ~1s.
+    for _ in 0..20 {
+        match dup.next(50) {
+            Ok(_) if dup.have_frame => {
+                let _ = out.send(MediaOut::Event(json!({"t":"warn","msg":"prime_frame ok"})));
+                return;
+            }
+            Ok(_) => {}
+            Err(e) => { let _ = out.send(MediaOut::Event(json!({"t":"warn","msg":format!("prime: {e}")}))); return; }
+        }
+    }
+    let _ = out.send(MediaOut::Event(json!({"t":"warn","msg":"prime_frame timeout (no Present yet)"})));
 }
 
 fn open_dup(i: u32) -> Result<Dup, String> {
