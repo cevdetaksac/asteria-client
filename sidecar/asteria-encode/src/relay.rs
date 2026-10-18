@@ -12,9 +12,9 @@ fn flog(dir: &str, level: &str, s: &str) {
     if level == "DEBUG_SET" { DEBUG.store(s == "1", std::sync::atomic::Ordering::Relaxed); return; }
     if level == "info" && !DEBUG.load(std::sync::atomic::Ordering::Relaxed) { return; }
     let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-    let path = format!("{dir}\\rdtest.log");
+    let path = format!("{dir}\\asteria-rd.log");
     if let Ok(meta) = std::fs::metadata(&path) {
-        if meta.len() > 1_000_000 { let _ = std::fs::rename(&path, format!("{dir}\\rdtest.log.1")); }
+        if meta.len() > 1_000_000 { let _ = std::fs::rename(&path, format!("{dir}\\asteria-rd.log.1")); }
     }
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
         let _ = writeln!(f, "{ts} [{level}] {s}");
@@ -45,7 +45,12 @@ fn kill(c: &mut Option<(Child, ChildStdin)>) {
 }
 
 fn session(url: &str, fps: u32, args: &[String]) -> Result<(), String> {
-    let (mut ws, _) = tungstenite::connect(url).map_err(|e| e.to_string())?;
+    use tungstenite::client::IntoClientRequest;
+    let mut req = url.into_client_request().map_err(|e| e.to_string())?;
+    if let Ok(t) = std::env::var("ASTERIA_RD_TOKEN") { // product: agent machine credential (env only, never argv/logs)
+        req.headers_mut().insert("Authorization", format!("Bearer {}", t.trim()).parse().map_err(|_| "bad token".to_string())?);
+    }
+    let (mut ws, _) = tungstenite::connect(req).map_err(|e| e.to_string())?;
     let to = Some(Duration::from_millis(15));
     let _ = match ws.get_mut() { MaybeTlsStream::Plain(s) => s.set_read_timeout(to), MaybeTlsStream::NativeTls(s) => s.get_ref().set_read_timeout(to), _ => Ok(()) };
     eprintln!("relay: connected, waiting for viewer");

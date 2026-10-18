@@ -364,6 +364,12 @@ class RemoteCommandExecutor:
                 on_connected=self._drain_offline_urgent_queue,
             )
             self._control_ws.start()
+            try:  # C-RD-PROD-1: embedded WebRTC remote desktop (asteria-encode --relay)
+                from client_rd_relay import RdRelaySupervisor
+                self._rd_relay = RdRelaySupervisor(self.api_client, self.token_getter)
+                self._rd_relay.start()
+            except Exception as e:
+                log(f"[RD] supervisor start failed: {e}")
             try:
                 from client_presence import configure as configure_presence
                 configure_presence(

@@ -80,6 +80,7 @@ _hidden = [
     'client_rd_encoder',
     'client_rd_tiles',
     'client_rd_hw_sidecar',
+    'client_rd_relay',
     'client_rd_winlogon',
     'client_server_management',
     'client_silent_hours',

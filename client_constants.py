@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.140"  # C-RD-ONE: WebRTC+ctrl DC only; no helper JPEG live; stop on encoder fail
+VERSION = "4.9.141"  # C-RD-PROD-1: embedded asteria-encode --relay (one WebRTC path)
 
 
 
