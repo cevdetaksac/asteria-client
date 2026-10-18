@@ -504,12 +504,23 @@ class TestWinlogonStartContract(unittest.TestCase):
                 explorer_present=True,
             )
         )
-        # Unknown lock + stamped Default must stay secure (Derin user-helper black).
-        self.assertTrue(
+        # C-RD-IN-WL-4: live OpenInputDesktop=Default is lock curtain / shell —
+        # not Winlogon, even with unknown lock flags (stamped Default thrash).
+        self.assertFalse(
             console_start_secure_desktop(
                 username="administrator",
                 logonui_present=False,
                 session_locked=None,
+                explorer_present=True,
+                input_desktop="default",
+            )
+        )
+        # LogonUI + live Default = lock curtain, stay Default (no PIX-3 thrash).
+        self.assertFalse(
+            console_start_secure_desktop(
+                username="caksac",
+                logonui_present=True,
+                session_locked=True,
                 explorer_present=True,
                 input_desktop="default",
             )
@@ -565,6 +576,17 @@ class TestWinlogonStartContract(unittest.TestCase):
             "client_rd_winlogon.session_has_process", return_value=True
         ):
             self.assertEqual(resolve_console_capture_mode(3), "winlogon")
+        with mock.patch(
+            "client_rd_winlogon.session_username", return_value="administrator"
+        ), mock.patch(
+            "client_rd_winlogon.session_has_logonui", return_value=True
+        ), mock.patch(
+            "client_rd_winlogon.session_lock_state", return_value=True
+        ), mock.patch(
+            "client_rd_winlogon.session_has_process", return_value=True
+        ):
+            self.assertEqual(resolve_console_capture_mode(3, input_desktop="default"), "default")
+            self.assertEqual(resolve_console_capture_mode(3, input_desktop="winlogon"), "winlogon")
 
     def test_lock_flags_and_helper_mode_mismatch(self):
         from client_rd_winlogon import interpret_session_lock_flags

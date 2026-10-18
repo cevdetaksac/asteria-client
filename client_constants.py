@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.137"  # RD helper follows input desktop (lock curtain=Default), in-session cursor, input logs/acks
+VERSION = "4.9.138"  # parent stays on Default lock curtain; no PIX-3 thrash; desktop-switch hysteresis
 
 
 

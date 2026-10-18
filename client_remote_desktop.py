@@ -81,6 +81,7 @@ FOLLOW_ACCEPT_SEC = 8.0               # C-RD-FOLLOW helper respawn after logon (
 FOLLOW_DEFAULT_PROBE_SEC = 10.0       # wait for healthy Default pixels after switch
 FOLLOW_HELPER_RETRIES = 3             # spawn retries before DXGI in-process fallback
 FOLLOW_CHECK_SEC = 0.25
+DESKTOP_SWITCH_MIN_SEC = 3.0  # C-RD-IN-WL-4: hysteresis between helper respawns
 # Post-logon Default can paint gdi+black while Welcome/DWM settles (Derin lab).
 DEFAULT_BLACK_RECOVER_SEC = 1.5
 # Local rd_capture_diag: dump after sustained empty frames (Ninety Default no_frame).
@@ -298,6 +299,8 @@ class RemoteDesktopStreamer:
         self._follow_lock = threading.Lock()
         self._follow_busy = False
         self._last_follow_check = 0.0
+        self._last_desktop_switch_mono = 0.0
+        self._last_desktop_switch_to = ""
         self._helper_spawn_session_id = 0
         self._prefer_dxgi = False
         self._desktop_reattach_every = 3  # C-RD-FOLLOW-3: Default before next frames
@@ -612,6 +615,8 @@ class RemoteDesktopStreamer:
             self._force_secure_desktop = bool(force_secure)
             self._follow_busy = False
             self._last_follow_check = 0.0
+            self._last_desktop_switch_mono = 0.0
+            self._last_desktop_switch_to = ""
             self._helper_spawn_session_id = 0
             self._prefer_dxgi = False
             self._tscon_attempted = False
@@ -4749,16 +4754,17 @@ class RemoteDesktopStreamer:
         return None
 
     def _should_promote_follow_to_winlogon(self) -> bool:
-        """Lock/LogonUI with a listed username → user-helper GDI black (C-RD-PIX-3).
+        """Promote Default capture to Winlogon only when input desktop is Winlogon.
 
-        Unlocked Default (WTS unlocked; explorer optional during Welcome) is PIX-4:
-        do **not** jump to Winlogon because GDI was black — retry DXGI instead.
-        Applies to follow **and** SID Start (lab 4.9.103 Active username FAIL).
-
-        Exception: if LogonUI is present, prefer Winlogon even when explorer is
-        listed Active (Derin: Default+user-helper black while lock UI is live).
+        C-RD-IN-WL-4 / 4.9.138: Lock curtain lives on Default (LockApp) even while
+        LogonUI.exe runs. LogonUI/locked flags alone must NOT flip helpers — that
+        caused Default↔Winlogon thrash (~2s). Only OpenInputDesktop=Winlogon
+        (password/SAS screen) or a helper already reporting Winlogon may promote.
         """
         if self._winlogon_mode or self._force_secure_desktop:
+            return False
+        desk = str(self._desktop_name or "").strip().lower()
+        if desk == "default":
             return False
         try:
             from client_rd_winlogon import (
@@ -4772,13 +4778,15 @@ class RemoteDesktopStreamer:
             explorer = (
                 session_has_process(sid, "explorer.exe") if sid > 0 else None
             )
-            if logonui or locked is True:
+            if desk == "winlogon" and (logonui or locked is True):
+                return True
+            if not desk and (logonui or locked is True):
                 return True
             if (
                 locked is False
                 and not logonui
             ):
-                # Welcome / getting-ready: explorer may still be False — stay Default.
+                # Welcome / getting-ready: explorer may still be False - stay Default.
                 return False
             if (
                 explorer is True
@@ -4941,6 +4949,23 @@ class RemoteDesktopStreamer:
                 force=True,
             )
 
+    def _desktop_switch_allowed(self, target: str) -> bool:
+        """Hysteresis: at most one real helper desktop switch per DESKTOP_SWITCH_MIN_SEC."""
+        now = time.monotonic()
+        last = float(getattr(self, "_last_desktop_switch_mono", 0.0) or 0.0)
+        if (now - last) < float(DESKTOP_SWITCH_MIN_SEC):
+            return False
+        return True
+
+    def _note_desktop_switch(self, target: str, *, reason: str = "") -> None:
+        target = str(target or "").strip().lower() or "?"
+        self._last_desktop_switch_mono = time.monotonic()
+        self._last_desktop_switch_to = target
+        log(
+            f"[REMOTE-DESKTOP] desktop switch → {target}"
+            + (f" reason={reason}" if reason else "")
+        )
+
     def _fallback_user_helper_to_winlogon(
         self,
         *,
@@ -4953,6 +4978,13 @@ class RemoteDesktopStreamer:
         """Follow + listed user but lock screen: switch to Winlogon helper."""
         if not force and not self._should_promote_follow_to_winlogon():
             return None
+        if str(self._desktop_name or "").strip().lower() == "default":
+            return None
+        if self._winlogon_mode and self._persistent_helper_connected() and bool(self._helper_spawned_winlogon):
+            return None
+        if not self._desktop_switch_allowed("winlogon"):
+            return None
+        self._note_desktop_switch("winlogon", reason=f"pix3/{phase}")
         sid = int(self._target_session_id or 0)
         log(
             f"[REMOTE-DESKTOP] C-RD-PIX-3 fallback Default→Winlogon "
@@ -5093,12 +5125,12 @@ class RemoteDesktopStreamer:
             need_stale_unlock = bool(
                 stale and self._winlogon_mode and not want_wl
             )
+            # follow_reason alone must NOT respawn when mode/helper already match
             if not (
                 mode_mismatch
                 or helper_mismatch
                 or need_black_fix
                 or need_stale_unlock
-                or follow_reason
             ):
                 return
             if want_wl:
@@ -5106,7 +5138,7 @@ class RemoteDesktopStreamer:
                     return
                 self._follow_console = True
                 self._fallback_user_helper_to_winlogon(
-                    jpeg=None, w=0, h=0, phase=f"auto_{desired}", force=True
+                    jpeg=None, w=0, h=0, phase=f"auto_{desired}", force=False
                 )
                 return
             # Desired Default (unlocked / post-logon shell)
@@ -5121,9 +5153,19 @@ class RemoteDesktopStreamer:
 
     def _execute_console_follow(self, reason: str, new_sid: int, username: str) -> None:
         """Tear Winlogon helper, rebind Default, keep stream_id (C-RD-FOLLOW-1/2/4)."""
+        if (
+            not self._winlogon_mode
+            and self._persistent_helper_connected()
+            and not bool(self._helper_spawned_winlogon)
+            and str(self._desktop_name or "").lower() == "default"
+        ):
+            return
+        if not self._desktop_switch_allowed("default"):
+            return
         if not self._follow_lock.acquire(blocking=False):
             return
         self._follow_busy = True
+        self._note_desktop_switch("default", reason=str(reason or "follow"))
         prev_sid = self._target_session_id
         stream_id = self._stream_id
         try:

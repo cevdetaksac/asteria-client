@@ -410,6 +410,11 @@ def console_start_secure_desktop(
     desk = str(input_desktop or "").strip().lower()
     if desk == "winlogon":
         return True
+    # C-RD-IN-WL-4: Win10/11 lock curtain (LockApp) is on Default while LogonUI
+    # may still run. Live OpenInputDesktop=Default wins over LogonUI/locked flags
+    # — PIX-3 must not thrash Default↔Winlogon helpers.
+    if desk == "default":
+        return False
     if logonui_present or session_locked is True:
         return True
     if not str(username or "").strip():
