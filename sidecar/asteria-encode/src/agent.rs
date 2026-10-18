@@ -79,6 +79,14 @@ pub fn run(args: &[String]) -> i32 {
         let _ = cmd_in.send(rtc::Cmd::Stop);
     });
 
+    // watchdog: no encoded frame for 8s (encoder/D3D hang after a desktop switch) -> exit so the viewer's retry gets a fresh agent
+    static LAST_ENC: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let t0 = Instant::now();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(1));
+        let l = LAST_ENC.load(std::sync::atomic::Ordering::Relaxed);
+        if l > 0 && t0.elapsed().as_millis() as u64 - l > 8000 { out(&json!({"t":"error","msg":"media stall 8s, agent restarting"})); std::process::exit(4); }
+    });
     let mut last_stats = Instant::now();
     let mut frames = 0u64;
     let (mut total_frames, mut total_bytes) = (0u64, 0u64);
@@ -91,6 +99,7 @@ pub fn run(args: &[String]) -> i32 {
             match ev["t"].as_str() {
                 Some("ice") => { ice = ev["state"].as_str().unwrap_or("").to_string(); out(&ev); }
                 Some("enc") => {
+                    LAST_ENC.store(t0.elapsed().as_millis() as u64 + 1, std::sync::atomic::Ordering::Relaxed);
                     frames += 1; total_frames += 1; total_bytes += ev["bytes"].as_u64().unwrap_or(0);
                     bytes += ev["bytes"].as_u64().unwrap_or(0);
                     last_enc_ms = ev["ms"].as_f64().unwrap_or(0.0);

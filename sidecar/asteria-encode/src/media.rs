@@ -56,7 +56,7 @@ fn run(mut cfg: MediaCfg, ctl: Receiver<Ctl>, out: &Sender<MediaOut>) -> Result<
                     Ok(d) => {
                         let resized = d.w != dup.w || d.h != dup.h;
                         dup = d; work = None; snap = None; force_key = true;
-                        if resized { enc = Enc::new(&dup.device, &dup.ctx, &dup.adapter_name, dup.w, dup.h, cfg.fps, enc.bitrate).map_err(|e| format!("mft: {e}"))?; }
+                        enc = Enc::new(&dup.device, &dup.ctx, &dup.adapter_name, dup.w, dup.h, cfg.fps, enc.bitrate).map_err(|e| format!("mft: {e}"))?; // new D3D device => new MFT (old one is bound to the lost device)
                         prime_frame(&mut dup, out);
                         let _ = out.send(MediaOut::Event(json!({"t":"media","encoder":enc.name,"adapter":dup.adapter_name,"w":dup.w,"h":dup.h,"desktop":desktop,"resized":resized})));
                     }
@@ -79,7 +79,7 @@ fn run(mut cfg: MediaCfg, ctl: Receiver<Ctl>, out: &Sender<MediaOut>) -> Result<
                         Ok(d) => {
                             let resized = d.w != dup.w || d.h != dup.h;
                             dup = d; work = None; snap = None; force_key = true;
-                            if resized { enc = Enc::new(&dup.device, &dup.ctx, &dup.adapter_name, dup.w, dup.h, cfg.fps, enc.bitrate).map_err(|e| format!("mft: {e}"))?; }
+                            enc = Enc::new(&dup.device, &dup.ctx, &dup.adapter_name, dup.w, dup.h, cfg.fps, enc.bitrate).map_err(|e| format!("mft: {e}"))?; // new D3D device => new MFT (old one is bound to the lost device)
                             prime_frame(&mut dup, out);
                             let _ = out.send(MediaOut::Event(json!({"t":"desktop","name":desktop})));
                             let _ = out.send(MediaOut::Event(json!({"t":"media","encoder":enc.name,"adapter":dup.adapter_name,"w":dup.w,"h":dup.h,"desktop":desktop,"resized":resized})));
