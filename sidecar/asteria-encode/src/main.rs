@@ -1,4 +1,12 @@
 //! asteria-encode — Phase 4 HW sidecar (C-RD-HW). Milestone 1: --selftest.
+mod capture;
+mod encoder;
+mod bench;
+mod desk;
+mod media;
+mod rtc;
+mod loopback;
+mod agent;
 use serde_json::json;
 use windows::core::*;
 use windows::Win32::Graphics::Dxgi::*;
@@ -50,9 +58,13 @@ fn h264_encoders(flags: MFT_ENUM_FLAG) -> Vec<String> {
 }
 
 fn main() {
+    unsafe { let _ = windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2); }
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--version") { println!("{}", env!("CARGO_PKG_VERSION")); return; }
-    if !args.iter().any(|a| a == "--selftest") { eprintln!("usage: asteria-encode --selftest|--version"); std::process::exit(2); }
+    if args.iter().any(|a| a == "--agent") { std::process::exit(agent::run(&args)); }
+    if args.iter().any(|a| a == "--loopback") { std::process::exit(loopback::run(&args)); }
+    if args.iter().any(|a| a == "--bench") { std::process::exit(bench::run(&args)); }
+    if !args.iter().any(|a| a == "--selftest") { eprintln!("usage: asteria-encode --selftest|--bench|--loopback|--agent|--version"); std::process::exit(2); }
     unsafe { let _ = CoInitializeEx(None, COINIT_MULTITHREADED); let _ = MFStartup(MF_VERSION, MFSTARTUP_FULL); }
     let hw = h264_encoders(MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER);
     let sw = h264_encoders(MFT_ENUM_FLAG_SYNCMFT | MFT_ENUM_FLAG_SORTANDFILTER);

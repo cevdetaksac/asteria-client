@@ -1,0 +1,113 @@
+//! Capture + encode worker thread with input-desktop following (C-RD-HW-3/4, CON-3).
+use crate::capture::*;
+use crate::encoder::*;
+use crate::desk;
+use serde_json::{json, Value};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use windows::Win32::Graphics::Direct3D11::*;
+use windows::Win32::Graphics::Dxgi::Common::*;
+
+pub enum Ctl { Keyframe, Bitrate(u32), Monitor(u32), Stop }
+pub enum MediaOut { Frame(Encoded), Event(Value) }
+
+#[derive(Clone)]
+pub struct MediaCfg { pub fps: u32, pub bitrate: u32, pub output: u32, pub stamp: bool, pub scroll: bool }
+
+pub fn now_ms() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0) }
+
+pub fn spawn(cfg: MediaCfg, ctl: Receiver<Ctl>, out: Sender<MediaOut>) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || { if let Err(e) = run(cfg, ctl, &out) { let _ = out.send(MediaOut::Event(json!({"t":"error","where":"media","msg":e}))); } })
+}
+
+fn run(mut cfg: MediaCfg, ctl: Receiver<Ctl>, out: &Sender<MediaOut>) -> Result<(), String> {
+    desk::com_init();
+    let mut desktop = desk::follow_input_desktop();
+    let mut dup = open_dup(cfg.output)?;
+    let mut enc = Enc::new(&dup.device, &dup.ctx, &dup.adapter_name, dup.w, dup.h, cfg.fps, cfg.bitrate).map_err(|e| format!("mft: {e}"))?;
+    let _ = out.send(MediaOut::Event(json!({"t":"media","encoder":enc.name,"adapter":dup.adapter_name,"w":dup.w,"h":dup.h,"desktop":desktop})));
+    let _ = out.send(MediaOut::Event(json!({"t":"mons","list":desk::monitors()})));
+    let mut work: Option<ID3D11Texture2D> = None;
+    let mut snap: Option<ID3D11Texture2D> = None;
+    let tick = Duration::from_secs_f64(1.0 / cfg.fps as f64);
+    let mut next = Instant::now(); let mut last_desk_check = Instant::now(); let mut last_sent = Instant::now();
+    let mut off = 0u32; let mut force_key = true;
+    let start = Instant::now();
+    loop {
+        loop {
+            match ctl.try_recv() {
+                Ok(Ctl::Keyframe) => force_key = true,
+                Ok(Ctl::Bitrate(b)) => enc.set_bitrate(b),
+                Ok(Ctl::Monitor(m)) if m != cfg.output => { cfg.output = m; dup = open_dup(m)?; enc = Enc::new(&dup.device, &dup.ctx, &dup.adapter_name, dup.w, dup.h, cfg.fps, enc.bitrate).map_err(|e| format!("mft: {e}"))?; work = None; snap = None; force_key = true;
+                    let _ = out.send(MediaOut::Event(json!({"t":"media","encoder":enc.name,"w":dup.w,"h":dup.h,"monitor":m}))); }
+                Ok(Ctl::Monitor(_)) => {}
+                Ok(Ctl::Stop) | Err(TryRecvError::Disconnected) => return Ok(()),
+                Err(TryRecvError::Empty) => break,
+            }
+        }
+        // desktop switch detection (Winlogon <-> Default, UAC secure desktop)
+        if last_desk_check.elapsed() > Duration::from_millis(250) {
+            last_desk_check = Instant::now();
+            let cur = desk::input_desktop_name();
+            if cur.is_some() && cur != desktop {
+                desktop = desk::follow_input_desktop();
+                let _ = out.send(MediaOut::Event(json!({"t":"desktop","name":desktop})));
+                match open_dup(cfg.output) { Ok(d) => { dup = d; enc = Enc::new(&dup.device, &dup.ctx, &dup.adapter_name, dup.w, dup.h, cfg.fps, enc.bitrate).map_err(|e| format!("mft: {e}"))?; work = None; snap = None; force_key = true; } Err(e) => { let _ = out.send(MediaOut::Event(json!({"t":"warn","msg":e}))); } }
+            }
+        }
+        let fi = match dup.next(0) {
+            Ok(f) => f,
+            Err(_) => { // ACCESS_LOST: desktop switch / mode change
+                std::thread::sleep(Duration::from_millis(50));
+                desktop = desk::follow_input_desktop();
+                if let Ok(d) = open_dup(cfg.output) { if d.w != dup.w || d.h != dup.h { dup = d; enc = Enc::new(&dup.device, &dup.ctx, &dup.adapter_name, dup.w, dup.h, cfg.fps, enc.bitrate).map_err(|e| format!("mft: {e}"))?; work = None; snap = None; } else { dup = d; } }
+                force_key = true; None
+            }
+        };
+        if let Some(f) = &fi {
+            if let Some((x, y, v)) = f.pointer_pos { let _ = out.send(MediaOut::Event(json!({"t":"cp","x":x,"y":y,"v":v}))); }
+            if let Some(s) = &f.pointer_shape { if let Some(j) = desk::cursor_json(s) { let _ = out.send(MediaOut::Event(j)); } }
+        }
+        let updated = fi.as_ref().map(|f| f.updated).unwrap_or(false);
+        // VFR: encode only when the desktop changed (or forced keyframe / stamp / scroll test, or 1 fps keepalive)
+        let need = updated || force_key || cfg.stamp || cfg.scroll || last_sent.elapsed() > Duration::from_secs(1);
+        if need && dup.have_frame {
+            let mut src = dup.tex.clone();
+            if cfg.stamp || cfg.scroll {
+                if work.is_none() {
+                    work = crate::capture::bgra_texture(&dup.device, dup.w, dup.h, DXGI_FORMAT_B8G8R8A8_UNORM, (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32).ok();
+                    snap = crate::capture::bgra_texture(&dup.device, dup.w, dup.h, DXGI_FORMAT_B8G8R8A8_UNORM, D3D11_BIND_SHADER_RESOURCE.0 as u32).ok();
+                    if let Some(s) = &snap { unsafe { dup.ctx.CopyResource(s, &dup.tex) } }
+                }
+                let w = work.clone().unwrap();
+                unsafe {
+                    if cfg.scroll {
+                        let s = snap.clone().unwrap(); let (ww, hh) = (dup.w, dup.h); off = (off + 8) % hh;
+                        let a = D3D11_BOX { left: 0, top: 0, front: 0, right: ww, bottom: hh - off, back: 1 };
+                        dup.ctx.CopySubresourceRegion(&w, 0, 0, off, 0, &s, 0, Some(&a));
+                        if off > 0 { let b = D3D11_BOX { left: 0, top: hh - off, front: 0, right: ww, bottom: hh, back: 1 }; dup.ctx.CopySubresourceRegion(&w, 0, 0, 0, 0, &s, 0, Some(&b)); }
+                    } else { dup.ctx.CopyResource(&w, &dup.tex); }
+                    if cfg.stamp { desk::stamp(&dup.device, &dup.ctx, &w, (now_ms() & 0xFF_FFFF) as u32); }
+                }
+                src = w;
+            }
+            if force_key { enc.force_keyframe(); force_key = false; }
+            let ts = (start.elapsed().as_nanos() / 100) as i64;
+            let t0 = Instant::now();
+            let mut v = enc.encode(&src, ts).map_err(|e| format!("encode: {e}"))?;
+            v.extend(enc.poll(50).map_err(|e| format!("encode: {e}"))?);
+            let ms = t0.elapsed().as_secs_f64() * 1000.0;
+            for e in v { let _ = out.send(MediaOut::Event(json!({"t":"enc","ms":ms,"bytes":e.data.len(),"key":e.key}))); if out.send(MediaOut::Frame(e)).is_err() { return Ok(()); } }
+            last_sent = Instant::now();
+        }
+        next += tick;
+        let now = Instant::now();
+        if next > now { std::thread::sleep(next - now) } else { next = now }
+    }
+}
+
+fn open_dup(i: u32) -> Result<Dup, String> {
+    let mut last = String::new();
+    for _ in 0..20 { match Dup::new(i) { Ok(d) => return Ok(d), Err(e) => { last = format!("dxgi: {e}"); std::thread::sleep(Duration::from_millis(100)); } } }
+    Err(last)
+}

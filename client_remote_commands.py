@@ -1360,6 +1360,9 @@ class RemoteCommandExecutor:
             topology=topology,
             preferred_transport=params.get("preferred_transport"),
             command_id=cmd_id or None,
+            viewer_backend=params.get("viewer_backend"),
+            notify_user=bool(params.get("notify_user") or False),
+            session_target=params.get("session_target"),
         )
         if result.get("success"):
             self._notify_remote_desktop_ui("started")

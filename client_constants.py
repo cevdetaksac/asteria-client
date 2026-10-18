@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.127"  # Phase 3 RD: dirty tiles, trickle ICE, viewer bitmap/backpressure
+VERSION = "4.9.128"  # Phase 4: HW sidecar (rd_hw_enabled default off)
 
 
 

@@ -381,3 +381,27 @@ Write-Host "   - Automatic UAC elevation will prompt for admin rights" -Foregrou
 Write-Host "   - Application will self-configure on first run" -ForegroundColor Gray
 
 Write-Host "`n===============================================" -ForegroundColor Green
+
+
+# Phase4: bundle asteria-encode.exe next to agent artifacts (rd_hw_enabled default off)
+$aeSrc = Join-Path $PSScriptRoot "sidecar\asteria-encode\target\x86_64-pc-windows-gnullvm\release\asteria-encode.exe"
+if (-not (Test-Path $aeSrc)) { $aeSrc = Join-Path $PSScriptRoot "sidecar\asteria-encode\target\release\asteria-encode.exe" }
+$aeDestCandidates = @()
+if (Get-Variable -Name distDir -Scope Script -ErrorAction SilentlyContinue) { $aeDestCandidates += $distDir }
+if (Get-Variable -Name DistDir -Scope Script -ErrorAction SilentlyContinue) { $aeDestCandidates += $DistDir }
+if (Get-Variable -Name OutDir -Scope Script -ErrorAction SilentlyContinue) { $aeDestCandidates += $OutDir }
+$aeDestCandidates += (Join-Path $PSScriptRoot "dist")
+$aeDestCandidates += (Join-Path $PSScriptRoot "release")
+$aeDest = $aeDestCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+if ((Test-Path $aeSrc) -and $aeDest) {
+  Copy-Item -Force $aeSrc (Join-Path $aeDest "asteria-encode.exe")
+  Write-Host "Bundled asteria-encode.exe -> $aeDest"
+  & (Join-Path $aeDest "asteria-encode.exe") --selftest | Write-Host
+  if ($LASTEXITCODE -ne 0) { throw "asteria-encode --selftest failed" }
+  # also into NSIS/installer payload folder if present
+  Get-ChildItem -Path $PSScriptRoot -Recurse -Filter "asteria-client.exe" -ErrorAction SilentlyContinue |
+    ForEach-Object { Copy-Item -Force $aeSrc (Join-Path $_.DirectoryName "asteria-encode.exe") }
+} elseif (-not (Test-Path $aeSrc)) {
+  Write-Warning "asteria-encode.exe not built; HW path unavailable this release"
+}
+

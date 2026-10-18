@@ -7,7 +7,9 @@ Policy (contract 1.4.94 C-RD-HW-1): permissive only (MIT/Apache-2.0/BSD/ISC/Zlib
 | windows / windows-core / windows-targets (+ macros) | MIT OR Apache-2.0 |
 | serde_json / serde / serde_core | MIT OR Apache-2.0 |
 | itoa, memchr, ryu/zmij, proc-macro2, quote, syn, unicode-ident | MIT OR Apache-2.0 (unicode-ident: + Unicode-3.0) |
+| str0m (+ str0m-proto, str0m-wincrypto, is, sctp-proto, …) | MIT OR Apache-2.0 |
+| thiserror, log, tracing, once_cell, … (str0m tree) | MIT OR Apache-2.0 / permissive |
 
-Toolchain: Rust stable x86_64-pc-windows-gnullvm + llvm-mingw (Apache-2.0 WITH LLVM-exception; mingw-w64 runtime: ZPL/public domain, statically linked CRT startup only).
+Toolchain: Rust stable x86_64-pc-windows-gnullvm + llvm-mingw (Apache-2.0 WITH LLVM-exception).
 
-Planned: webrtc-rs crates (MIT OR Apache-2.0). OpenH264 (BSD-2, Cisco binary downloaded at runtime, never bundled).
+OpenH264 (BSD-2, Cisco binary) is **not** bundled; may be downloaded at runtime later under Cisco's terms.

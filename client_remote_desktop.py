@@ -29,6 +29,7 @@ from urllib.parse import urlencode
 
 from client_helpers import log
 from client_rd_adaptive import AdaptiveStreamController
+import client_rd_hw_sidecar as _rd_hw
 
 # Defaults: JPEG-WS must stay video-like when WebRTC UDP is blocked (Cloudflare 443).
 DEFAULT_FPS = 30.0
@@ -232,6 +233,10 @@ class RemoteDesktopStreamer:
         self._last_helper_capture_ms = 0.0
         self._last_helper_raw: Optional[Tuple[bytes, int, int]] = None
         self._stream_id = ""
+        self._viewer_backend = (viewer_backend or 'auto').strip().lower()
+        self._notify_user = bool(notify_user)
+        self._session_target = session_target
+        self._hw_sidecar = None
         self._media_session_id = ""
         # Contract 1.4.39 — agent → viewer stage honesty (C-RD-PROG-*)
         self._command_id = ""
@@ -467,7 +472,10 @@ class RemoteDesktopStreamer:
               pre_logon: Optional[bool] = None,
               topology: Optional[str] = None,
               preferred_transport: Optional[str] = None,
-              command_id: Optional[str] = None) -> dict:
+              command_id: Optional[str] = None,
+              viewer_backend: Optional[str] = None,
+              notify_user: bool = False,
+              session_target: Optional[dict] = None) -> dict:
         """Start capture + WS (with HTTP fallback).
 
         Honest start: resolve WTS session_id, probe desktop first.
@@ -5778,6 +5786,8 @@ class RemoteDesktopStreamer:
             "transports": transports,
             "fallback": "jpeg-ws",
             "codecs": codecs,
+            "rd_backends": (["jpeg", "webrtc_hw"] if _rd_hw.sidecar_path() else ["jpeg"]),
+            "hw_sidecar": _rd_hw.caps_from_selftest(),
             "webrtc": {
                 "available": bool(media.get("webrtc")),
                 "signaling": int(media.get("webrtc_signaling") or 1),

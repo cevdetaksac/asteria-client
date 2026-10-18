@@ -1,6 +1,6 @@
-# -*- mode: python ; coding: utf-8 -*-
+﻿# -*- mode: python ; coding: utf-8 -*-
 """
-onedir package — python312.dll lives under $INSTDIR\\_internal (no _MEI unpack).
+onedir package â€” python312.dll lives under $INSTDIR\\_internal (no _MEI unpack).
 
 IMPORTANT: Never put our client_*.py modules in ``datas``. That copies plain
 source next to the exe. Application code must enter PYZ via Analysis/imports
@@ -31,7 +31,7 @@ try:
 except Exception:
     _certifi_datas = []
 
-# Non-code assets only — JSON/icons/ps1 helpers. NO client_*.py here.
+# Non-code assets only â€” JSON/icons/ps1 helpers. NO client_*.py here.
 _datas = [
     ('certs/*.ico', 'certs'),
     ('certs/*.png', 'certs'),
@@ -194,3 +194,4 @@ coll = COLLECT(
     upx_exclude=[],
     name='asteria-client',
 )
+

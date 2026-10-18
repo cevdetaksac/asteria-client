@@ -1,0 +1,84 @@
+<!doctype html><meta charset=utf-8><title>asteria-encode loopback</title>
+<style>
+body{margin:0;background:#111;color:#ddd;font:13px/1.4 system-ui,sans-serif}
+#wrap{position:relative;display:inline-block;max-width:100%}
+video,#c{display:block;max-width:100%;background:#000}
+#c{position:absolute;left:0;top:0;pointer-events:none}
+#bar{padding:8px 12px;background:#1b1b1b;display:flex;gap:16px;flex-wrap:wrap}
+#stamp{position:fixed;left:0;top:0;width:416px;height:16px;image-rendering:pixelated;z-index:9;display:none}
+</style>
+<div id=bar>
+  <b>asteria-encode loopback</b>
+  <span id=st>connecting…</span>
+  <span id=s></span>
+</div>
+<canvas id=stamp width=416 height=16></canvas>
+<div id=wrap><video id=v autoplay muted playsinline></video><canvas id=c></canvas></div>
+<script>
+const sid = location.pathname.split('/').pop();
+const st = document.getElementById('st'), s = document.getElementById('s');
+const v = document.getElementById('v'), c = document.getElementById('c'), stamp = document.getElementById('stamp');
+const scx = stamp.getContext('2d'), cc = c.getContext('2d');
+let cur = null, cp = {x:0,y:0,v:false}, iceDone = false;
+const pc = new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
+pc.ontrack = e => { v.srcObject = e.streams[0]; st.textContent = 'track'; };
+pc.ondatachannel = e => {
+  const ch = e.channel;
+  ch.onmessage = ev => {
+    let m; try { m = JSON.parse(ev.data); } catch { return }
+    if (m.t === 'cur') {
+      const rgba = Uint8Array.from(atob(m.rgba), c => c.charCodeAt(0));
+      const img = new ImageData(new Uint8ClampedArray(rgba), m.w, m.h);
+      const cv = document.createElement('canvas'); cv.width = m.w; cv.height = m.h;
+      cv.getContext('2d').putImageData(img, 0, 0); cur = {img: cv, hx: m.hx, hy: m.hy};
+    } else if (m.t === 'cp') { cp = m; }
+  };
+};
+pc.onicecandidate = e => {
+  if (e.candidate) {
+    fetch('/ice/' + sid, {method:'POST', headers:{'content-type':'application/json'},
+      body: JSON.stringify({candidate:e.candidate.candidate,sdpMid:e.candidate.sdpMid,sdpMLineIndex:e.candidate.sdpMLineIndex})});
+  } else if (!iceDone) { iceDone = true; }
+};
+function draw() {
+  c.width = v.videoWidth || c.width; c.height = v.videoHeight || c.height;
+  cc.clearRect(0,0,c.width,c.height);
+  if (cur && cp.v) cc.drawImage(cur.img, cp.x - cur.hx, cp.y - cur.hy);
+  requestAnimationFrame(draw);
+}
+draw();
+async function stats() {
+  try {
+    const r = await pc.getStats(); let fps=0,kbps=0,jb=0,rtt=0,dec=0,bytes=0;
+    r.forEach(x => {
+      if (x.type==='inbound-rtp' && x.kind==='video'){ fps=x.framesPerSecond||0; bytes=x.bytesReceived||0; jb=((x.jitterBufferDelay||0)/(x.jitterBufferEmittedCount||1))*1000; dec=x.totalDecodeTime? (x.totalDecodeTime/(x.framesDecoded||1))*1000:0; }
+      if (x.type==='candidate-pair' && x.state==='succeeded') rtt=(x.currentRoundTripTime||0)*1000;
+    });
+    // glass-to-glass from stamped bits (host paints 24-bit ms%16M into top-left)
+    let g2g = null;
+    if (v.videoWidth) {
+      stamp.width = 416; stamp.height = 16;
+      scx.drawImage(v, 0, 0, 416, 16, 0, 0, 416, 16);
+      const d = scx.getImageData(0,0,416,16).data;
+      // sync block must be white
+      if (d[0]+d[1]+d[2] > 600) {
+        let bits = 0;
+        for (let b=0;b<24;b++){ const o=((b+1)*16+8)*4; bits=(bits<<1)|((d[o]+d[o+1]+d[o+2])>400?1:0); }
+        const now = Date.now() & 0xFFFFFF; let dlt = (now - bits) & 0xFFFFFF; if (dlt > 0x7FFFFF) dlt -= 0x1000000;
+        if (dlt >= 0 && dlt < 2000) g2g = dlt;
+      }
+    }
+    s.textContent = `fps=${fps|0} rtt=${rtt|0}ms jb=${jb|0}ms dec=${dec|0}ms` + (g2g!=null?` g2g=${g2g}ms`:'') + ` ice=${pc.iceConnectionState}`;
+  } catch {}
+  setTimeout(stats, 500);
+}
+stats();
+(async () => {
+  const o = await (await fetch('/offer/' + sid)).json();
+  await pc.setRemoteDescription({type:'offer', sdp:o.sdp});
+  const a = await pc.createAnswer();
+  await pc.setLocalDescription(a);
+  await fetch('/answer/' + sid, {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({sdp:a.sdp})});
+  st.textContent = 'answered';
+})().catch(e => { st.textContent = 'err '+e; });
+</script>
