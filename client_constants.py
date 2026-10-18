@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 Asteria Client - Constants and Configuration
@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.136"  # HW negotiate timeout 8s -> JPEG; pairs with v2 first-frame watchdog
+VERSION = "4.9.137"  # RD helper follows input desktop (lock curtain=Default), in-session cursor, input logs/acks
 
 
 

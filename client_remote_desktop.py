@@ -1959,8 +1959,13 @@ class RemoteDesktopStreamer:
                     ack = {"ok": ok_legacy, "inputs_applied": 0}
                 if ack.get("ok"):
                     self._note_input_applied(event_name, params, ack=ack)
-                    return result({"success": True, "message": f"input {event} forwarded"})
-                return result({"success": False, "error": f"input {event} not forwarded"})
+                    out = {"success": True, "message": f"input {event} forwarded"}
+                    if ack.get("desktop"):
+                        out["desktop"] = str(ack.get("desktop"))
+                    return result(out)
+                if not move_like:
+                    log(f"[remote-input] FAILED event={event_name} via=helper detail={ack.get('detail')!r}")
+                return result({"success": False, "error": f"input {event} not forwarded: {ack.get('detail') or ''}".strip()})
             if self._use_user_helper:
                 # Never inject from Session 0 after a cross-session helper failure
                 # (includes Winlogon — Session-0 SendInput cannot reach console Winlogon).
@@ -2056,9 +2061,70 @@ class RemoteDesktopStreamer:
         normalized["event"] = aliases.get(event, event)
         return normalized
 
+    @staticmethod
+    def _desktop_name_of(hdesk) -> str:
+        try:
+            import ctypes
+            from ctypes import wintypes
+            buf = ctypes.create_unicode_buffer(256)
+            need = wintypes.DWORD()
+            if ctypes.windll.user32.GetUserObjectInformationW(
+                wintypes.HANDLE(hdesk), 2, buf, ctypes.sizeof(buf), ctypes.byref(need)
+            ):
+                return str(buf.value or "")
+        except Exception:
+            pass
+        return ""
+
+    def _input_desktop_name(self) -> str:
+        """Name of the live input desktop (Default / Winlogon) - '' if unknown."""
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            user32.OpenInputDesktop.restype = wintypes.HANDLE
+            h = user32.OpenInputDesktop(0, False, 0x0001)  # DESKTOP_READOBJECTS
+            if not h:
+                return ""
+            try:
+                return self._desktop_name_of(h)
+            finally:
+                user32.CloseDesktop(wintypes.HANDLE(h))
+        except Exception:
+            return ""
+
+    def _thread_desktop_name(self) -> str:
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            user32.GetThreadDesktop.restype = wintypes.HANDLE
+            h = user32.GetThreadDesktop(ctypes.windll.kernel32.GetCurrentThreadId())
+            return self._desktop_name_of(h) if h else ""
+        except Exception:
+            return ""
+
+    def _ensure_input_thread_on_input_desktop(self) -> None:
+        """C-RD-IN-WL-4: SendInput only reaches the *input* desktop - follow it."""
+        live = self._input_desktop_name()
+        cur = self._thread_desktop_name()
+        if not live or not cur or live.lower() == cur.lower():
+            return
+        try:
+            from client_rd_winlogon import attach_console_desktop
+            ok, name, _h = attach_console_desktop(follow_input=True, close_previous=None)
+        except Exception as e:
+            ok, name = False, str(e)
+        log(f"[remote-input] input thread desktop {cur} -> {live} ok={ok} name={name}")
+        if ok and getattr(self, "_helper_secure_token", False):
+            self._winlogon_mode = str(name or live).lower() == "winlogon"
+            self._prefer_dxgi = not self._winlogon_mode
+
     def _inject_local(self, event: str, params: dict) -> bool:
         # Ensure CAD/key/mouse land on Winlogon when pre-logon.
         self._attach_input_desktop()
+        if getattr(self, "_in_session_helper", False):
+            self._ensure_input_thread_on_input_desktop()
         return self._inject_local_after_attach(event, params)
 
     def _inject_local_after_attach(self, event: str, params: dict) -> bool:
@@ -3192,6 +3258,8 @@ class RemoteDesktopStreamer:
         }
         if not ack["success"] and result.get("error"):
             ack["error"] = str(result["error"])[:200]
+        if result.get("desktop"):
+            ack["desktop"] = str(result["desktop"])[:32]
         self._q_put_text(json.dumps(ack, separators=(",", ":")))
 
     @staticmethod
@@ -4216,7 +4284,7 @@ class RemoteDesktopStreamer:
         force = False
         try:
             if (
-                self._winlogon_mode
+                (self._winlogon_mode or getattr(self, "_helper_secure_token", False))
                 and self._seq
                 and int(self._seq) % max(1, int(self._desktop_reattach_every)) == 0
             ):
@@ -4239,10 +4307,17 @@ class RemoteDesktopStreamer:
                     follow_input=True,
                     close_previous=self._input_desktop,
                 )
-            elif self._winlogon_mode:
+            elif self._winlogon_mode and not getattr(self, "_in_session_helper", False):
                 ok, name, hdesk = attach_console_desktop(
                     prefer_winlogon=True,
                     strict_winlogon=True,
+                    close_previous=None,
+                )
+            elif self._winlogon_mode:
+                # C-RD-IN-WL-4: Win10/11 lock curtain (LockApp) is on Default while
+                # LogonUI runs; the winlogon-token helper follows the real input desktop.
+                ok, name, hdesk = attach_console_desktop(
+                    follow_input=True,
                     close_previous=None,
                 )
             else:
@@ -4262,6 +4337,11 @@ class RemoteDesktopStreamer:
                     self._winlogon_mode = False
                     self._prefer_dxgi = True
                     log("[REMOTE-DESKTOP] desktop switched Winlogon→Default (post-logon)")
+                elif name.lower() == "winlogon" and not self._winlogon_mode and getattr(self, "_helper_secure_token", False):
+                    # C-RD-IN-WL-4: winlogon-token helper can serve the secure desktop itself.
+                    self._winlogon_mode = True
+                    self._prefer_dxgi = False
+                    log("[REMOTE-DESKTOP] desktop switched Default->Winlogon (secure UI, helper token)")
                 elif name.lower() == "winlogon" and not self._winlogon_mode:
                     # Spawned as user/Default helper but console input is secure.
                     # Parent must respawn with winlogon token — do not claim Default.
@@ -5790,6 +5870,7 @@ class RemoteDesktopStreamer:
         native_height = int(meta.get("native_height") or height)
         self._screen_x = int(meta.get("origin_x") or 0)
         self._screen_y = int(meta.get("origin_y") or 0)
+        self._note_helper_cursor(meta)
         self._last_helper_capture_ms = float(meta.get("capture_ms") or 0.0)
         if meta.get("capture_mono_ms"):
             self._last_capture_mono = float(meta["capture_mono_ms"]) / 1000.0
@@ -7040,8 +7121,79 @@ class RemoteDesktopStreamer:
     # ── Low-level injection primitives (overridable in tests) ──────
 
 
+    def _helper_cursor_fields(self) -> dict:
+        """In-session cursor (C-RD-VIEW-3): call inside the target session/helper."""
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class POINT(ctypes.Structure):
+                _fields_ = [("x", wintypes.LONG), ("y", wintypes.LONG)]
+
+            class CURSORINFO(ctypes.Structure):
+                _fields_ = [("cbSize", wintypes.DWORD), ("flags", wintypes.DWORD),
+                            ("hCursor", wintypes.HANDLE), ("ptScreenPos", POINT)]
+
+            ci = CURSORINFO()
+            ci.cbSize = ctypes.sizeof(CURSORINFO)
+            visible = True
+            if ctypes.windll.user32.GetCursorInfo(ctypes.byref(ci)):
+                px, py = int(ci.ptScreenPos.x), int(ci.ptScreenPos.y)
+                visible = bool(ci.flags & 0x1)
+            else:
+                pt = POINT()
+                if not ctypes.windll.user32.GetCursorPos(ctypes.byref(pt)):
+                    return {}
+                px, py = int(pt.x), int(pt.y)
+            left, top, width, height = self._get_capture_rect()
+            if width <= 0 or height <= 0:
+                return {}
+            x = max(0, min(width - 1, px - int(left)))
+            y = max(0, min(height - 1, py - int(top)))
+            return {
+                "cursor_x": x, "cursor_y": y,
+                "cursor_nx": round(x / float(width), 5), "cursor_ny": round(y / float(height), 5),
+                "cursor_visible": bool(visible),
+            }
+        except Exception:
+            return {}
+
+    def _note_helper_cursor(self, meta: dict) -> None:
+        """Parent: remember helper cursor + push {t:cursor} on change (<=15 Hz)."""
+        try:
+            if not isinstance(meta, dict) or meta.get("cursor_nx") is None:
+                return
+            nx = float(meta.get("cursor_nx")); ny = float(meta.get("cursor_ny"))
+            vis = bool(meta.get("cursor_visible", True))
+            now = time.monotonic()
+            prev = getattr(self, "_helper_cursor", None)
+            self._helper_cursor = (nx, ny, vis, now)
+            last_push = float(getattr(self, "_cursor_push_mono", 0.0) or 0.0)
+            changed = (not prev) or abs(prev[0] - nx) > 1e-4 or abs(prev[1] - ny) > 1e-4 or prev[2] != vis
+            if changed and (now - last_push) >= (1.0 / 15.0):
+                self._cursor_push_mono = now
+                self._q_put_text(json.dumps(
+                    {"t": "cursor", "protocol": 2, "nx": nx, "ny": ny, "visible": vis},
+                    separators=(",", ":"),
+                ))
+        except Exception:
+            pass
+
     def _cursor_meta_fields(self) -> dict:
-        """Host cursor position (capture-relative) for local viewer overlay."""
+        """Host cursor position (capture-relative) for local viewer overlay.
+
+        C-RD-VIEW-3: with a session helper the parent is in Session 0, whose
+        cursor is meaningless - use the helper-reported position or nothing.
+        """
+        hc = getattr(self, "_helper_cursor", None)
+        if hc and (time.monotonic() - hc[3]) < 3.0:
+            return {"cursor_nx": hc[0], "cursor_ny": hc[1], "cursor_visible": hc[2]}
+        if self._session_helper is not None and not getattr(self, "_in_session_helper", False):
+            return {}
+        out = self._helper_cursor_fields()
+        if out:
+            out.update({"cursor_hot_x": 0, "cursor_hot_y": 0})
+            return out
         try:
             import ctypes
             class POINT(ctypes.Structure):

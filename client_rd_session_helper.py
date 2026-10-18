@@ -470,6 +470,28 @@ class PersistentSessionHelper:
             self._condition.notify_all()
 
 
+def _setup_helper_file_log() -> None:
+    """C-RD-IN-WL-5: helper process had no logger (prints were lost)."""
+    try:
+        import logging
+        import client_helpers
+        if getattr(client_helpers, "LOGGER", None):
+            return
+        d = os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"), "Asteria")
+        os.makedirs(d, exist_ok=True)
+        lg = logging.getLogger("asteria-rd-helper")
+        if not lg.handlers:
+            fh = logging.FileHandler(
+                os.path.join(d, time.strftime("rd-helper-%Y-%m-%d.log")), encoding="utf-8"
+            )
+            fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] [pid " + str(os.getpid()) + "] %(message)s"))
+            lg.addHandler(fh)
+            lg.setLevel(logging.INFO)
+        client_helpers.set_logger(lg)
+    except Exception:
+        pass
+
+
 def run_session_helper(
     host: str,
     port: int,
@@ -500,6 +522,9 @@ def run_session_helper(
     rd._target_session_id = int(session_id or 0) or None
     # Winlogon / lock UI: stay on named Winlogon desktop (C-RD-CON-4).
     rd._winlogon_mode = bool(winlogon or config.get("winlogon"))
+    # C-RD-IN-WL-4: winlogon token can serve both desktops - follow input desktop.
+    rd._helper_secure_token = bool(rd._winlogon_mode)
+    _setup_helper_file_log()
     rd._prefer_dxgi = not bool(rd._winlogon_mode)
     rd._desktop_reattach_every = 2
     # WebRTC-first: parent may request raw RGB over loopback (prefer_raw).
@@ -532,6 +557,10 @@ def run_session_helper(
                     getattr(rd, "_desktop_attached", False)
                 ),
             }
+            try:
+                meta.update(rd._helper_cursor_fields())  # C-RD-VIEW-3
+            except Exception:
+                pass
             meta.update(extra)
             return meta
 
@@ -672,6 +701,13 @@ def run_session_helper(
                             detail = "empty_event"
                         else:
                             ok = bool(rd._inject_local(ev, params))
+                            _is_mv = ev in ("move", "mousemove", "pointer", "move_relative", "mousemove_relative", "rmove", "trackpad_move", "drag_move")
+                            if not ok and not _is_mv:
+                                try:
+                                    from client_helpers import log as _hlog
+                                    _hlog(f"[remote-input] helper-inject FAILED event={ev} desk={rd._desktop_name or '?'} input_desk={rd._input_desktop_name() or '?'}")
+                                except Exception:
+                                    pass
                             if ok:
                                 rd._stats["inputs_applied"] = (
                                     int(rd._stats.get("inputs_applied") or 0) + 1
@@ -679,12 +715,14 @@ def run_session_helper(
                                 rd._last_input_event = ev
                                 try:
                                     from client_helpers import log as _hlog
-                                    _hlog(
-                                        f"[remote-input] helper-inject ok event={ev} "
-                                        f"path=local-sendinput "
-                                        f"desk={rd._desktop_name or '?'} "
-                                        f"applied={rd._stats['inputs_applied']}"
-                                    )
+                                    if not _is_mv:
+                                        _hlog(
+                                            f"[remote-input] helper-inject ok event={ev} "
+                                            f"path=local-sendinput "
+                                            f"desk={rd._desktop_name or '?'} "
+                                            f"input_desk={rd._input_desktop_name() or '?'} "
+                                            f"applied={rd._stats['inputs_applied']}"
+                                        )
                                 except Exception:
                                     pass
                             else:
@@ -711,6 +749,7 @@ def run_session_helper(
                         "detail": detail,
                         "action": "input",
                         "event": ev,
+                        "desktop": str(getattr(rd, "_desktop_name", "") or ""),
                         "inputs_applied": int(
                             rd._stats.get("inputs_applied") or 0
                         ),
