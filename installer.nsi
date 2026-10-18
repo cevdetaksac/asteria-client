@@ -1,4 +1,4 @@
-﻿; Asteria Client Installer Script
+; Asteria Client Installer Script
 ; Version is injected by build.ps1 from client_constants.py
 Unicode true
 !include "MUI2.nsh"
@@ -13,7 +13,7 @@ OutFile "asteria-client-installer.exe"
 !define DESCRIPTION "Asteria Client - Deception Cloud Agent"
 !define VERSIONMAJOR 4
 !define VERSIONMINOR 9
-!define VERSIONBUILD 131
+!define VERSIONBUILD 132
 
 InstallDir "$PROGRAMFILES64\${COMPANYNAME}\${APPNAME}"
 
@@ -30,7 +30,7 @@ RequestExecutionLevel admin
 !define MUI_ABORTWARNING
 !define MUI_CUSTOMFUNCTION_GUIINIT AsteriaOnGuiInit
 
-; Pages â€” no finish/checkbox wait; app launches when files are done
+; Pages — no finish/checkbox wait; app launches when files are done
 !define MUI_PAGE_CUSTOMFUNCTION_SHOW AsteriaPageShow
 !insertmacro MUI_PAGE_WELCOME
 !define MUI_PAGE_CUSTOMFUNCTION_SHOW AsteriaPageShow
@@ -82,7 +82,7 @@ Function un.RunUninstallGate
         DetailPrint "[PIN] uninstall-gate exit=$UninstallGateCode"
         Goto unGateDone
     unGateMissing:
-        DetailPrint "[PIN] asteria-client.exe missing â€” allowing cleanup"
+        DetailPrint "[PIN] asteria-client.exe missing — allowing cleanup"
         StrCpy $UninstallGateCode "0"
     unGateDone:
 FunctionEnd
@@ -92,11 +92,11 @@ Function un.onInit
     Call un.RunUninstallGate
     ${If} $UninstallGateCode != "0"
         IfSilent unGateAbortQuiet
-            MessageBox MB_ICONSTOP|MB_OK "Asteria kaldÄ±rma iptal edildi.$\r$\n$\r$\nPIN gerekli veya doÄŸrulama baÅŸarÄ±sÄ±z.$\r$\nPIN unuttuysanÄ±z dashboard â†’ GUI PIN sÄ±fÄ±rlama kullanÄ±n."
+            MessageBox MB_ICONSTOP|MB_OK "Asteria kaldırma iptal edildi.$\r$\n$\r$\nPIN gerekli veya doğrulama başarısız.$\r$\nPIN unuttuysanız dashboard → GUI PIN sıfırlama kullanın."
         unGateAbortQuiet:
         Abort
     ${EndIf}
-    ; Install no longer ships kill helpers under Program Files â€” embed them
+    ; Install no longer ships kill helpers under Program Files — embed them
     ; into the uninstaller payload so GUI/motor DACL kill still works.
     InitPluginsDir
     SetOutPath "$PLUGINSDIR"
@@ -174,7 +174,7 @@ FunctionEnd
 
 ; ===================================================================
 ; DELETE ALL ASTERIA + LEGACY CLOUDHONEYPOT SCHEDULED TASKS
-; One PowerShell pass (parallel end/disable/delete) â€” see installer-prep-cleanup.ps1
+; One PowerShell pass (parallel end/disable/delete) — see installer-prep-cleanup.ps1
 ; ===================================================================
 Function DeleteAllHoneypotTasks
     Push $0
@@ -202,7 +202,7 @@ Function un.DeleteAllHoneypotTasks
 FunctionEnd
 
 ; ===================================================================
-; FAST PRE-KILL â€” guardian first, then parallel kill + task purge
+; FAST PRE-KILL — guardian first, then parallel kill + task purge
 ; Uses installer-prep-cleanup.ps1 + kill-honeypot.ps1
 ; ===================================================================
 Function PreInstallKillFast
@@ -229,7 +229,7 @@ Function PreInstallKillFast
         Pop $0
     LegacyCleanDone:
     DetailPrint "[PRE-KILL] remove-legacy-install.ps1 exit code: $0"
-    ; Direct NSIS purge (64-bit Program Files) â€” do not rely on WOW64 view alone.
+    ; Direct NSIS purge (64-bit Program Files) — do not rely on WOW64 view alone.
     RMDir /r "$PROGRAMFILES64\YesNext\Cloud Honeypot Client"
     RMDir /r "$PROGRAMFILES64\Asteria"
     RMDir /r "$PROGRAMFILES\YesNext\Cloud Honeypot Client"
@@ -276,7 +276,7 @@ Function HardenInstallRootAcl
 FunctionEnd
 
 ; Motor onedir runtime must stay LoadLibrary-able (Users RX). Blocking Users
-; caused: Failed to load Python DLL '...\_internal\python312.dll' / EriÅŸim engellendi
+; caused: Failed to load Python DLL '...\_internal\python312.dll' / Erişim engellendi
 ; whenever asteria-client.exe was started outside SYSTEM. Users still cannot
 ; Modify/replace DLLs (RX only).
 Function HardenMotorRuntimeAcl
@@ -292,7 +292,7 @@ FunctionEnd
 
 ; Move / copy durable state from YesNext ProgramData trees into Asteria.
 Function MigrateProgramData
-    DetailPrint "[MIGRATE] ProgramData YesNext â†’ Asteria ..."
+    DetailPrint "[MIGRATE] ProgramData YesNext → Asteria ..."
     InitPluginsDir
     SetOutPath "$PLUGINSDIR"
     File "scripts\migrate-programdata.ps1"
@@ -333,7 +333,7 @@ Function PrepareInstallDirForOverwrite
 FunctionEnd
 
 ; Install memory_restart.ps1 without NSIS FileInUse dialog (schtask may lock it).
-; Never use NSIS File here â€” locked targets pop Abort/Retry/Ignore.
+; Never use NSIS File here — locked targets pop Abort/Retry/Ignore.
 Function InstallMemoryRestartScript
     Push $0
     InitPluginsDir
@@ -345,7 +345,7 @@ Function InstallMemoryRestartScript
     Pop $0
     DetailPrint "[FILES] memory_restart.ps1 install exit: $0"
     StrCmp $0 "0" MemoryRestartOk
-        DetailPrint "[FILES] WARN: memory_restart.ps1 not written â€” client will restage on first run"
+        DetailPrint "[FILES] WARN: memory_restart.ps1 not written — client will restage on first run"
     MemoryRestartOk:
     Pop $0
 FunctionEnd
@@ -472,7 +472,7 @@ FunctionEnd
 
 ; ===================================================================
 ; INITIALIZATION + WINDOW PLACEMENT
-; Heavy kill/cleanup runs in SEC_MAIN â€” NOT here â€” so Welcome appears fast.
+; Heavy kill/cleanup runs in SEC_MAIN — NOT here — so Welcome appears fast.
 ; ===================================================================
 Function CenterAndRaiseInstaller
     ; Center on primary screen + raise above other windows after UAC.
@@ -503,7 +503,7 @@ Function CenterAndRaiseInstaller
     System::Call "user32::AllowSetForegroundWindow(i r0)"
     System::Call "user32::SetForegroundWindow(p$HWNDPARENT)"
     System::Call "user32::BringWindowToTop(p$HWNDPARENT)"
-    ; Brief TOPMOST then NOTOPMOST â€” reliably wins focus after elevation.
+    ; Brief TOPMOST then NOTOPMOST — reliably wins focus after elevation.
     System::Call "user32::SetWindowPos(p$HWNDPARENT, p-1, i0, i0, i0, i0, i0x0003)"
     Sleep 40
     System::Call "user32::SetWindowPos(p$HWNDPARENT, p-2, i0, i0, i0, i0, i0x0003)"
@@ -580,7 +580,7 @@ Function .onInit
     Push "Log file location: $LogFile"
     Call WriteLog
 
-    ; Instant light stop only â€” full PreInstallKillFast runs in Phase 1 so the
+    ; Instant light stop only — full PreInstallKillFast runs in Phase 1 so the
     ; Welcome page is not blocked by PowerShell / legacy tree cleanup.
     nsExec::Exec 'taskkill /F /T /IM asteria-gui.exe >nul 2>&1'
 FunctionEnd
@@ -630,7 +630,7 @@ Function WebView2RuntimePresent
 FunctionEnd
 
 Function WebView2WaitDetect
-    ; Poll up to ~20s â€” damaged disks / AV delay registry writes.
+    ; Poll up to ~20s — damaged disks / AV delay registry writes.
     StrCpy $R7 "0"
     Wv2WaitLoop:
         Call WebView2RuntimePresent
@@ -658,9 +658,9 @@ Function EnsureWebView2
     nsExec::Exec 'sc.exe config edgeupdatem start= demand >nul 2>&1'
     nsExec::Exec 'sc.exe start edgeupdatem >nul 2>&1'
 
-    ; 1) Offline standalone (bundled ~150 MB) â€” no internet required on target
+    ; 1) Offline standalone (bundled ~150 MB) — no internet required on target
     IfFileExists "$INSTDIR\MicrosoftEdgeWebView2RuntimeInstallerX64.exe" 0 Wv2TryBootstrap
-        !insertmacro LOG "[WEBVIEW2] Runtime missing â€” installing offline Standalone x64..."
+        !insertmacro LOG "[WEBVIEW2] Runtime missing — installing offline Standalone x64..."
         DetailPrint "Installing Microsoft Edge WebView2 Runtime (offline)..."
         ExecWait '"$INSTDIR\MicrosoftEdgeWebView2RuntimeInstallerX64.exe" /silent /install' $R8
         !insertmacro LOG "[WEBVIEW2] Standalone exit=$R8"
@@ -670,7 +670,7 @@ Function EnsureWebView2
             Goto Wv2Done
         ${EndIf}
         ; Force-style second pass (some broken hosts need a non-/silent first touch)
-        !insertmacro LOG "[WEBVIEW2] Standalone not detected â€” repair script pass"
+        !insertmacro LOG "[WEBVIEW2] Standalone not detected — repair script pass"
         InitPluginsDir
         SetOutPath "$PLUGINSDIR"
         File "scripts\repair-webview2.ps1"
@@ -682,7 +682,7 @@ Function EnsureWebView2
             !insertmacro LOG "[WEBVIEW2] Runtime OK after repair script (pv=$R9)"
             Goto Wv2Done
         ${EndIf}
-        !insertmacro LOG "[WEBVIEW2] Standalone finished but runtime not detected yet â€” trying bootstrapper"
+        !insertmacro LOG "[WEBVIEW2] Standalone finished but runtime not detected yet — trying bootstrapper"
 
     Wv2TryBootstrap:
     IfFileExists "$INSTDIR\MicrosoftEdgeWebview2Setup.exe" 0 Wv2MissingPayload
@@ -738,7 +738,7 @@ Section "Asteria Client (Required)" SEC_MAIN
     !insertmacro LOG "[PREP] Step 3 - Prepare install dir for overwrite..."
     Call PrepareInstallDirForOverwrite
 
-    ; Step 4: Brand ProgramData path (copy YesNext â†’ Asteria)
+    ; Step 4: Brand ProgramData path (copy YesNext → Asteria)
     !insertmacro LOG "[PREP] Step 4 - Migrate ProgramData to Asteria..."
     Call MigrateProgramData
 
@@ -762,7 +762,7 @@ Section "Asteria Client (Required)" SEC_MAIN
     File "dist\asteria-gui.exe"
     ; Phase4 HW sidecar (JPEG fallback if missing)
     File "dist\asteria-encode.exe"
-    ; WebView2 Evergreen Standalone x64 (~150 MB) â€” offline silent install if missing.
+    ; WebView2 Evergreen Standalone x64 (~150 MB) — offline silent install if missing.
     File "vendor\MicrosoftEdgeWebView2RuntimeInstallerX64.exe"
     ; Tiny bootstrapper fallback (needs network) if standalone somehow fails.
     File /nonfatal "vendor\MicrosoftEdgeWebview2Setup.exe"
@@ -772,7 +772,7 @@ Section "Asteria Client (Required)" SEC_MAIN
     File /oname=LICENSE "dist\LICENSE"
     File /oname=README.md "dist\README.md"
     CreateDirectory "$INSTDIR\scripts"
-    ; Do NOT install kill/update helpers into Program Files â€” any local user can
+    ; Do NOT install kill/update helpers into Program Files — any local user can
     ; read+execute them there. Installer embeds them in $PLUGINSDIR only.
     ; Self-update stages update-and-install.ps1 under ProgramData (ACL'd).
     ; Delete leftovers from older builds that shipped these scripts.
@@ -780,7 +780,7 @@ Section "Asteria Client (Required)" SEC_MAIN
     Delete "$INSTDIR\scripts\prepare-install-dir.ps1"
     Delete "$INSTDIR\scripts\update-and-install.ps1"
     ; memory_restart.ps1 is often FileInUse (schtask PowerShell). Relocate then
-    ; write via PLUGINSDIR copy with retries â€” never Abort/Retry/Ignore UI.
+    ; write via PLUGINSDIR copy with retries — never Abort/Retry/Ignore UI.
     !insertmacro LOG "[FILES] Staging memory_restart.ps1 (lock-safe)..."
     Call InstallMemoryRestartScript
     !insertmacro LOG "[FILES] Application files installed (exe + _internal)."
@@ -797,7 +797,7 @@ Section "Asteria Client (Required)" SEC_MAIN
     ; Control Center needs Edge WebView2 Runtime (often missing on Server SKUs).
     Call EnsureWebView2
 
-    ; Remote Desktop host prep (Themes/DWM/RDP/powercfg) â€” Server/headless Derin class.
+    ; Remote Desktop host prep (Themes/DWM/RDP/powercfg) — Server/headless Derin class.
     !insertmacro LOG "[CONFIG] Preparing remote-desktop host settings..."
     SetOutPath "$PLUGINSDIR"
     File "scripts\prepare-rd-host.ps1"
@@ -808,7 +808,7 @@ Section "Asteria Client (Required)" SEC_MAIN
         nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\prepare-rd-host.ps1"'
     RdHostPrepDone:
 
-    ; Windows Defender exclusions â€” already attempted in prepare-install-dir;
+    ; Windows Defender exclusions — already attempted in prepare-install-dir;
     ; refresh async (Add-MpPreference can hang under nsExec::Exec).
     !insertmacro LOG "[CONFIG] Refreshing Defender exclusions (async)..."
     nsExec::Exec 'cmd /c start "" /b powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command "try{Add-MpPreference -ExclusionPath \"$INSTDIR\" -Force -EA SilentlyContinue;Add-MpPreference -ExclusionProcess \"$INSTDIR\asteria-client.exe\" -Force -EA SilentlyContinue;Add-MpPreference -ExclusionProcess \"$INSTDIR\asteria-gui.exe\" -Force -EA SilentlyContinue}catch{}"'
@@ -847,14 +847,14 @@ Section "Asteria Client (Required)" SEC_MAIN
     ; =================================================================
     ; PHASE 4: AUTO-START
     ; Silent (/S): NEVER start asteria-client here.
-    ; update-and-install.ps1 owns kill â†’ install â†’ --create-tasks â†’ daemon/GUI.
+    ; update-and-install.ps1 owns kill → install → --create-tasks → daemon/GUI.
     ; Exec mid-install while helper Start-Process -Wait = classic self-deadlock
     ; (new process locks files / Defender / finalize never returns).
     ; =================================================================
     IfSilent 0 InteractiveOnboarding
         ; Self-update helper also restarts, but direct /S installs have no
         ; helper. Async launch occurs after all files/ACL/registry work.
-        !insertmacro LOG "[AUTO-START] Silent install â€” create tasks/start Asteria motor."
+        !insertmacro LOG "[AUTO-START] Silent install — create tasks/start Asteria motor."
         Exec '"$INSTDIR\asteria-client.exe" --mode=daemon --create-tasks'
         Goto SkipAutoStart
     InteractiveOnboarding:
@@ -864,12 +864,12 @@ Section "Asteria Client (Required)" SEC_MAIN
         FileOpen $0 "$1\force_gui_onboarding.flag" w
         FileWrite $0 "interactive_install$\r$\n"
         FileClose $0
-        !insertmacro LOG "[ONBOARDING] force_gui_onboarding.flag written â€” GUI will stay visible"
+        !insertmacro LOG "[ONBOARDING] force_gui_onboarding.flag written — GUI will stay visible"
         nsExec::Exec 'schtasks /end /tn "Asteria-Tray" >nul 2>&1'
         nsExec::Exec 'schtasks /end /tn "Asteria-Background" >nul 2>&1'
         nsExec::Exec 'schtasks /end /tn "CloudHoneypot-Tray" >nul 2>&1'
         nsExec::Exec 'schtasks /end /tn "CloudHoneypot-Background" >nul 2>&1'
-        ; Launch immediately â€” installer closes (AutoCloseWindow); no Finish checkbox
+        ; Launch immediately — installer closes (AutoCloseWindow); no Finish checkbox
         Call LaunchAsCurrentUser
         !insertmacro LOG "[AUTO-START] GUI launched after interactive install."
     SkipAutoStart:
@@ -877,7 +877,7 @@ Section "Asteria Client (Required)" SEC_MAIN
     !insertmacro LOG "[FINISH] Installation complete."
 SectionEnd
 
-; Optional Components-page checkbox (UNCHECKED by default â€” user must opt in).
+; Optional Components-page checkbox (UNCHECKED by default — user must opt in).
 ; Start Menu shortcut is always created in SEC_MAIN.
 Section /o "Desktop Shortcut" SEC_DESKTOP
     !insertmacro LOG "[CONFIG] Creating desktop shortcut..."
@@ -949,7 +949,7 @@ Section "Uninstall"
     RMDir /r "$INSTDIR\runtime"
     ; prepare-install-dir may leave .stale_* trees when files were locked
     nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem -LiteralPath \"$INSTDIR\" -Force -EA SilentlyContinue | Where-Object { $$_.Name -like ''.stale_*'' } | ForEach-Object { Remove-Item -LiteralPath $$_.FullName -Recurse -Force -EA SilentlyContinue }"'
-    ; Final wipe â€” anything remaining (including locked â†’ reboot pending via /REBOOTOK)
+    ; Final wipe — anything remaining (including locked → reboot pending via /REBOOTOK)
     RMDir /r /REBOOTOK "$INSTDIR"
     ; Empty vendor parent if nothing else remains under Program Files\Asteria
     RMDir "$PROGRAMFILES64\${COMPANYNAME}"
@@ -981,5 +981,5 @@ SectionEnd
 ; Section descriptions
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
 !insertmacro MUI_DESCRIPTION_TEXT ${SEC_MAIN} "Core Asteria Client application and configuration files. This component is required."
-!insertmacro MUI_DESCRIPTION_TEXT ${SEC_DESKTOP} "Optional: create a desktop shortcut. Off by default â€” check to enable."
+!insertmacro MUI_DESCRIPTION_TEXT ${SEC_DESKTOP} "Optional: create a desktop shortcut. Off by default — check to enable."
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
