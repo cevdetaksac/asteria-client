@@ -6,9 +6,9 @@ The default client does not import aiortc or av.  When the optional packages
 are installed, :func:`create_optional_media_transport` probes them by actually
 constructing a peer connection before WebRTC capability is advertised.
 
-Signaling uses the existing agent WebSocket and non-trickle ICE: offers and
-answers contain complete SDP after ICE gathering. Incoming standalone ICE is
-validated but rejected with ``reason=non_trickle_ice``.
+Signaling uses the existing agent WebSocket with trickle ICE (contract 1.4.93).
+Offers/answers may trickle via `action=ice` / `addIceCandidate`.
+
 """
 
 from __future__ import annotations
@@ -291,7 +291,7 @@ class OptionalMediaTransport:
         return {
             "webrtc": False,
             "webrtc_signaling": 1,
-            "ice": "non-trickle",
+            "ice": "trickle",
             "ice_server_config": False,
             "codecs": [],
         }
@@ -367,7 +367,7 @@ class AiortcMediaTransport(OptionalMediaTransport):
         return {
             "webrtc": True,
             "webrtc_signaling": 1,
-            "ice": "non-trickle",
+            "ice": "trickle",
             "ice_server_config": True,
             "codecs": list(self._codecs),
         }
@@ -433,7 +433,16 @@ class AiortcMediaTransport(OptionalMediaTransport):
     def handle_signal(self, message: dict) -> dict:
         action = str(message.get("action") or "").lower()
         if action == "ice":
-            return {"accepted": False, "reason": "non_trickle_ice"}
+            # Phase 3 trickle ICE — queue candidate onto the media loop
+            if not self._loop or not self._ready.is_set():
+                return {"accepted": False, "error": "media loop unavailable"}
+            future = asyncio.run_coroutine_threadsafe(
+                self._add_ice_candidate(message), self._loop
+            )
+            try:
+                return future.result(timeout=2.0)
+            except Exception:
+                return {"accepted": False, "error": "ice candidate failed"}
         safe_message = dict(message)
         if action == "offer" and "ice_servers" in safe_message:
             try:
@@ -530,7 +539,7 @@ class AiortcMediaTransport(OptionalMediaTransport):
                         "stream_id": self._stream_id,
                         "sdp": local.sdp,
                         "type": local.type,
-                        "ice": "non-trickle",
+                        "ice": "trickle",
                     })
                     return {"accepted": True, "action": "offer"}
                 except Exception:
@@ -619,6 +628,41 @@ class AiortcMediaTransport(OptionalMediaTransport):
         @pc.on("iceconnectionstatechange")
         async def ice_state_change():
             await self._handle_ice_state(pc, str(pc.iceConnectionState))
+
+        # Trickle ICE toward viewer (best-effort; aiortc may also embed in SDP)
+        try:
+            @pc.on("icecandidate")
+            def on_ice_candidate(candidate):
+                try:
+                    if candidate is None:
+                        payload = {
+                            "t": "webrtc_signal",
+                            "action": "ice",
+                            "protocol": 1,
+                            "session_id": self._session_id,
+                            "stream_id": self._stream_id,
+                            "candidate": None,
+                            "ice": "trickle",
+                        }
+                    else:
+                        payload = {
+                            "t": "webrtc_signal",
+                            "action": "ice",
+                            "protocol": 1,
+                            "session_id": self._session_id,
+                            "stream_id": self._stream_id,
+                            "candidate": {
+                                "candidate": getattr(candidate, "candidate", None) or str(candidate),
+                                "sdpMid": getattr(candidate, "sdpMid", None),
+                                "sdpMLineIndex": getattr(candidate, "sdpMLineIndex", None),
+                            },
+                            "ice": "trickle",
+                        }
+                    self._signal_sender(payload)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
         @pc.on("datachannel")
         def data_channel(channel):

@@ -299,6 +299,8 @@ class RemoteDesktopStreamer:
         self._chrome_diag_logged = False
         self._tscon_attempted = False
         self._last_good_jpeg: Optional[bytes] = None
+        self._tile_encoder = None  # DirtyTileEncoder, lazy
+        self._last_tile_meta: dict = {}
         self._last_good_wh: Tuple[int, int] = (0, 0)
         # Dashboard session picker (AGENT_REMOTE_SESSION_SELECT_PROMPT)
         self._target_session_id: Optional[int] = None
@@ -585,6 +587,8 @@ class RemoteDesktopStreamer:
             self._no_frame_streak_started = 0.0
             self._last_diag_was_healthy = False
             self._last_good_jpeg = None
+            self._tile_encoder = None
+            self._last_tile_meta = {}
             self._last_good_wh = (0, 0)
             self._use_user_helper = False
             self._in_session_helper = False
@@ -1481,6 +1485,8 @@ class RemoteDesktopStreamer:
             "username": self._target_username or "",
             "monitor": self._monitor_index,
             "capture_method": self._capture_method,
+                **({k: v for k, v in (self._last_tile_meta or {}).items() if k in ("encoding", "keyframe", "tiles", "tile", "payload_bytes")}),
+                **(self._cursor_meta_fields()),
             "black_frame": bool(
                 "+black" in (self._capture_method or "")
                 or self._black_streak_started > 0
@@ -1537,6 +1543,16 @@ class RemoteDesktopStreamer:
             return result({"success": False, "error": "stream not active"})
 
         event = (params.get("event") or "").strip().lower()
+        if event == "rd_ping":
+            try:
+                self._q_put_text(json.dumps({
+                    "t": "rd_pong",
+                    "t0": params.get("t0"),
+                    "t1": int(time.time() * 1000),
+                }, separators=(",", ":")))
+            except Exception:
+                pass
+            return result({"success": True})
         move_like = _is_move_event(event, params)
         if move_like:
             if not self._check_move_rate():
@@ -3212,7 +3228,7 @@ class RemoteDesktopStreamer:
         return img.tobytes(), img.width, img.height
 
     def _grab_jpeg(self):
-        """Capture primary screen → resize → JPEG. Avoids Session-0 black frames."""
+        """Capture primary screen → resize → dirty-tile JPEG (ASTT) or full JPEG."""
         img, method = self._capture_screen_image()
         if img is None:
             return None, 0, 0
@@ -3224,6 +3240,29 @@ class RemoteDesktopStreamer:
             self._effective_capture_settings()
         )
         quality = effective_quality
+
+        # Phase 3: dirty-tile pack (periodic full keyframe). Falls back to full JPEG.
+        try:
+            from client_rd_tiles import DirtyTileEncoder
+            if self._tile_encoder is None:
+                self._tile_encoder = DirtyTileEncoder()
+            # Match legacy quality-reduce loop against estimated full-frame size
+            probe = io.BytesIO()
+            img.save(probe, format="JPEG", quality=quality, optimize=False, subsampling=2)
+            probe_n = probe.tell()
+            while probe_n > TARGET_FRAME_BYTES and quality > 22:
+                quality = max(22, quality - 5)
+                probe = io.BytesIO()
+                img.save(probe, format="JPEG", quality=quality, optimize=False, subsampling=2)
+                probe_n = probe.tell()
+            payload, tile_meta = self._tile_encoder.encode(img, quality=quality)
+            if len(payload) <= MAX_FRAME_BYTES * 2:
+                self._last_tile_meta = tile_meta
+                return payload, self._capture_w, self._capture_h
+        except Exception as exc:
+            log(f"[REMOTE-DESKTOP] dirty-tile encode fallback: {exc}")
+            self._last_tile_meta = {}
+
         jpeg = None
         for _ in range(6):
             buf = io.BytesIO()
@@ -3237,6 +3276,7 @@ class RemoteDesktopStreamer:
         if jpeg is None:
             log("[REMOTE-DESKTOP] Frame still too large after quality reduce")
             return None, 0, 0
+        self._last_tile_meta = {"encoding": "jpeg", "keyframe": True}
         return jpeg, self._capture_w, self._capture_h
 
     def _grab_gdi(self):
@@ -6620,6 +6660,24 @@ class RemoteDesktopStreamer:
         return self._last_px, self._last_py
 
     # ── Low-level injection primitives (overridable in tests) ──────
+
+
+    def _cursor_meta_fields(self) -> dict:
+        """Host cursor position (capture-relative) for local viewer overlay."""
+        try:
+            import ctypes
+            class POINT(ctypes.Structure):
+                _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+            pt = POINT()
+            ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
+            left, top, width, height = self._get_capture_rect()
+            if width <= 0 or height <= 0:
+                return {}
+            x = max(0, min(width - 1, int(pt.x) - int(left)))
+            y = max(0, min(height - 1, int(pt.y) - int(top)))
+            return {"cursor_x": x, "cursor_y": y, "cursor_hot_x": 0, "cursor_hot_y": 0}
+        except Exception:
+            return {}
 
     def _emit_set_cursor(self, px: int, py: int) -> None:
         import ctypes

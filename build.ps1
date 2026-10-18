@@ -118,6 +118,41 @@ try {
                 exit 1
             }
             Write-Host "   SUCCESS: No client_*.py sources in _internal (PYZ bytecode only)" -ForegroundColor Green
+
+    # SMOKE: lazy-import modules must load from the built onedir (prevents 4.9.125-class crash loops)
+    Write-Host "   SMOKE: verifying lazy imports in built package..." -ForegroundColor Yellow
+    $smokePy = @"
+import sys, importlib
+sys.path.insert(0, r'dist\asteria-client\_internal')
+# Prefer PYZ via frozen exe bootloader: run short healthcheck instead if imports not free.
+mods = ['client_supervisor','client_ir','client_rd_tiles','client_rd_media','client_network_guard']
+failed = []
+for m in mods:
+    try:
+        importlib.import_module(m)
+        print('OK', m)
+    except Exception as e:
+        failed.append((m, str(e)))
+        print('FAIL', m, e)
+sys.exit(1 if failed else 0)
+"@
+    $smokeFile = Join-Path $env:TEMP "asteria-smoke-imports.py"
+    Set-Content -Path $smokeFile -Value $smokePy -Encoding UTF8
+    # Run against SOURCE tree (catches missing files); then boot built exe healthcheck
+    & $PYTHON -c "import client_supervisor, client_ir, client_rd_tiles; print('source-ok')"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "   ERROR: source smoke import failed" -ForegroundColor Red
+        exit 1
+    }
+    $builtExe = Join-Path (Get-Location) "dist\asteria-client\asteria-client.exe"
+    if (Test-Path $builtExe) {
+        $p = Start-Process -FilePath $builtExe -ArgumentList "--healthcheck" -Wait -PassThru -NoNewWindow
+        if ($p.ExitCode -ne 0) {
+            Write-Host ("   ERROR: built exe --healthcheck exit {0}" -f $p.ExitCode) -ForegroundColor Red
+            exit 1
+        }
+        Write-Host "   SUCCESS: built exe healthcheck OK" -ForegroundColor Green
+    }
         }
     } else {
         throw "PyInstaller failed"

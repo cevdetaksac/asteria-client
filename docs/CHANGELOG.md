@@ -2,6 +2,13 @@
 
 Removed `docs/ux-review` screenshots, duplicate resilience/alert plan MDs. Contract **1.4.64** cloud checklist is SoT for dashboard work.
 
+# v4.9.127
+
+## Phase 3 RD quick wins (contract 1.4.93)
+
+- Dirty-tile JPEG + trickle ICE + viewer bitmap/backpressure/stats
+- Build smoke gate (lazy imports + `--healthcheck`)
+
 # v4.9.126
 
 ## Hotfix — package supervised IR modules

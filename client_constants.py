@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.126"  # Hotfix: package client_supervisor+client_ir (4.9.125 crash loop)
+VERSION = "4.9.127"  # Phase 3 RD: dirty tiles, trickle ICE, viewer bitmap/backpressure
 
 
 
