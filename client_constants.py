@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.138"  # thrash+SYSTEM token spawn; live=WebRTC H.264 only; JPEG=snapshot
+VERSION = "4.9.139"  # soft MF H.264 fallback; mid-stream VIDEO_ENCODER_FAILED; force same-ver reinstall fallback
 
 
 

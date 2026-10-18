@@ -1632,7 +1632,7 @@ def run_self_update_command(
             "phase": "failed",
         })
 
-    # Skip if already on target (unless force)
+    # Skip if already on target (unless force → reinstall)
     if tag and from_version and tag == from_version and not force:
         log(f"[SELF-UPDATE] already_current {from_version}")
         try:
@@ -1650,6 +1650,8 @@ def run_self_update_command(
             "phase": "done",
             "progress_pct": 100,
         })
+    if tag and from_version and tag == from_version and force:
+        log(f"[SELF-UPDATE] force_reinstall same_version={from_version}")
 
     from client_utils import (
         is_update_in_progress,
@@ -2044,11 +2046,13 @@ def run_self_update_command(
                 grace_wait_sec=45,
             )
         if not ok:
-            # Interactive: last chance — visible NSIS / UAC (staging ACL brick, etc.)
-            if show_gui:
+            # Last chance: elevated NSIS. Always on force (same-version reinstall / locked
+            # SYSTEM daemon often has show_gui=False and previously stalled here).
+            if show_gui or force:
                 try:
                     from client_utils import launch_installer_elevated_fallback
-                    log("[SELF-UPDATE] launch_helper_failed — trying elevated installer fallback")
+                    log("[SELF-UPDATE] launch_helper_failed — trying elevated installer fallback "
+                        f"(show_gui={show_gui} force={force})")
                     if launch_installer_elevated_fallback(staged):
                         try:
                             bus.tick(

@@ -29,6 +29,8 @@ pub struct Enc {
     out_size: u32,
     pub w: u32, pub h: u32, pub fps: u32, pub bitrate: u32,
     _mgr: IMFDXGIDeviceManager,
+    pub sw: bool,
+    staging: Option<ID3D11Texture2D>,
 }
 
 unsafe fn friendly(a: &IMFActivate) -> String {
@@ -55,6 +57,8 @@ impl Enc {
             MFTEnumEx(MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER, None, Some(&info_out), &mut acts, &mut n)?;
             let mut list: Vec<IMFActivate> = std::slice::from_raw_parts(acts, n as usize).iter().filter_map(|a| a.clone()).collect();
             CoTaskMemFree(Some(acts as _));
+            let force_sw = std::env::var("ASTERIA_ENC_FORCE_SW").map(|v| v == "1").unwrap_or(false);
+            if force_sw { list.clear(); }
             let mut hardware = !list.is_empty();
             if list.is_empty() {
                 acts = std::ptr::null_mut(); n = 0;
@@ -83,19 +87,20 @@ impl Enc {
                 .ok_or_else(|| Error::new(E_FAIL, "no H.264 MFT (hardware or software)"))?;
             let name = format!("{}{}", friendly(chosen), if hardware { "" } else { " (software)" });
             let mft: IMFTransform = chosen.ActivateObject()?;
-            let attrs = mft.GetAttributes()?;
-            let _ = attrs.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1);
-            let _ = attrs.SetUINT32(&MF_LOW_LATENCY, 1);
+            if let Ok(attrs) = mft.GetAttributes() {
+                if hardware {
+                    let _ = attrs.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1);
+                }
+                let _ = attrs.SetUINT32(&MF_LOW_LATENCY, 1);
+            }
 
-            // --- D3D manager (HW path). Software MFT may reject D3D manager — continue without.
+            // --- D3D manager (HW path). Software MFT may reject D3D manager.
             let mut token = 0u32; let mut mgr = None;
             MFCreateDXGIDeviceManager(&mut token, &mut mgr)?;
             let mgr: IMFDXGIDeviceManager = mgr.unwrap();
             mgr.ResetDevice(device, token)?;
             if hardware {
                 mft.ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, mgr.as_raw() as usize)?;
-            } else {
-                let _ = mft.ProcessMessage(MFT_MESSAGE_SET_D3D_MANAGER, mgr.as_raw() as usize);
             }
 
             let codec: Option<ICodecAPI> = mft.cast().ok();
@@ -134,7 +139,7 @@ impl Enc {
             let provides_samples = (si.dwFlags & (MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0 as u32 | MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES.0 as u32)) != 0;
             let events: Option<IMFMediaEventGenerator> = mft.cast().ok();
 
-            mft.ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0)?;
+            if hardware { mft.ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0)?; } else { let _ = mft.ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0); }
             mft.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)?;
             mft.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)?;
 
@@ -166,8 +171,15 @@ impl Enc {
                 vdev.CreateVideoProcessorOutputView(&t, &vpe, &od, Some(&mut ov))?;
                 ring.push((t, ov.unwrap()));
             }
+            let staging = if hardware { None } else {
+                let d = D3D11_TEXTURE2D_DESC { Width: w, Height: h, MipLevels: 1, ArraySize: 1, Format: DXGI_FORMAT_NV12,
+                    SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 }, Usage: D3D11_USAGE_STAGING,
+                    BindFlags: 0, CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32, MiscFlags: 0 };
+                let mut st = None; device.CreateTexture2D(&d, None, Some(&mut st))?; st
+            };
             Ok(Enc { name, mft, events, codec, vdev, vctx, vpe, vp, ring, ring_i: 0, in_view: None, ctx: ctx.clone(),
-                need_input: 0, provides_samples, out_size: si.cbSize.max(1 << 20), w, h, fps, bitrate, _mgr: mgr })
+                need_input: 0, provides_samples, out_size: si.cbSize.max(1 << 20), w, h, fps, bitrate, _mgr: mgr,
+                sw: !hardware, staging })
         }
     }
 
@@ -222,8 +234,27 @@ impl Enc {
             let r = self.vctx.VideoProcessorBlt(&self.vp, &ov, 0, &[stream.clone()]);
             ManuallyDrop::drop(&mut stream.pInputSurface);
             r?;
-            let buf = MFCreateDXGISurfaceBuffer(&ID3D11Texture2D::IID, &tex, 0, false)?;
-            if let Ok(b2) = buf.cast::<IMF2DBuffer>() { if let Ok(l) = b2.GetContiguousLength() { let _ = buf.SetCurrentLength(l); } }
+            let buf = if let Some(st) = &self.staging {
+                // Software MFT: GPU NV12 -> CPU memory buffer
+                self.ctx.CopyResource(st, &tex);
+                let mut m = D3D11_MAPPED_SUBRESOURCE::default();
+                self.ctx.Map(st, 0, D3D11_MAP_READ, 0, Some(&mut m))?;
+                let (w, h) = (self.w as usize, self.h as usize);
+                let total = w * h * 3 / 2;
+                let mb = MFCreateMemoryBuffer(total as u32)?;
+                let mut dst = std::ptr::null_mut(); mb.Lock(&mut dst, None, None)?;
+                let src = m.pData as *const u8; let pitch = m.RowPitch as usize;
+                for r in 0..h { std::ptr::copy_nonoverlapping(src.add(r * pitch), dst.add(r * w), w); }
+                let uv = src.add(pitch * h);
+                for r in 0..h / 2 { std::ptr::copy_nonoverlapping(uv.add(r * pitch), dst.add(w * h + r * w), w); }
+                mb.Unlock()?; self.ctx.Unmap(st, 0);
+                mb.SetCurrentLength(total as u32)?;
+                mb
+            } else {
+                let b = MFCreateDXGISurfaceBuffer(&ID3D11Texture2D::IID, &tex, 0, false)?;
+                if let Ok(b2) = b.cast::<IMF2DBuffer>() { if let Ok(l) = b2.GetContiguousLength() { let _ = b.SetCurrentLength(l); } }
+                b
+            };
             let s = MFCreateSample()?;
             s.AddBuffer(&buf)?;
             s.SetSampleTime(ts100ns)?;

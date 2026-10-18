@@ -16,6 +16,7 @@ fn pct(v: &mut Vec<f64>, p: f64) -> f64 { if v.is_empty() { return 0.0 } v.sort_
 
 pub fn run(args: &[String]) -> i32 {
     unsafe { let _ = CoInitializeEx(None, COINIT_MULTITHREADED); let _ = MFStartup(MF_VERSION, MFSTARTUP_FULL); }
+    if args.iter().any(|a| a == "--synthetic") { return run_synth(args); }
     let secs: f64 = arg(args, "--seconds", 10.0);
     let fps: u32 = arg(args, "--fps", 60);
     let br: u32 = arg(args, "--bitrate", 8_000_000);
@@ -79,4 +80,74 @@ pub fn run(args: &[String]) -> i32 {
         "encode_ms_max":(pct(&mut enc_ms,1.0)*100.0).round()/100.0,
         "capture_updates":cap_updates,"capture_copy_ms_p50":(pct(&mut cap_ms,0.5)*100.0).round()/100.0,"idle_ticks":idle_ticks}));
     0
+}
+
+/// --bench --synthetic: encoder-only test without desktop duplication (works while locked).
+fn run_synth(args: &[String]) -> i32 {
+    use windows::Win32::Graphics::Direct3D::*;
+    use windows::Win32::Graphics::Dxgi::*;
+    let secs: f64 = arg(args, "--seconds", 4.0);
+    let fps: u32 = arg(args, "--fps", 30);
+    let br: u32 = arg(args, "--bitrate", 4_000_000);
+    let (w, h) = (1280u32, 720u32);
+    let (adapter_name, mut dev, mut ctx) = unsafe {
+        let f: IDXGIFactory1 = match CreateDXGIFactory1() {
+            Ok(f) => f,
+            Err(e) => { println!("{}", json!({"t":"bench","error":format!("dxgi factory: {e}")})); return 1 },
+        };
+        let a = match f.EnumAdapters1(0) {
+            Ok(a) => a,
+            Err(e) => { println!("{}", json!({"t":"bench","error":format!("adapter: {e}")})); return 1 },
+        };
+        let d = a.GetDesc1().unwrap_or_default();
+        let name = String::from_utf16_lossy(&d.Description).trim_end_matches('\0').to_string();
+        let mut dev = None; let mut ctx = None;
+        if let Err(e) = D3D11CreateDevice(
+            &a, D3D_DRIVER_TYPE_UNKNOWN, None,
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+            None, D3D11_SDK_VERSION, Some(&mut dev), None, Some(&mut ctx),
+        ) {
+            println!("{}", json!({"t":"bench","error":format!("d3d: {e}")})); return 1;
+        }
+        (name, dev, ctx)
+    };
+    let (dev, ctx) = (dev.unwrap(), ctx.unwrap());
+    let mut enc = match Enc::new(&dev, &ctx, &adapter_name, w, h, fps, br) {
+        Ok(e) => e,
+        Err(e) => { println!("{}", json!({"t":"bench","error":format!("mft: {e}")})); return 1 },
+    };
+    let tex = bgra_texture(&dev, w, h, DXGI_FORMAT_B8G8R8A8_UNORM, (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32).unwrap();
+    let mut rtv = None;
+    unsafe { dev.CreateRenderTargetView(&tex, None, Some(&mut rtv)).unwrap(); }
+    let rtv = rtv.unwrap();
+    let start = Instant::now();
+    let (mut frames, mut bytes, mut keys, mut i) = (0u64, 0u64, 0u64, 0u64);
+    enc.force_keyframe();
+    while start.elapsed().as_secs_f64() < secs {
+        let c = (i % 60) as f32 / 60.0;
+        i += 1;
+        unsafe { ctx.ClearRenderTargetView(&rtv, &[c, 1.0 - c, 0.5, 1.0]); }
+        let ts = (start.elapsed().as_nanos() / 100) as i64;
+        match enc.encode(&tex, ts).and_then(|mut v| { v.extend(enc.poll(20)?); Ok(v) }) {
+            Ok(v) => {
+                for e in v {
+                    frames += 1;
+                    bytes += e.data.len() as u64;
+                    if e.key { keys += 1; }
+                }
+            }
+            Err(e) => {
+                println!("{}", json!({"t":"bench","error":format!("encode: {e}"),"encoder":enc.name}));
+                return 1;
+            }
+        }
+        std::thread::sleep(Duration::from_millis((1000 / fps.max(1)) as u64));
+    }
+    let el = start.elapsed().as_secs_f64();
+    println!("{}", json!({
+        "t":"bench","synthetic":true,"encoder":enc.name,"software":enc.sw,"adapter":adapter_name,
+        "w":w,"h":h,"frames":frames,"fps":(frames as f64/el*10.0).round()/10.0,
+        "kbps":((bytes*8) as f64/el/1000.0).round(),"keyframes":keys
+    }));
+    if frames > 0 { 0 } else { 1 }
 }
