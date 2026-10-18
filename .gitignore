@@ -58,3 +58,8 @@ gui-count.txt
 gui-single.txt
 legacy-clean-debug.txt
 reenable-admin.txt
+
+build-4.9.*.log
+tools/asteria_authlog_diag.txt
+cloud_patch.py
+
