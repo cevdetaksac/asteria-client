@@ -153,11 +153,12 @@ pub struct Injector {
     desk: Option<String>,
     down_keys: Vec<(u16, bool)>,
     down_btn: Vec<u8>,
+    pub last: std::cell::Cell<u32>,
 }
 
 impl Injector {
     pub fn new() -> Self {
-        Injector { mons: monitors(), monitor: 0, desk: None, down_keys: vec![], down_btn: vec![] }
+        Injector { mons: monitors(), monitor: 0, desk: None, down_keys: vec![], down_btn: vec![], last: Default::default() }
     }
 
     fn abs(&self, x: f64, y: f64) -> (i32, i32) {
@@ -174,7 +175,7 @@ impl Injector {
             r#type: INPUT_MOUSE,
             Anonymous: INPUT_0 { mi: MOUSEINPUT { dx, dy, mouseData: data as u32, dwFlags: flags, time: 0, dwExtraInfo: 0 } },
         };
-        unsafe { SendInput(&[i], std::mem::size_of::<INPUT>() as i32); }
+        self.last.set(self.last.get() + unsafe { SendInput(&[i], std::mem::size_of::<INPUT>() as i32) });
     }
     fn key(&self, sc: u16, ext: bool, down: bool) {
         let mut f = KEYEVENTF_SCANCODE;
@@ -184,7 +185,7 @@ impl Injector {
             r#type: INPUT_KEYBOARD,
             Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: VIRTUAL_KEY(0), wScan: sc, dwFlags: f, time: 0, dwExtraInfo: 0 } },
         };
-        unsafe { SendInput(&[i], std::mem::size_of::<INPUT>() as i32); }
+        self.last.set(self.last.get() + unsafe { SendInput(&[i], std::mem::size_of::<INPUT>() as i32) });
     }
 
     pub fn apply(&mut self, m: &Value) -> Option<Value> {
@@ -232,7 +233,7 @@ impl Injector {
                             r#type: INPUT_KEYBOARD,
                             Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: VIRTUAL_KEY(0), wScan: u, dwFlags: fl, time: 0, dwExtraInfo: 0 } },
                         };
-                        unsafe { SendInput(&[i], std::mem::size_of::<INPUT>() as i32); }
+                        self.last.set(self.last.get() + unsafe { SendInput(&[i], std::mem::size_of::<INPUT>() as i32) });
                     }
                 }
             }

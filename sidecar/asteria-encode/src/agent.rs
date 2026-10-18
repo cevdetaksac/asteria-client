@@ -97,7 +97,7 @@ pub fn run(args: &[String]) -> i32 {
                 }
                 Some("media") => { encoder = ev["encoder"].as_str().unwrap_or("").to_string(); out(&ev); }
                 Some("error") => { out(&ev); }
-                Some("codec") | Some("dtls") | Some("bwe") | Some("desktop") | Some("mons") | Some("pli") | Some("channel") | Some("warn") | Some("rtc") => out(&ev),
+                Some("in") | Some("codec") | Some("dtls") | Some("bwe") | Some("desktop") | Some("mons") | Some("pli") | Some("channel") | Some("warn") | Some("rtc") => out(&ev),
                 _ => {}
             }
         }

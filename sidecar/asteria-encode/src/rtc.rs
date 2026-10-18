@@ -162,6 +162,8 @@ pub fn run(
     let mut last_clip = desk::clipboard_seq();
     let mut buf = vec![0u8; 2000];
     let mut pt_video = None;
+    let mut in_n: std::collections::BTreeMap<String, u32> = Default::default();
+    let mut in_log = Instant::now();
 
     let host_ip = &local_ip().unwrap_or(std::net::Ipv4Addr::LOCALHOST.into());
     let _ = evt.send(json!({"t":"rtc","state":"running"}));
@@ -286,7 +288,18 @@ pub fn run(
                     Event::ChannelData(d) => {
                         if let Ok(m) = serde_json::from_slice::<Value>(&d.data) {
                             if d.id == cid_ctrl {
-                                if let Some(reply) = inj.apply(&m) {
+                                inj.last.set(0);
+                                let reply = inj.apply(&m);
+                                let t = m["t"].as_str().unwrap_or("?").to_string();
+                                *in_n.entry(t.clone()).or_insert(0) += 1;
+                                if t != "mm" || in_log.elapsed() > Duration::from_millis(500) {
+                                    let mut pt = windows::Win32::Foundation::POINT::default();
+                                    unsafe { let _ = windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut pt); }
+                                    let err = if inj.last.get() == 0 && t != "rel" { unsafe { windows::Win32::Foundation::GetLastError().0 } } else { 0 };
+                                    let _ = evt.send(json!({"t":"in","m":m,"sent":inj.last.get(),"err":err,"cursor":[pt.x,pt.y],"counts":&in_n}));
+                                    in_log = Instant::now(); in_n.clear();
+                                }
+                                if let Some(reply) = reply {
                                     if let Some(mut ch) = rtc.channel(cid_ctrl) {
                                         let s = reply.to_string();
                                         let _ = ch.write(false, s.as_bytes());
