@@ -1511,21 +1511,24 @@ class RemoteDesktopStreamer:
                     return
                 if getattr(self, "_hw_answer_ok", False):
                     return
-                log("[REMOTE-DESKTOP] HW negotiate timeout -> JPEG fallback")
+                log("[REMOTE-DESKTOP] HW negotiate timeout — no JPEG live")
                 self._hw_fallback_reason = "negotiate_timeout"
                 self._stop_hw_sidecar("negotiate_timeout")
-                self._preferred_transport = "websocket"
-                try:
-                    self._emit_agent_ws({
-                        "t": "remote_meta",
-                        "type": "remote_meta",
-                        "backend": "jpeg",
-                        "fallback_reason": "negotiate_timeout",
-                        "stream_id": self._stream_id,
-                        "jpeg_primary": True,
-                    })
-                except Exception:
-                    pass
+                self.emit_stream_progress(
+                    "failed",
+                    "Video kodlayıcı başlatılamadı",
+                    error="VIDEO_ENCODER_FAILED",
+                    force=True,
+                )
+                self._emit_agent_ws({
+                    "t": "remote_meta",
+                    "type": "remote_meta",
+                    "backend": "none",
+                    "error": "VIDEO_ENCODER_FAILED",
+                    "detail": "negotiate_timeout",
+                    "stream_id": getattr(self, "_stream_id", ""),
+                })
+                return
             except Exception as e:
                 log(f"[REMOTE-DESKTOP] HW timeout handler: {e}")
         t = threading.Timer(float(seconds), _fire)
@@ -1612,11 +1615,19 @@ class RemoteDesktopStreamer:
             elif t == "sidecar_exit":
                 self._hw_active = False
                 self._hw_fallback_reason = self._hw_fallback_reason or f"sidecar_exit:{msg.get('code')}"
-                log(f"[REMOTE-DESKTOP] HW sidecar exited; JPEG fallback ({self._hw_fallback_reason})")
+                log(f"[REMOTE-DESKTOP] HW sidecar exited — no JPEG live ({self._hw_fallback_reason})")
+                self.emit_stream_progress(
+                    "failed",
+                    "Video kodlayıcı başlatılamadı",
+                    error="VIDEO_ENCODER_FAILED",
+                    force=True,
+                )
                 self._emit_agent_ws({
+                    "t": "remote_meta",
                     "type": "remote_meta",
-                    "backend": "jpeg",
-                    "fallback_reason": self._hw_fallback_reason,
+                    "backend": "none",
+                    "error": "VIDEO_ENCODER_FAILED",
+                    "detail": self._hw_fallback_reason,
                     "stream_id": getattr(self, "_stream_id", ""),
                 })
         except Exception as e:
