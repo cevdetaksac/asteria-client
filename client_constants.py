@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.134"  # HW: honor cloud stream_id+ICE; do not gate on Session-0 selftest
+VERSION = "4.9.135"  # CRD touch: trackpad relative+tap-at-cursor; sync _last after rmove
 
 
 

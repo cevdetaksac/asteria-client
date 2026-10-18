@@ -2017,10 +2017,25 @@ class RemoteDesktopStreamer:
         """Local SendInput/SetCursorPos injection (same session or helper side)."""
         mode = str(params.get("mode") or params.get("pointer_mode") or "direct").lower()
         if event == "tap":
+            if mode in ("trackpad", "relative") or params.get("at_cursor"):
+                self._sync_last_cursor_from_os()
+                self._do_mouse_button_at_current("left", down=True)
+                import time as _t; _t.sleep(0.02)
+                return self._do_mouse_button_at_current("left", down=False)
             return self._do_click(
                 float(params.get("x", 0.5)), float(params.get("y", 0.5)), "left"
             )
         if event == "double_tap":
+            if mode in ("trackpad", "relative") or params.get("at_cursor"):
+                self._sync_last_cursor_from_os()
+                import time as _t
+                self._do_mouse_button_at_current("left", down=True)
+                _t.sleep(0.02)
+                self._do_mouse_button_at_current("left", down=False)
+                _t.sleep(0.04)
+                self._do_mouse_button_at_current("left", down=True)
+                _t.sleep(0.02)
+                return self._do_mouse_button_at_current("left", down=False)
             return self._do_click(
                 float(params.get("x", 0.5)),
                 float(params.get("y", 0.5)),
@@ -2028,6 +2043,11 @@ class RemoteDesktopStreamer:
                 double=True,
             )
         if event in ("long_press", "right_click"):
+            if mode in ("trackpad", "relative") or params.get("at_cursor"):
+                self._sync_last_cursor_from_os()
+                self._do_mouse_button_at_current("right", down=True)
+                import time as _t; _t.sleep(0.02)
+                return self._do_mouse_button_at_current("right", down=False)
             return self._do_click(
                 float(params.get("x", 0.5)), float(params.get("y", 0.5)), "right"
             )
@@ -7026,7 +7046,21 @@ class RemoteDesktopStreamer:
         if dx == 0 and dy == 0:
             return True
         self._emit_mouse_move_relative(int(dx), int(dy))
+        self._sync_last_cursor_from_os()
         return True
+
+    def _sync_last_cursor_from_os(self) -> None:
+        """Keep _last_px/_last_py aligned after relative SendInput (trackpad)."""
+        try:
+            import ctypes
+            from ctypes import wintypes
+            class POINT(ctypes.Structure):
+                _fields_ = [("x", wintypes.LONG), ("y", wintypes.LONG)]
+            pt = POINT()
+            if ctypes.windll.user32.GetCursorPos(ctypes.byref(pt)):
+                self._last_px, self._last_py = int(pt.x), int(pt.y)
+        except Exception:
+            pass
 
     def _do_mouse_button(self, x: float, y: float, button: str, down: bool) -> bool:
         px, py = self._norm_to_px(x, y)
