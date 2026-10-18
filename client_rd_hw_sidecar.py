@@ -15,7 +15,18 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+try:
+    from client_rd_hw_session import (
+        needs_cross_session,
+        resolve_hw_target,
+        spawn_in_session,
+    )
+except ImportError:  # pragma: no cover
+    needs_cross_session = None  # type: ignore
+    resolve_hw_target = None  # type: ignore
+    spawn_in_session = None  # type: ignore
 
 log = logging.getLogger("asteria.rd_hw")
 
@@ -116,6 +127,9 @@ class HwSidecar:
         session_id: Optional[int] = None,
         notify_user: bool = False,
         ice_servers: Optional[list] = None,
+        session_target: Optional[dict] = None,
+        winlogon: bool = False,
+        desktop: Optional[str] = None,
     ) -> bool:
         if not self._path:
             self.fallback_reason = "binary_missing"
@@ -124,13 +138,11 @@ class HwSidecar:
             self.stop_locked("restart")
             try:
                 _ensure_gpu_preference(Path(self._path))
-                self._proc = subprocess.Popen(
-                    [str(self._path), "--agent"],
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    bufsize=0,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                self._proc = self._spawn_agent(
+                    session_id=session_id,
+                    session_target=session_target,
+                    winlogon=winlogon,
+                    desktop=desktop,
                 )
             except Exception as e:
                 self.fallback_reason = f"spawn:{e}"
@@ -155,6 +167,64 @@ class HwSidecar:
                 self.stop_locked("stdin_failed")
                 return False
             return True
+
+
+    def _spawn_agent(
+        self,
+        *,
+        session_id: Optional[int],
+        session_target: Optional[dict],
+        winlogon: bool,
+        desktop: Optional[str],
+    ):
+        """Spawn --agent locally or via CreateProcessAsUser into target session."""
+        args = ["--agent"]
+        # Prefer cross-session when Session-0 / mismatched session / Winlogon
+        use_cross = False
+        sid = session_id
+        desk = desktop or r"winsta0\default"
+        reason = "local"
+        if resolve_hw_target is not None:
+            try:
+                sid2, desk2, reason = resolve_hw_target(
+                    session_target,
+                    winlogon=winlogon or (desktop or "").lower().endswith("winlogon"),
+                    explicit_session_id=session_id,
+                )
+                sid, desk = sid2, desk2
+            except Exception as e:
+                log.warning("resolve_hw_target failed: %s", e)
+        if (
+            spawn_in_session is not None
+            and needs_cross_session is not None
+            and sid
+            and needs_cross_session(int(sid))
+        ):
+            use_cross = True
+        if use_cross:
+            secure = "winlogon" in (desk or "").lower()
+            log.info(
+                "HW sidecar cross-session spawn session=%s desktop=%s reason=%s",
+                sid,
+                desk,
+                reason,
+            )
+            return spawn_in_session(
+                Path(self._path),
+                args,
+                int(sid),
+                desk,
+                for_secure_desktop=secure,
+            )
+        # Same-session / interactive user process: plain Popen
+        return subprocess.Popen(
+            [str(self._path)] + args,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=0,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
 
     def stop(self, reason: str = "user") -> None:
         with self._lock:

@@ -1535,6 +1535,19 @@ class RemoteDesktopStreamer:
                     sid = getattr(self, "_session_id", None)
             else:
                 sid = getattr(self, "_session_id", None)
+            st_kind = str((getattr(self, "_session_target", None) or {}).get("kind") or "").lower()
+            winlogon = bool(
+                getattr(self, "_winlogon_mode", False)
+                or str(getattr(self, "_desktop_name", "") or "").lower() == "winlogon"
+                or (st_kind in ("console", "winlogon") and not sid)
+            )
+            # Console with nobody logged on → Winlogon desktop of active console
+            if not sid:
+                try:
+                    from client_rd_hw_session import console_session_id as _csid
+                    sid = int(_csid() or 0) or None
+                except Exception:
+                    pass
             ok = sc.start(
                 fps=int(getattr(self, "_fps", 30) or 30),
                 bitrate=3_000_000,
@@ -1542,6 +1555,13 @@ class RemoteDesktopStreamer:
                 session_id=sid,
                 notify_user=bool(getattr(self, "_notify_user", False)),
                 ice_servers=ice or [],
+                session_target=getattr(self, "_session_target", None),
+                winlogon=bool(getattr(self, "_winlogon_mode", False) or winlogon),
+                desktop=(
+                    r"winsta0\Winlogon"
+                    if getattr(self, "_winlogon_mode", False)
+                    else None
+                ),
             )
             if not ok:
                 self._hw_fallback_reason = sc.fallback_reason or "start_failed"

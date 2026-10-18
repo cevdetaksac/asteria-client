@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.129"  # Phase 4 wiring complete; rd_hw_enabled still default off (labs incomplete)
+VERSION = "4.9.130"  # Cross-session HW attach; fleet flag off, per-client override
 
 
 
