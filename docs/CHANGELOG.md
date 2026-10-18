@@ -2,6 +2,13 @@
 
 Removed `docs/ux-review` screenshots, duplicate resilience/alert plan MDs. Contract **1.4.64** cloud checklist is SoT for dashboard work.
 
+# v4.9.126
+
+## Hotfix — package supervised IR modules
+
+- PyInstaller `hiddenimports`: `client_supervisor`, `client_ir` (4.9.125 daemon crash loop)
+- Same Phase 2 / contract **1.4.92** Option A surface as 4.9.125
+
 # v4.9.125
 
 ## IR sessions/lockdown + Network Guard hard-off (contract 1.4.92)

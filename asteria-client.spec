@@ -86,6 +86,8 @@ _hidden = [
     'client_system_recovery',
     'client_windows_tools',
     'client_self_protection',
+    'client_supervisor',
+    'client_ir',
     'client_performance',
     'client_guardian_service',
     'client_operator_stop',
