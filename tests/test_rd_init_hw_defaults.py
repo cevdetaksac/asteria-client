@@ -12,13 +12,15 @@ class InitNoNameError(unittest.TestCase):
                 for item in node.body:
                     if isinstance(item, ast.FunctionDef) and item.name == "__init__":
                         names = {n.id for n in ast.walk(item) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
-                        # params of __init__ are fine; bare viewer_backend must not appear
                         argnames = {a.arg for a in item.args.args}
-                        self.assertNotIn("viewer_backend", names - argnames)
-                        self.assertNotIn("notify_user", names - argnames)
-                        self.assertNotIn("session_target", names - argnames)
-                        # defaults assigned
-                        self.assertIn('self._viewer_backend = "auto"', src) or self.assertIn("self._viewer_backend = 'auto'", src)
+                        bare = names - argnames
+                        self.assertNotIn("viewer_backend", bare)
+                        self.assertNotIn("notify_user", bare)
+                        self.assertNotIn("session_target", bare)
+                        self.assertTrue(
+                            'self._viewer_backend = "auto"' in src
+                            or "self._viewer_backend = 'auto'" in src
+                        )
                         return
         self.fail("__init__ not found")
 
