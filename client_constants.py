@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.130"  # Cross-session HW attach; fleet flag off, per-client override
+VERSION = "4.9.131"  # Hotfix: RD __init__ NameError viewer_backend broke all stream start
 
 
 

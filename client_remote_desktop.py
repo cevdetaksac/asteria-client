@@ -233,9 +233,10 @@ class RemoteDesktopStreamer:
         self._last_helper_capture_ms = 0.0
         self._last_helper_raw: Optional[Tuple[bytes, int, int]] = None
         self._stream_id = ""
-        self._viewer_backend = (viewer_backend or 'auto').strip().lower()
-        self._notify_user = bool(notify_user)
-        self._session_target = session_target
+        # HW negotiation defaults; start() overwrites from cloud params (C-RD-NEG)
+        self._viewer_backend = "auto"
+        self._notify_user = False
+        self._session_target = None
         self._hw_sidecar = None
         self._media_session_id = ""
         # Contract 1.4.39 — agent → viewer stage honesty (C-RD-PROG-*)
