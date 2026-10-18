@@ -5,6 +5,7 @@ edition = "2021"
 license = "LicenseRef-Asteria-Proprietary"
 
 [dependencies]
+tungstenite = { version = "0.24", features = ["native-tls"] }  # MIT OR Apache-2.0
 serde_json = "1"   # MIT OR Apache-2.0
 str0m = { version = "0.24", default-features = false, features = ["wincrypto"] }  # MIT OR Apache-2.0
 

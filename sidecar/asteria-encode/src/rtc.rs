@@ -65,6 +65,12 @@ pub fn make_offer() -> Result<OfferBundle, String> {
     sock.set_nonblocking(true).ok();
     let _ = rtc.add_local_candidate(Candidate::host(SocketAddr::new(host, port), "udp").map_err(|e| e.to_string())?);
     let _ = rtc.add_local_candidate(Candidate::host(SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), port), "udp").map_err(|e| e.to_string())?);
+    // srflx via STUN on the same socket so peers behind NAT/cellular (incl. TURN relay) can reach us
+    if let Some(public) = stun_mapped(&sock) {
+        if public.ip() != host {
+            if let Ok(c) = Candidate::server_reflexive(public, SocketAddr::new(host, port), "udp") { let _ = rtc.add_local_candidate(c); }
+        }
+    }
 
     let mut change = rtc.sdp_api();
     let mid = change.add_media(MediaKind::Video, Direction::SendOnly, None, None, None);
@@ -72,6 +78,40 @@ pub fn make_offer() -> Result<OfferBundle, String> {
     let (offer, pending) = change.apply().ok_or("sdp apply")?;
     let sdp = offer.to_sdp_string();
     Ok(OfferBundle { rtc, sock, sdp, pending, mid, cid_ctrl })
+}
+
+/// Minimal RFC 5389 binding request; returns XOR-MAPPED-ADDRESS (IPv4).
+fn stun_mapped(sock: &UdpSocket) -> Option<SocketAddr> {
+    use std::net::ToSocketAddrs;
+    let srv = std::env::var("ASTERIA_STUN").unwrap_or_else(|_| "stun.l.google.com:19302".into());
+    let dst = srv.to_socket_addrs().ok()?.find(|a| a.is_ipv4())?;
+    let mut req = [0u8; 20];
+    req[1] = 1; req[4..8].copy_from_slice(&[0x21, 0x12, 0xA4, 0x42]);
+    let tid: [u8; 12] = std::array::from_fn(|i| (Instant::now().elapsed().as_nanos() as u8).wrapping_add(i as u8 * 37) ^ std::process::id() as u8);
+    req[8..20].copy_from_slice(&tid);
+    sock.set_nonblocking(false).ok();
+    sock.set_read_timeout(Some(Duration::from_millis(400))).ok();
+    let mut buf = [0u8; 512];
+    let mut out = None;
+    'tries: for _ in 0..3 {
+        sock.send_to(&req, dst).ok()?;
+        while let Ok((n, src)) = sock.recv_from(&mut buf) {
+            if src != dst || n < 20 || buf[8..20] != tid { continue; }
+            let mut i = 20;
+            while i + 4 <= n {
+                let (t, l) = (u16::from_be_bytes([buf[i], buf[i+1]]), u16::from_be_bytes([buf[i+2], buf[i+3]]) as usize);
+                if t == 0x0020 && l >= 8 && buf[i+5] == 1 {
+                    let port = u16::from_be_bytes([buf[i+6], buf[i+7]]) ^ 0x2112;
+                    let ip = std::net::Ipv4Addr::new(buf[i+8]^0x21, buf[i+9]^0x12, buf[i+10]^0xA4, buf[i+11]^0x42);
+                    out = Some(SocketAddr::new(ip.into(), port)); break 'tries;
+                }
+                i += 4 + ((l + 3) & !3);
+            }
+        }
+    }
+    sock.set_read_timeout(None).ok();
+    sock.set_nonblocking(true).ok();
+    out
 }
 
 fn local_ip() -> Option<std::net::IpAddr> {
@@ -122,6 +162,7 @@ pub fn run(
     let mut buf = vec![0u8; 2000];
     let mut pt_video = None;
 
+    let host_ip = &local_ip().unwrap_or(std::net::Ipv4Addr::LOCALHOST.into());
     let _ = evt.send(json!({"t":"rtc","state":"running"}));
 
     loop {
@@ -274,7 +315,9 @@ pub fn run(
         let input = match sock.recv_from(&mut buf) {
             Ok((n, source)) => {
                 buf.truncate(n);
-                let dest = sock.local_addr().unwrap();
+                // Socket is bound to 0.0.0.0; str0m drops STUN whose dest != a local HOST candidate.
+                let port = sock.local_addr().map(|a| a.port()).unwrap_or(0);
+                let dest = if source.ip().is_loopback() { SocketAddr::new(std::net::Ipv4Addr::LOCALHOST.into(), port) } else { SocketAddr::new(*host_ip, port) };
                 Input::Receive(
                     Instant::now(),
                     Receive::new(Protocol::Udp, source, dest, &buf).map_err(|e| e.to_string())?,

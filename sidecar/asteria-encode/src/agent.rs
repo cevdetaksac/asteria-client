@@ -112,6 +112,7 @@ pub fn run(args: &[String]) -> i32 {
         }
         std::thread::sleep(Duration::from_millis(10));
     }
+    while let Ok(ev) = evt_rx.try_recv() { if matches!(ev["t"].as_str(), Some("error" | "warn" | "ice" | "media")) { out(&ev); } }
     match rtc_thread.join() {
         Ok(Ok(s)) => out(&json!({"t":"bye","frames":s.frames_sent,"kbps_est":s.bitrate_est_kbps,"ice":s.ice})),
         Ok(Err(e)) => out(&json!({"t":"error","msg":e})),

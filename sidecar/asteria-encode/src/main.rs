@@ -7,6 +7,7 @@ mod media;
 mod rtc;
 mod loopback;
 mod agent;
+mod relay;
 use serde_json::json;
 use windows::core::*;
 use windows::Win32::Graphics::Dxgi::*;
@@ -57,11 +58,28 @@ fn h264_encoders(flags: MFT_ENUM_FLAG) -> Vec<String> {
     out
 }
 
+/// Hybrid GPUs: DXGI only lets the power-saving adapter duplicate the desktop; Windows pins the GPU at
+/// process start from HKCU UserGpuPreferences. Write our own entry (per user, so SYSTEM too) and re-exec once.
+fn ensure_igpu_pref(args: &[String]) -> Option<i32> {
+    use std::process::Command;
+    let exe = std::env::current_exe().ok()?.to_string_lossy().to_string();
+    let key = r"HKCU\Software\Microsoft\DirectX\UserGpuPreferences";
+    let q = Command::new("reg").args(["query", key, "/v", &exe]).output().ok()?;
+    if q.status.success() && String::from_utf8_lossy(&q.stdout).contains("GpuPreference=1;") { return None; }
+    if std::env::var("ASTERIA_GPU_REEXEC").is_ok() { return None; }
+    let ok = Command::new("reg").args(["add", key, "/v", &exe, "/t", "REG_SZ", "/d", "GpuPreference=1;", "/f"]).output().ok()?.status.success();
+    if !ok { return None; }
+    let st = Command::new(&exe).args(&args[1..]).env("ASTERIA_GPU_REEXEC", "1").status().ok()?;
+    Some(st.code().unwrap_or(1))
+}
+
 fn main() {
     unsafe { let _ = windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2); }
     let args: Vec<String> = std::env::args().collect();
+    if let Some(code) = ensure_igpu_pref(&args) { std::process::exit(code); }
     if args.iter().any(|a| a == "--version") { println!("{}", env!("CARGO_PKG_VERSION")); return; }
     if args.iter().any(|a| a == "--agent") { std::process::exit(agent::run(&args)); }
+    if args.iter().any(|a| a == "--relay") { std::process::exit(relay::run(&args)); }
     if args.iter().any(|a| a == "--loopback") { std::process::exit(loopback::run(&args)); }
     if args.iter().any(|a| a == "--bench") { std::process::exit(bench::run(&args)); }
     if !args.iter().any(|a| a == "--selftest") { eprintln!("usage: asteria-encode --selftest|--bench|--loopback|--agent|--version"); std::process::exit(2); }
