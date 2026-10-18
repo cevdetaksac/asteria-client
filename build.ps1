@@ -103,7 +103,7 @@ if ($WebRTC) {
 # Step 1: Build Python executable with performance optimizations
 Write-Host "[1/5] Building Python executable..." -ForegroundColor Yellow
 try {
-    & $PYTHON -m PyInstaller asteria-client.spec --clean
+    & $PYTHON -m PyInstaller asteria-client.spec --clean -y
     if ($LASTEXITCODE -eq 0) {
         Write-Host "   SUCCESS: Executable built successfully" -ForegroundColor Green
         # Gate: our application modules must NOT appear as plain .py under onedir.
@@ -182,7 +182,7 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "   ERROR: pywebview missing; install requirements-gui.txt" -ForegroundColor Red
     exit 1
 }
-& $PYTHON -m PyInstaller asteria-gui.spec --clean
+& $PYTHON -m PyInstaller asteria-gui.spec --clean -y
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path "dist\asteria-gui.exe")) {
     Write-Host "   ERROR: asteria-gui.exe build failed" -ForegroundColor Red
     exit 1
@@ -315,6 +315,28 @@ if (Test-Path -LiteralPath $wv2Boot) {
 }
 
 # Step 5: Build installer (embeds already-signed motor/GUI when -Sign was set)
+# Phase4: bundle asteria-encode.exe BEFORE makensis (installer.nsi File "dist\asteria-encode.exe" is required)
+$aeSrc = Join-Path $PSScriptRoot "sidecar\asteria-encode\target\x86_64-pc-windows-gnullvm\release\asteria-encode.exe"
+if (-not (Test-Path $aeSrc)) { $aeSrc = Join-Path $PSScriptRoot "sidecar\asteria-encode\target\release\asteria-encode.exe" }
+$aeDestCandidates = @()
+if (Get-Variable -Name distDir -Scope Script -ErrorAction SilentlyContinue) { $aeDestCandidates += $distDir }
+if (Get-Variable -Name DistDir -Scope Script -ErrorAction SilentlyContinue) { $aeDestCandidates += $DistDir }
+if (Get-Variable -Name OutDir -Scope Script -ErrorAction SilentlyContinue) { $aeDestCandidates += $OutDir }
+$aeDestCandidates += (Join-Path $PSScriptRoot "dist")
+$aeDestCandidates += (Join-Path $PSScriptRoot "release")
+$aeDest = $aeDestCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+if ((Test-Path $aeSrc) -and $aeDest) {
+  Copy-Item -Force $aeSrc (Join-Path $aeDest "asteria-encode.exe")
+  Write-Host "Bundled asteria-encode.exe -> $aeDest"
+  & (Join-Path $aeDest "asteria-encode.exe") --selftest | Write-Host
+  if ($LASTEXITCODE -ne 0) { throw "asteria-encode --selftest failed" }
+  # also into NSIS/installer payload folder if present
+  Get-ChildItem -Path $PSScriptRoot -Recurse -Filter "asteria-client.exe" -ErrorAction SilentlyContinue |
+    ForEach-Object { Copy-Item -Force $aeSrc (Join-Path $_.DirectoryName "asteria-encode.exe") }
+} elseif (-not (Test-Path $aeSrc)) {
+  Write-Warning "asteria-encode.exe not built; HW path unavailable this release"
+}
+
 Write-Host "[5/6] Building installer..." -ForegroundColor Yellow
 try {
     & makensis installer.nsi
@@ -383,25 +405,4 @@ Write-Host "   - Application will self-configure on first run" -ForegroundColor 
 Write-Host "`n===============================================" -ForegroundColor Green
 
 
-# Phase4: bundle asteria-encode.exe next to agent artifacts (rd_hw_enabled default off)
-$aeSrc = Join-Path $PSScriptRoot "sidecar\asteria-encode\target\x86_64-pc-windows-gnullvm\release\asteria-encode.exe"
-if (-not (Test-Path $aeSrc)) { $aeSrc = Join-Path $PSScriptRoot "sidecar\asteria-encode\target\release\asteria-encode.exe" }
-$aeDestCandidates = @()
-if (Get-Variable -Name distDir -Scope Script -ErrorAction SilentlyContinue) { $aeDestCandidates += $distDir }
-if (Get-Variable -Name DistDir -Scope Script -ErrorAction SilentlyContinue) { $aeDestCandidates += $DistDir }
-if (Get-Variable -Name OutDir -Scope Script -ErrorAction SilentlyContinue) { $aeDestCandidates += $OutDir }
-$aeDestCandidates += (Join-Path $PSScriptRoot "dist")
-$aeDestCandidates += (Join-Path $PSScriptRoot "release")
-$aeDest = $aeDestCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
-if ((Test-Path $aeSrc) -and $aeDest) {
-  Copy-Item -Force $aeSrc (Join-Path $aeDest "asteria-encode.exe")
-  Write-Host "Bundled asteria-encode.exe -> $aeDest"
-  & (Join-Path $aeDest "asteria-encode.exe") --selftest | Write-Host
-  if ($LASTEXITCODE -ne 0) { throw "asteria-encode --selftest failed" }
-  # also into NSIS/installer payload folder if present
-  Get-ChildItem -Path $PSScriptRoot -Recurse -Filter "asteria-client.exe" -ErrorAction SilentlyContinue |
-    ForEach-Object { Copy-Item -Force $aeSrc (Join-Path $_.DirectoryName "asteria-encode.exe") }
-} elseif (-not (Test-Path $aeSrc)) {
-  Write-Warning "asteria-encode.exe not built; HW path unavailable this release"
-}
 
