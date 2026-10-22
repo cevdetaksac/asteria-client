@@ -137,6 +137,8 @@ _hidden = [
     'win32event',
     'win32api',
     'winerror',
+    'win32net',
+    'client_admin_ops',
     'win32security',
     'ntsecuritycon',
     'win32serviceutil',

@@ -50,51 +50,33 @@ class TestCreateUserExec(unittest.TestCase):
         self.ex = RemoteCommandExecutor(token_getter=lambda: "")
 
     def test_create_user_adds_to_group(self):
-        calls = []
-
-        class _R:
-            def __init__(self, rc):
-                self.returncode = rc
-                self.stdout = ""
-                self.stderr = ""
-
-        def fake_run(cmd, *a, **k):
-            calls.append(cmd)
-            # `net user <name>` existence probe → non-zero (does not exist)
-            if cmd[:2] == ["net", "user"] and len(cmd) == 3:
-                return _R(2)
-            return _R(0)
-
-        with mock.patch("client_remote_commands.subprocess.run", side_effect=fake_run), \
+        from test_admin_ops import FakeNet
+        net = FakeNet()
+        with mock.patch("client_admin_ops.Win32Net", return_value=net), \
              mock.patch.object(RemoteCommandExecutor, "_resolve_sid", return_value="S-1-5-21-x"):
             res = self.ex._cmd_create_user({
                 "username": "Administrator2",
                 "password": "S3cretPassw0rd!",
                 "groups": ["Administrators"],
             })
-
         self.assertTrue(res["success"], res)
+        self.assertEqual(res["code"], "USER_CREATED")
         self.assertEqual(res["data"]["username"], "Administrator2")
         self.assertIn("Administrators", res["data"]["groups"])
         self.assertTrue(res["data"]["created"])
-        # verify /add and localgroup add were issued
-        joined = [" ".join(c) for c in calls]
-        self.assertTrue(any("/add" in j and "net user" in j for j in joined))
-        self.assertTrue(any("localgroup Administrators Administrator2 /add" in j for j in joined))
+        self.assertIn(("Administrators", "Administrator2"), net.group_adds)
+        self.assertNotIn("S3cretPassw0rd!", repr(res))
 
     def test_create_user_existing_without_reset_enable_fails(self):
-        class _R:
-            returncode = 0
-            stdout = ""
-            stderr = ""
-
-        with mock.patch("client_remote_commands.subprocess.run", return_value=_R()):
+        from test_admin_ops import FakeNet
+        net = FakeNet(existing={"existinguser"})
+        with mock.patch("client_admin_ops.Win32Net", return_value=net):
             res = self.ex._cmd_create_user({
                 "username": "ExistingUser",
                 "password": "S3cretPassw0rd!",
             })
         self.assertFalse(res["success"])
-        self.assertEqual(res["error"], "user_exists")
+        self.assertEqual(res["error"], "USER_EXISTS")
 
 
 class TestAutologonMarker(unittest.TestCase):

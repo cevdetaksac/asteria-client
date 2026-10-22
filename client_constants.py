@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.143"  # C-RD-WARP-1: capture/encode on GPU-less servers (Basic Render/WARP, CPU NV12 + SW H.264)
+VERSION = "4.9.144"  # C-ADMIN-V2: admin commands own lane + hard timeouts, WinAPI create_user/logoff, exact kill, dependent-aware restart, reboot back-online
 
 
 

@@ -41,13 +41,11 @@ class TestServerManagementSurface(unittest.TestCase):
             run.return_value = mock.Mock(returncode=0, stdout="", stderr="")
             for ct in ("start_service", "stop_service", "restart_service"):
                 if ct == "restart_service":
-                    with mock.patch.object(self.ex, "_cmd_stop_service",
-                                           return_value={"success": True}):
-                        with mock.patch.object(self.ex, "_cmd_start_service",
-                                               return_value={"success": True}) as start:
-                            out = self.ex._cmd_restart_service({"name": "Spooler"})
-                            self.assertTrue(out["success"])
-                            start.assert_called()
+                    with mock.patch("client_admin_ops.restart_service",
+                                    return_value={"success": True, "ok": True}) as rs:
+                        out = self.ex._cmd_restart_service({"name": "Spooler"})
+                        self.assertTrue(out["success"])
+                        self.assertEqual(rs.call_args[0][0], "Spooler")
                 else:
                     out = getattr(self.ex, f"_cmd_{ct}")({"name": "Spooler"})
                     self.assertTrue(out["success"], ct)

@@ -114,6 +114,30 @@ ALLOWED_COMMANDS: Set[str] = {
     "tunnel_start", "tunnel_stop",
 }
 
+# Remote desktop commands run on their own worker (never block admin/IR commands).
+_RD_COMMANDS = frozenset({
+    "remote_stream_start", "remote_stream_stop", "remote_input", "remote_send_sas",
+})
+
+# Admin commands: immediate RECEIVED ack (status=running) before execution.
+_ADMIN_ACK_COMMANDS = frozenset({
+    "reboot", "create_user", "kill_process", "restart_service",
+    "logoff_session", "logoff_user", "logoff_all_sessions", "disconnect_session",
+    "stop_service", "start_service",
+})
+
+# Hard timeout per handler (seconds). None = no wrapper (self_update exits process).
+_HANDLER_TIMEOUTS = {
+    "self_update": None,
+    "remote_input": 15, "remote_send_sas": 30,
+    "remote_stream_start": 60, "remote_stream_stop": 30,
+    "kill_process": 30, "create_user": 60, "reboot": 30,
+    "logoff_session": 60, "logoff_user": 60, "logoff_all_sessions": 90, "disconnect_session": 30,
+    "restart_service": 150, "stop_service": 60, "start_service": 60,
+    "list_sessions": 30, "list_processes": 45, "list_local_users": 30, "list_services": 60,
+}
+_DEFAULT_HANDLER_TIMEOUT = 300
+
 # High-frequency IR commands — skip global cmd/min rate limit
 _STREAM_COMMANDS = frozenset({
     "remote_stream_start", "remote_stream_stop", "remote_input",
@@ -270,6 +294,19 @@ _disable_all_busy = False
 # ── Remote Command Executor ──────────────────────────────────────
 
 class RemoteCommandExecutor:
+    @property
+    def _current_cmd(self):
+        tls = self.__dict__.get("_tls")
+        return getattr(tls, "cmd", None) if tls is not None else self.__dict__.get("_current_cmd_fallback")
+
+    @_current_cmd.setter
+    def _current_cmd(self, value):
+        tls = self.__dict__.get("_tls")
+        if tls is not None:
+            tls.cmd = value
+        else:
+            self.__dict__["_current_cmd_fallback"] = value
+
     """
     Polls for and executes dashboard-issued remote commands.
 
@@ -310,6 +347,11 @@ class RemoteCommandExecutor:
         self._next_poll_sleep = POLL_INTERVAL
         self._ir_until = 0.0  # sticky fast-poll window after IR
         self._exec_lock = threading.Lock()
+        # Remote desktop: separate lock + worker so a hung stream never blocks IR
+        self._rd_lock = threading.Lock()
+        self._rd_queue = None
+        self._rd_worker = None
+        self._tls = threading.local()
         self._seen_cmd_ids: Dict[str, float] = {}  # command_id → seen_at
         self._seen_lock = threading.Lock()
         self._control_ws = None
@@ -353,6 +395,8 @@ class RemoteCommandExecutor:
             daemon=True,
         )
         self._poll_thread.start()
+        threading.Thread(target=self._report_reboot_back_online, name="RebootMarker",
+                         daemon=True).start()
         try:
             from client_control_ws import AgentControlWebSocket
             self._control_ws = AgentControlWebSocket(
@@ -627,6 +671,25 @@ class RemoteCommandExecutor:
 
             time.sleep(self._next_poll_sleep)
 
+    def _report_reboot_back_online(self) -> None:
+        """Dashboard reboot: after the host is back, update that command's result."""
+        try:
+            from client_admin_ops import consume_reboot_marker, std
+            time.sleep(20)  # let network/token settle after boot
+            info = consume_reboot_marker()
+            if not info or not info.get("command_id"):
+                return
+            res = std(bool(info.get("rebooted")),
+                      "BACK_ONLINE" if info.get("rebooted") else "REBOOT_NOT_OBSERVED",
+                      "Sunucu yeniden başladı ve agent çevrimiçi" if info.get("rebooted")
+                      else "Yeniden başlatma gerçekleşmedi (1 saat içinde boot yok)",
+                      phase="back_online" if info.get("rebooted") else "not_rebooted",
+                      boot_time=info.get("boot_time"))
+            self._report_result_sync({"command_id": info["command_id"], "command_type": "reboot"}, res)
+            log(f"[REMOTE-CMD] reboot marker reported code={res.get('code')}")
+        except Exception as e:
+            log(f"[REMOTE-CMD] reboot marker error: {e}")
+
     def _remember_command_id(self, cmd_id: str) -> bool:
         """Return True if this command_id was already seen (dedup)."""
         if not cmd_id:
@@ -687,9 +750,46 @@ class RemoteCommandExecutor:
             out["skipped"] = True
             return out
 
-        # Serialize execute so poll + WS never overlap
+        # Remote desktop → own worker (never holds the admin/IR lock)
+        if cmd_type in _RD_COMMANDS:
+            if self._submit_rd(cmd, source):
+                out["ok"] = True
+                out["queued"] = "rd"
+                return out
+            with self._rd_lock:
+                return self._run_one_command_locked(cmd, source)
+
+        # Serialize admin/IR execute so poll + WS never overlap (each handler is time-boxed)
         with self._exec_lock:
             return self._run_one_command_locked(cmd, source)
+
+    def _submit_rd(self, cmd: dict, source: str) -> bool:
+        """Queue an RD command on the dedicated worker. False → caller runs inline."""
+        if not self._running or "_rd_lock" not in self.__dict__:
+            return False
+        import queue as _queue
+        if self._rd_queue is None:
+            self._rd_queue = _queue.Queue()
+        if self._rd_worker is None or not self._rd_worker.is_alive():
+            self._rd_worker = threading.Thread(
+                target=self._rd_loop, name="RemoteCommands-RD", daemon=True,
+            )
+            self._rd_worker.start()
+        self._rd_queue.put((cmd, source))
+        return True
+
+    def _rd_loop(self) -> None:
+        while self._running:
+            try:
+                item = self._rd_queue.get(timeout=1.0)
+            except Exception:
+                continue
+            cmd, source = item
+            try:
+                with self._rd_lock:
+                    self._run_one_command_locked(cmd, source)
+            except Exception as e:
+                log(f"[REMOTE-CMD] RD worker error: {e}")
 
     def _run_one_command_locked(self, cmd: dict, source: str) -> dict:
         out = {"ok": False, "skipped": False, "health_refresh": False, "source": source}
@@ -720,6 +820,13 @@ class RemoteCommandExecutor:
                 "status": "rejected",
             })
             return out
+
+        if cmd_type in _ADMIN_ACK_COMMANDS:
+            self._report_result(cmd, {
+                "status": "running", "ok": True, "success": True,
+                "code": "RECEIVED", "message": "Agent komutu aldı, çalıştırılıyor",
+                "phase": "received", "steps": [],
+            })
 
         if (cmd_type not in _STREAM_COMMANDS
                 and cmd_type not in _IR_URGENT_COMMANDS
@@ -1186,7 +1293,7 @@ class RemoteCommandExecutor:
             if not pin.isdigit() or not (4 <= len(pin) <= 12):
                 return "invalid_pin_format"
 
-        if cmd_type == "logoff_user":
+        if cmd_type in ("logoff_user", "logoff_session"):
             sid = params.get("session_id")
             if sid is not None and str(sid).strip() == "0":
                 return "Cannot logoff session 0 (services)"
@@ -1227,17 +1334,48 @@ class RemoteCommandExecutor:
         params = cmd.get("parameters") or cmd.get("params") or {}
 
         handler = getattr(self, f"_cmd_{cmd_type}", None)
-        if handler:
+        if not handler:
+            return {"success": False, "ok": False, "code": "UNKNOWN_COMMAND",
+                    "error": f"No handler for: {cmd_type}", "message": f"No handler for: {cmd_type}"}
+        timeout = _HANDLER_TIMEOUTS.get(cmd_type, _DEFAULT_HANDLER_TIMEOUT)
+        start_ms = time.monotonic()
+        if timeout is None:
             try:
-                start_ms = time.monotonic()
                 result = handler(params)
-                elapsed_ms = int((time.monotonic() - start_ms) * 1000)
-                result["execution_time_ms"] = elapsed_ms
-                return result
             except Exception as e:
-                return {"success": False, "error": str(e)}
+                result = {"success": False, "ok": False, "code": "HANDLER_ERROR",
+                          "error": str(e), "message": str(e)}
+        else:
+            result = self._run_with_timeout(handler, params, float(timeout), cmd_type)
+        if not isinstance(result, dict):
+            result = {"success": bool(result), "ok": bool(result)}
+        result["execution_time_ms"] = int((time.monotonic() - start_ms) * 1000)
+        return result
 
-        return {"success": False, "error": f"No handler for: {cmd_type}"}
+    def _run_with_timeout(self, handler, params: dict, timeout: float, cmd_type: str) -> dict:
+        """Run a handler on a helper thread; never let it hold the executor > timeout."""
+        box: dict = {}
+        parent_cmd = self._current_cmd
+
+        def _target():
+            self._current_cmd = parent_cmd
+            try:
+                box["result"] = handler(params)
+            except Exception as e:  # noqa: BLE001
+                box["result"] = {"success": False, "ok": False, "code": "HANDLER_ERROR",
+                                 "error": str(e), "message": str(e)}
+
+        t = threading.Thread(target=_target, name=f"cmd-{cmd_type}", daemon=True)
+        t.start()
+        t.join(timeout)
+        if t.is_alive():
+            log(f"[REMOTE-CMD] ⏱ {cmd_type} exceeded {int(timeout)}s — releasing executor")
+            return {"success": False, "ok": False, "code": "TIMEOUT",
+                    "error": "TIMEOUT",
+                    "message": f"{cmd_type} {int(timeout)} sn içinde bitmedi (agent zaman aşımı)",
+                    "steps": []}
+        return box.get("result") or {"success": False, "ok": False, "code": "NO_RESULT",
+                                     "error": "NO_RESULT", "message": "Handler sonuç döndürmedi"}
 
     def _refresh_inventory_after_mutate(self, cmd_type: str) -> None:
         """Best-effort health refresh so dashboard poll sees fresh sessions/processes."""
@@ -2218,19 +2356,12 @@ class RemoteCommandExecutor:
             return {"success": False, "error": str(e)}
 
     def _cmd_logoff_user(self, params: dict) -> dict:
-        """Terminate session(s) immediately — any account including Administrator."""
-        t0 = time.time()
-        username = (params.get("username") or "").strip()
-        session_id = params.get("session_id")
-        if session_id is not None and str(session_id).strip().isdigit():
-            result = self._terminate_session_id(str(session_id).strip())
-        elif not username:
-            result = {"success": False, "error": "No username or session_id specified"}
-        else:
-            # Single thorough path (query user + session, logoff + reset)
-            result = self._logoff_direct(username)
-        result["execution_time_ms"] = int((time.time() - t0) * 1000)
-        return result
+        """Alias → logoff_session(session_id | username)."""
+        p = dict(params or {})
+        sid = p.get("session_id")
+        if sid is None or str(sid).strip() == "" or not str(sid).strip().isdigit():
+            p["session_id"] = (p.get("username") or "").strip() or None
+        return self._cmd_logoff_session(p)
 
     def _cmd_contain_user(self, params: dict) -> dict:
         """
@@ -2694,97 +2825,36 @@ class RemoteCommandExecutor:
     # ── Disaster recovery (contract ≥4.6.0 — agent/disaster-recovery.md) ──
 
     def _cmd_create_user(self, params: dict) -> dict:
-        """Create (or reset+enable) a local user for break-glass recovery.
+        """Create (or reset+enable) a local user via NetUserAdd/NetLocalGroupAddMembers.
 
-        params: username, password (one-shot), groups[], enable,
-                comment, password_never_expires, if_exists("fail"|"reset_enable")
-        Password never logged/persisted; history redacts it.
+        params: username, password (one-shot), groups[], enable, comment,
+                password_never_expires, if_exists("fail"|"reset_enable")
+        Result: standard admin shape {ok, code, message, steps[], data}; never logs the password.
         """
+        from client_admin_ops import create_user
         username = self._sam_account_name(params.get("username", ""))
-        if not username:
-            return {"success": False, "ok": False, "error": "missing_username"}
-        password = params.get("password")
-        if password is None or str(password).strip() == "":
-            return {"success": False, "ok": False, "error": "missing_password", "username": username}
-        password = str(password)
-
         groups = params.get("groups") or ["Users"]
-        if isinstance(groups, str):
-            groups = [groups]
-        enable = params.get("enable", True)
-        comment = str(params.get("comment") or "")
-        pw_never = bool(params.get("password_never_expires", False))
-        if_exists = str(params.get("if_exists") or "fail").lower()
-
-        try:
-            existed = self._local_user_exists(username)
-            if existed and if_exists != "reset_enable":
-                return {
-                    "success": False, "ok": False, "username": username,
-                    "error": "user_exists", "message": f"{username} already exists",
-                }
-
-            if existed:
-                # reset password + re-enable existing account
-                r = subprocess.run(
-                    ["net", "user", username, password],
-                    capture_output=True, text=True, timeout=10,
-                    creationflags=CREATE_NO_WINDOW,
-                )
-                if r.returncode != 0:
-                    return {"success": False, "ok": False, "username": username,
-                            "error": (r.stderr or r.stdout or "net user reset failed").strip()}
-            else:
-                add_cmd = ["net", "user", username, password, "/add"]
-                if comment:
-                    add_cmd += [f"/comment:{comment}"]
-                r = subprocess.run(
-                    add_cmd, capture_output=True, text=True, timeout=15,
-                    creationflags=CREATE_NO_WINDOW,
-                )
-                if r.returncode != 0:
-                    return {"success": False, "ok": False, "username": username,
-                            "error": (r.stderr or r.stdout or "net user /add failed").strip()}
-
-            # enable (/active:yes) or disable per param
-            subprocess.run(
-                ["net", "user", username, "/active:yes" if enable else "/active:no"],
-                capture_output=True, text=True, timeout=10, creationflags=CREATE_NO_WINDOW,
-            )
-            if pw_never:
-                self._set_password_never_expires(username)
-
-            added_groups = []
-            for g in groups:
-                g = str(g).strip()
-                if not g:
-                    continue
-                gr = subprocess.run(
-                    ["net", "localgroup", g, username, "/add"],
-                    capture_output=True, text=True, timeout=10,
-                    creationflags=CREATE_NO_WINDOW,
-                )
-                # rc==2 usually "already a member" — treat as ok
-                if gr.returncode == 0 or "1378" in (gr.stderr or "") or "already a member" in (gr.stderr or "").lower():
-                    added_groups.append(g)
-
-            sid = self._resolve_sid(username)
-            log(f"[REMOTE-CMD] create_user {username} groups={added_groups} created={not existed}")
-            # informational audit to cloud (non-blocking)
+        res = create_user(
+            username, params.get("password"), groups,
+            enable=params.get("enable", True) is not False,
+            comment=str(params.get("comment") or ""),
+            password_never_expires=bool(params.get("password_never_expires", False)),
+            if_exists=str(params.get("if_exists") or "fail"),
+        )
+        if res.get("ok"):
+            data = res.get("data") or {}
+            try:
+                data["sid"] = self._resolve_sid(username)
+            except Exception:
+                pass
+            log(f"[REMOTE-CMD] create_user {username} code={res.get('code')} groups={data.get('groups')}")
             self._recovery_audit("account_created_by_agent", {
-                "username": username, "groups": added_groups,
-                "created": not existed, "enabled": bool(enable),
+                "username": username, "groups": data.get("groups"),
+                "created": data.get("created"), "enabled": data.get("enabled"),
             })
-            return {
-                "success": True, "ok": True,
-                "data": {
-                    "username": username, "sid": sid, "groups": added_groups,
-                    "created": not existed, "enabled": bool(enable),
-                },
-                "message": f"{'reset' if existed else 'created'} {username}",
-            }
-        except Exception as e:
-            return {"success": False, "ok": False, "username": username, "error": str(e)}
+        else:
+            log(f"[REMOTE-CMD] create_user {username} failed code={res.get('code')} {res.get('message')}")
+        return res
 
     def _cmd_remote_logon(self, params: dict) -> dict:
         """Logon a user for remote desktop: reconnect existing session, else
@@ -2927,14 +2997,13 @@ class RemoteCommandExecutor:
         return {"success": True, "ok": True, "message": "GUI PIN cleared from dashboard"}
 
     def _cmd_reboot(self, params: dict) -> dict:
-        try:
-            grace = int(params.get("grace_sec") or 30)
-        except (TypeError, ValueError):
-            grace = 30
-        reason = str(params.get("reason") or "dashboard reboot")
-        self._schedule_reboot(grace_sec=grace, reason=reason)
-        return {"success": True, "ok": True, "message": f"reboot scheduled in {grace}s",
-                "data": {"grace_sec": grace, "reason": reason}}
+        from client_admin_ops import schedule_reboot
+        parent = self._current_cmd or {}
+        return schedule_reboot(
+            params.get("grace_sec") if params.get("grace_sec") is not None else 30,
+            str(params.get("reason") or "Asteria dashboard reboot"),
+            command_id=str(parent.get("command_id") or ""),
+        )
 
     @staticmethod
     def _schedule_reboot(grace_sec: int = 30, reason: str = "") -> None:
@@ -3003,54 +3072,21 @@ class RemoteCommandExecutor:
         return u
 
     def _cmd_kill_process(self, params: dict) -> dict:
+        """Exact-target kill: pid + image (+ start time) → psutil kill (optional tree)."""
+        from client_admin_ops import kill_process, std
         pid = params.get("pid")
-        process_name = params.get("process_name", "")
-
-        # Self-protect: refuse ONLY our own PID (not blanket name match — spoof-safe)
-        try:
-            my_pid = os.getpid()
-            if pid is not None and int(pid) == my_pid:
-                return {
-                    "success": False,
-                    "error": f"Refusing to terminate self (PID {my_pid} = honeypot-client.exe)",
-                }
-        except Exception:
-            pass
-
-        # Protect critical PIDs by resolving name
-        if pid is not None:
-            try:
-                import psutil
-                p = psutil.Process(int(pid))
-                pname = (p.name() or "").lower()
-                if pname in PROTECTED_PROCESSES or int(pid) in (0, 4):
-                    return {"success": False, "error": f"Protected process: {pname or pid}"}
-            except Exception:
-                pass
-            cmd = ["taskkill", "/F", "/PID", str(pid)]
-        elif process_name:
-            # Never blanket-protect by image name alone (spoof could hide)
-            if process_name.lower() in PROTECTED_PROCESSES and "honeypot-client" not in process_name.lower():
-                return {"success": False, "error": f"Protected process: {process_name}"}
-            if "honeypot-client" in process_name.lower():
-                # Kill by name could hit us — refuse; require explicit foreign PID
-                return {
-                    "success": False,
-                    "error": "Refusing name-based kill of honeypot-client.exe — use foreign PID only",
-                }
-            cmd = ["taskkill", "/F", "/IM", process_name]
-        else:
-            return {"success": False, "error": "No PID or process_name specified"}
-
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=5,
-            creationflags=CREATE_NO_WINDOW,
+        if pid in (None, ""):
+            return std(False, "INVALID_TARGET",
+                       "PID gerekli (isimle toplu sonlandırma kapalı — listeden seçin)")
+        protected_pids = {os.getpid()}
+        return kill_process(
+            pid,
+            expected_image=str(params.get("expected_image") or params.get("process_name") or ""),
+            process_start_time=params.get("process_start_time"),
+            tree=bool(params.get("tree", False)),
+            protected_names=PROTECTED_PROCESSES,
+            protected_pids=protected_pids,
         )
-        ok = result.returncode == 0
-        return {
-            "success": ok,
-            "message": result.stdout.strip() or result.stderr.strip(),
-        }
 
     def _resolve_process_target(self, params: dict):
         """Resolve an exact process and reject stale/PID-reuse commands.
@@ -3299,7 +3335,8 @@ class RemoteCommandExecutor:
                     )
                 else:
                     for p in psutil.process_iter(
-                        ["pid", "name", "cpu_percent", "memory_info", "username", "exe"]
+                        ["pid", "name", "cpu_percent", "memory_info", "username", "exe",
+                         "create_time"]
                     ):
                         try:
                             info = p.info
@@ -3314,6 +3351,10 @@ class RemoteCommandExecutor:
                                 ),
                                 "username": info.get("username", ""),
                                 "path": info.get("exe") or "",
+                                "started_at": (
+                                    datetime.fromtimestamp(info["create_time"], tz=timezone.utc).isoformat()
+                                    if info.get("create_time") else None
+                                ),
                             })
                         except (psutil.NoSuchProcess, psutil.AccessDenied):
                             continue
@@ -3566,22 +3607,14 @@ class RemoteCommandExecutor:
         return out
 
     def _cmd_restart_service(self, params: dict) -> dict:
+        """Stop dependents → stop → wait STOPPED → start → wait RUNNING → restart dependents."""
+        from client_admin_ops import restart_service
         svc = self._service_name_from_params(params)
-        blocked = self._refuse_protected_service(svc)
-        if blocked:
-            return blocked
-        stop = self._cmd_stop_service({"name": svc, "service_name": svc})
-        time.sleep(1.5)
-        start = self._cmd_start_service({"name": svc, "service_name": svc})
-        ok = bool(start.get("success"))
-        return {
-            "success": ok,
-            "message": f"Service {svc} restarted" if ok else (
-                start.get("message") or f"Failed to restart {svc}"
-            ),
-            "error": None if ok else (start.get("error") or "FAILED"),
-            "data": {"name": svc, "service_name": svc, "stop": stop, "start": start},
-        }
+        try:
+            timeout = max(5.0, min(120.0, float(params.get("timeout_sec") or 45)))
+        except (TypeError, ValueError):
+            timeout = 45.0
+        return restart_service(svc, timeout=timeout, protected=PROTECTED_SERVICES)
 
     def _cmd_relocate_service(self, params: dict) -> dict:
         """Contract 1.4.45: golden→firewall→config→restart→≤10s verify→rollback."""
@@ -3691,20 +3724,34 @@ class RemoteCommandExecutor:
         return res
 
     def _cmd_logoff_session(self, params: dict) -> dict:
-        return self._ir_wrap(self._ir().logoff_session(
-            params.get("session_id"), dry_run=bool(params.get("dry_run"))))
+        """Single logoff path: session_id | "all" | username → WTSLogoffSession + verify."""
+        from client_admin_ops import logoff_session, std
+        target = params.get("session_id")
+        if target in (None, "") and params.get("all"):
+            target = "all"
+        if target in (None, "") and (params.get("username") or "").strip():
+            target = str(params.get("username")).strip()
+        if target in (None, ""):
+            return std(False, "INVALID_TARGET", "session_id, 'all' veya username gerekli")
+        if bool(params.get("dry_run")):
+            return std(True, "DRY_RUN", f"logoff {target} (dry run)")
+        ir = self._ir()
+        return logoff_session(
+            target, wts=ir.wts, protected_ids=ir.protected_session_ids(),
+            exclude_ids=params.get("exclude_session_ids") or [],
+            exclude_users=params.get("exclude_users") or [],
+            include_console=params.get("include_console", True) is not False,
+        )
 
     def _cmd_disconnect_session(self, params: dict) -> dict:
         return self._ir_wrap(self._ir().disconnect_session(
             params.get("session_id"), dry_run=bool(params.get("dry_run"))))
 
     def _cmd_logoff_all_sessions(self, params: dict) -> dict:
-        return self._ir_wrap(self._ir().logoff_all_sessions(
-            exclude_session_ids=params.get("exclude_session_ids") or [],
-            exclude_users=params.get("exclude_users") or [],
-            include_console=params.get("include_console", True) is not False,
-            dry_run=bool(params.get("dry_run")),
-        ))
+        """Alias → logoff_session(all)."""
+        p = dict(params or {})
+        p["session_id"] = "all"
+        return self._cmd_logoff_session(p)
 
     def _cmd_emergency_lockdown_undo(self, params: dict) -> dict:
         return self._ir_wrap(self._ir().emergency_lockdown_undo(
