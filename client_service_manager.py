@@ -387,7 +387,7 @@ class ServiceManager:
         }
         for key in (
             "logon_type", "auth_package", "logon_process",
-            "status", "substatus", "workstation",
+            "status", "substatus", "workstation", "attempts",
         ):
             if entry.get(key) is not None and entry.get(key) != "":
                 payload[key] = entry[key]

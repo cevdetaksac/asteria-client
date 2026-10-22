@@ -396,9 +396,13 @@ class EventLogWatcher:
                 self._stats["events_filtered"] += 1
                 return
 
-            # Apply account filter
+            # Apply account filter — never for SQL auth events (an empty /
+            # unknown SQL login is still a brute-force attempt).
             username = event.get("username", "")
-            if self._is_ignored_account(username):
+            if is_sql_auth_event(event):
+                if not (username or "").strip():
+                    event["username"] = "unknown"
+            elif self._is_ignored_account(username):
                 self._stats["events_filtered"] += 1
                 return
 
@@ -434,6 +438,15 @@ class EventLogWatcher:
         """
         try:
             xml_str = win32evtlog.EvtRender(handle, win32evtlog.EvtRenderEventXml)
+            return self.parse_event_xml(xml_str)
+        except Exception as e:
+            log(f"[EVENTLOG] Parse error: {e}")
+            return None
+
+    @classmethod
+    def parse_event_xml(cls, xml_str: str) -> Optional[dict]:
+        """Parse an EvtRender XML string (also used by unit tests)."""
+        try:
             root = ET.fromstring(xml_str)
 
             # XML namespaces
@@ -464,13 +477,18 @@ class EventLogWatcher:
             data_section = root.find("e:EventData", ns)
             if data_section is not None:
                 anon_parts = []
+                anon_idx = 0
                 for data_el in data_section.findall("e:Data", ns):
                     name = data_el.get("Name", "")
                     value = data_el.text or ""
                     if name:
                         event_data[name] = value
-                    elif value:
-                        anon_parts.append(value)
+                    else:
+                        # Unnamed <Data> (MSSQL 18456: login, reason, [CLIENT: ip])
+                        anon_idx += 1
+                        event_data.setdefault(f"Param{anon_idx}", value)
+                        if value:
+                            anon_parts.append(value)
                 if anon_parts and "Message" not in event_data:
                     event_data["Message"] = " ".join(anon_parts)
 
@@ -576,17 +594,11 @@ class EventLogWatcher:
         if ip and ip not in ("-", "::1", "127.0.0.1", ""):
             return ip
 
-        # MSSQL events often have client info in message text
+        # MSSQL events: "[CLIENT: 1.2.3.4]" in an unnamed <Data> / message text
         if event_id in (18453, 18456):
-            # Pattern: "CLIENT: 1.2.3.4"
-            for key in ("Message", "EventMessage"):
-                msg = data.get(key, "")
-                if "CLIENT:" in msg.upper():
-                    parts = msg.upper().split("CLIENT:")
-                    if len(parts) > 1:
-                        ip_part = parts[1].strip().strip("[]").split("]")[0].strip()
-                        if ip_part and ip_part not in ("-", "::1", "127.0.0.1"):
-                            return ip_part
+            ip_sql = mssql_client_ip(data)
+            if ip_sql:
+                return ip_sql
 
         # RDP events
         if event_id == 1149:
@@ -633,9 +645,9 @@ class EventLogWatcher:
         if not username:
             username = data.get("UserName", "")
 
-        # MSSQL — login name from event data
+        # MSSQL — login name from the first unnamed <Data> or message text
         if event_id in (18453, 18456) and not username:
-            username = data.get("Param1", "")
+            username = mssql_login_name(data)
 
         # RDP 1149
         if event_id == 1149:
@@ -871,3 +883,51 @@ class EventLogWatcher:
             if upper.startswith(prefix.upper()):
                 return True
         return False
+
+
+# ── MSSQL 18456 helpers (unnamed EventData) ───────────────────────
+import re as _re_sql
+
+_SQL_LOGIN_RE = _re_sql.compile(r"Login failed for user '([^']*)'", _re_sql.IGNORECASE)
+_SQL_CLIENT_RE = _re_sql.compile(r"\[?\s*CLIENT:\s*([0-9A-Fa-f.:]+)\s*\]?", _re_sql.IGNORECASE)
+_SQL_EVENT_IDS = (18453, 18456)
+
+
+def mssql_client_ip(data: dict) -> str:
+    """IP from "[CLIENT: x]" in any Param*/Message field; '' for local/none."""
+    if not isinstance(data, dict):
+        return ""
+    keys = [k for k in data if k.startswith("Param")] + ["Message", "EventMessage"]
+    for key in keys:
+        m = _SQL_CLIENT_RE.search(str(data.get(key) or ""))
+        if m:
+            ip = m.group(1).strip().rstrip(".")
+            if ip and ip not in ("-", "::1", "127.0.0.1"):
+                return ip
+    return ""
+
+
+def mssql_login_name(data: dict) -> str:
+    """Login from 'Login failed for user ...' or the first unnamed <Data>."""
+    if not isinstance(data, dict):
+        return ""
+    for key in ("Message", "EventMessage"):
+        m = _SQL_LOGIN_RE.search(str(data.get(key) or ""))
+        if m:
+            return m.group(1).strip()
+    p1 = str(data.get("Param1") or "").strip()
+    if p1 and "CLIENT:" not in p1.upper() and not p1.lower().startswith("reason:"):
+        return p1
+    return ""
+
+
+def is_sql_auth_event(event: dict) -> bool:
+    try:
+        if int(event.get("event_id") or 0) in _SQL_EVENT_IDS:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return (event.get("event_type") == "sql_failed_logon") or (
+        str(event.get("target_service") or "").upper() in ("MSSQL", "MYSQL")
+        and str(event.get("result") or "") == "failure"
+    )

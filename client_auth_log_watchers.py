@@ -185,6 +185,7 @@ class AuthLogWatcher:
             "mssql_count": len(paths["mssql"]),
             "mysql_access_denied_tail": denied_tail,
             "mysql_logging_hint": hint,
+            "attempts": int(self._stats.get("attempts", 0)),
             "scans": int(self._stats.get("scans", 0)),
             "emits": int(self._stats.get("emits", 0)),
             "errors": int(self._stats.get("errors", 0)),
@@ -593,8 +594,12 @@ class AuthLogWatcher:
         # IPv6 compressed — pass through if not loopback
         if ":" in h and h not in ("::1",):
             return h
-        # Hostname from MySQL — still useful for Attacks username/IP column
+        # Hostname from MySQL (skip-name-resolve off) → resolve to an IP so the
+        # rule engine / firewall can actually block it. Unresolvable → keep name.
         if h.lower() not in _LOOPBACK:
+            ip = resolve_host_cached(h)
+            if ip and ip not in ("127.0.0.1",):
+                return ip
             return h
         return ""
 
@@ -611,15 +616,9 @@ class AuthLogWatcher:
         logon_process: str,
         line: str,
     ) -> None:
-        now = time.time()
-        dedup = f"{service}|{source_ip}|{username.lower()}"
-        last = float(self._seen_keys.get(dedup, 0))
-        if now - last < 10.0:
-            return
-        self._seen_keys[dedup] = now
-        if len(self._seen_keys) > 2048:
-            cutoff = now - 600
-            self._seen_keys = {k: t for k, t in self._seen_keys.items() if t >= cutoff}
+        # Every attempt feeds the rule engine (burst = N attempts, not 1).
+        # Attacks-list / e-mail rate limiting happens in ThreatEngine reporting.
+        self._stats["attempts"] = int(self._stats.get("attempts", 0)) + 1
         try:
             from client_service_ports import get_listen_port
             port = get_listen_port(service, port_default)
@@ -649,3 +648,41 @@ class AuthLogWatcher:
             self._stats["emits"] = int(self._stats.get("emits", 0)) + 1
         except Exception as exc:
             log(f"[AUTHLOG] on_event error: {exc}")
+
+
+# ── Hostname → IP (MySQL logs host names when name resolution is on) ──
+_RESOLVE_CACHE: Dict[str, Tuple[float, str]] = {}
+_RESOLVE_TTL = 3600.0
+_RESOLVE_NEG_TTL = 300.0
+
+
+def resolve_host_cached(host: str, resolver=None) -> str:
+    """Resolve host → IPv4/IPv6 string (cached, ~2s budget); '' when unresolved."""
+    h = (host or "").strip().strip("[]").rstrip(".")
+    if not h:
+        return ""
+    now = time.time()
+    hit = _RESOLVE_CACHE.get(h.lower())
+    if hit and hit[0] > now:
+        return hit[1]
+    ip = ""
+    try:
+        if resolver is not None:
+            ip = str(resolver(h) or "")
+        else:
+            import socket
+            old = socket.getdefaulttimeout()
+            socket.setdefaulttimeout(2.0)
+            try:
+                infos = socket.getaddrinfo(h, None)
+            finally:
+                socket.setdefaulttimeout(old)
+            v4 = [i[4][0] for i in infos if i[0] == socket.AF_INET]
+            ip = (v4 or [i[4][0] for i in infos] or [""])[0]
+    except Exception:
+        ip = ""
+    _RESOLVE_CACHE[h.lower()] = (now + (_RESOLVE_TTL if ip else _RESOLVE_NEG_TTL), ip)
+    if len(_RESOLVE_CACHE) > 4096:
+        for k in list(_RESOLVE_CACHE)[:1024]:
+            _RESOLVE_CACHE.pop(k, None)
+    return ip

@@ -128,6 +128,7 @@ def apply_block_rules(threat_engine, rules: Optional[List[dict]], *, source: str
 
 def apply_protection_payload(threat_engine, payload: Optional[dict], *, source: str = "") -> int:
     """Extract block_rules from protection/config payload, persist, apply."""
+    apply_sql_protection_extras(threat_engine, payload)
     rules = extract_block_rules(payload)
     if rules is None:
         return 0
@@ -146,3 +147,18 @@ def hydrate_threat_engine_from_store(threat_engine) -> int:
     if not rules:
         return 0
     return apply_block_rules(threat_engine, rules, source="programdata")
+
+
+def apply_sql_protection_extras(threat_engine, payload: Optional[dict]) -> None:
+    """protection.long_window_rules / protection.sql_privileged_first_fail (contract 1.4.107)."""
+    if threat_engine is None or not isinstance(payload, dict):
+        return
+    prot = payload.get("protection") if isinstance(payload.get("protection"), dict) else payload
+    try:
+        if "long_window_rules" in prot and hasattr(threat_engine, "update_long_window_rules"):
+            lw = prot.get("long_window_rules")
+            threat_engine.update_long_window_rules(lw if isinstance(lw, list) else None)
+        if "sql_privileged_first_fail" in prot and hasattr(threat_engine, "update_sql_priv_first_fail"):
+            threat_engine.update_sql_priv_first_fail(prot.get("sql_privileged_first_fail"))
+    except Exception as e:
+        log(f"[PROTECTION] sql extras skip: {e}")

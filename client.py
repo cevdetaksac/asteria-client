@@ -303,6 +303,11 @@ class CloudHoneypotClient:
                     on_alert=self.alert_pipeline.handle_alert,
                     on_auth_fail_report=self.service_manager.enqueue_attack_report,
                 )
+                try:
+                    from client_netports import service_exposed
+                    self.threat_engine.set_exposure_checker(service_exposed)
+                except Exception as xe:
+                    log(f"[NETPORTS] exposure checker skip: {xe}")
                 self.event_watcher = EventLogWatcher(
                     on_event=self.threat_engine.process_event,
                 )

@@ -39,7 +39,7 @@ _HONEYPOT_PREFIXES: Tuple[str, ...] = (
 _VALID_PROFILES = frozenset({"domain", "private", "public", "all"})
 _VALID_STATE = frozenset({"on", "off"})
 _VALID_ACTION = frozenset({"block", "allow"})
-_VALID_RULE_OPS = frozenset({"enable", "disable", "delete", "add"})
+_VALID_RULE_OPS = frozenset({"enable", "disable", "delete", "add", "edit"})
 
 _NETSH_PROFILE = {
     "domain": "domainprofile",
@@ -65,10 +65,26 @@ def match_asteria_prefix(name: str) -> Optional[str]:
     return None
 
 
+def rule_stable_id(rule: dict) -> str:
+    """Deterministic short id from name+direction+ports+remote (netsh has no GUID)."""
+    import hashlib
+    parts = [
+        str(rule.get("name") or ""),
+        str(rule.get("direction") or "In"),
+        str(rule.get("local_port") or "Any"),
+        str(rule.get("remote_address") or "Any"),
+        str(rule.get("protocol") or "Any"),
+        str(rule.get("action") or ""),
+        str(rule.get("program") or "Any"),
+    ]
+    h = hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:16]
+    return f"fw-{h}"
+
+
 def firewall_rule_requires_confirm(params: Optional[dict] = None) -> bool:
-    """True for delete/add (C-FW-RULE-2); False for enable/disable."""
+    """True for delete/add/edit (C-FW-RULE-2 / 1.4.107); False for enable/disable."""
     op = str((params or {}).get("op") or "").strip().lower()
-    return op in ("delete", "add")
+    return op in ("delete", "add", "edit", "upsert", "create")
 
 
 def _utc_now_iso() -> str:
@@ -213,6 +229,9 @@ def parse_rules_netsh(text: str, default_direction: str = "In") -> List[dict]:
             # 1.4.40 convenience field
             if prefix:
                 current["prefix"] = prefix
+            # Stable ID so ops don't collide on duplicate names (contract 1.4.107)
+            current["id"] = rule_stable_id(current)
+            current.setdefault("guid", current["id"])
             rules.append(current)
         current = {}
 
@@ -600,22 +619,45 @@ def _dir_netsh(direction: Optional[str]) -> Optional[str]:
 
 
 def firewall_rule(params: Optional[dict] = None) -> dict:
-    """Mutate a single rule (C-FW-RULE-1..5)."""
+    """Mutate a single rule (C-FW-RULE-1..5 / 1.4.107 edit+id+undo)."""
     params = params or {}
+    # Undo path
+    if params.get("undo_id") and (params.get("restore") or params.get("op") == "undo"):
+        return firewall_undo(str(params["undo_id"]))
     op = str(params.get("op") or "").strip().lower()
     if op not in _VALID_RULE_OPS:
         return {
             "ok": False,
             "error": "invalid_op",
-            "message": f"op must be enable|disable|delete|add, got '{params.get('op')}'",
+            "message": f"op must be enable|disable|delete|add|edit, got '{params.get('op')}'",
         }
 
     if op == "add":
-        return _firewall_rule_add(params)
+        g = guard_firewall_mutation(op="add", params=params)
+        if not g.get("ok"):
+            return g
+        result = _firewall_rule_add(params)
+        return _attach_undo(result, op="add", params=params)
+
+    if op == "edit":
+        return _firewall_rule_edit(params)
 
     name = str(params.get("name") or "").strip()
+    rule_id = str(params.get("id") or params.get("guid") or "").strip()
+    if not name and rule_id:
+        resolved = resolve_rule_by_id(rule_id, direction=params.get("direction"))
+        if not resolved:
+            return {"ok": False, "error": "rule_not_found", "message": f"id {rule_id} not found"}
+        name = str(resolved.get("name") or "")
+        params = dict(params)
+        params["name"] = name
+        if not params.get("direction"):
+            params["direction"] = resolved.get("direction")
     if not name:
-        return {"ok": False, "error": "missing_name", "message": "name is required"}
+        return {"ok": False, "error": "missing_name", "message": "name or id is required"}
+    g = guard_firewall_mutation(op=op, params=params)
+    if not g.get("ok"):
+        return g
 
     direction = params.get("direction")
     dflag = _dir_netsh(direction)
@@ -647,12 +689,14 @@ def firewall_rule(params: Optional[dict] = None) -> dict:
                     "name": name,
                     "op": op,
                 }
-        return {
+        result = {
             "ok": True,
             "name": name,
             "op": op,
             "enabled": op == "enable",
+            "id": rule_stable_id({"name": name, "direction": params.get("direction") or "In"}),
         }
+        return _attach_undo(result, op=op, params=params)
 
     # delete
     cmd = ["netsh", "advfirewall", "firewall", "delete", "rule", f"name={name}"]
@@ -668,7 +712,9 @@ def firewall_rule(params: Optional[dict] = None) -> dict:
             "name": name,
             "op": op,
         }
-    return {"ok": True, "name": name, "op": "delete"}
+    result = {"ok": True, "name": name, "op": "delete",
+              "id": rule_stable_id({"name": name, "direction": params.get("direction") or "In"})}
+    return _attach_undo(result, op="delete", params=params)
 
 
 def _firewall_rule_add(params: dict) -> dict:
@@ -743,3 +789,385 @@ def _firewall_rule_add(params: dict) -> dict:
         "action": action.capitalize(),
         "asteria_prefix": match_asteria_prefix(name),
     }
+
+
+# ── ID resolve / edit / undo / self-lockout (contract 1.4.107) ─────
+
+import json as _json
+import os as _os
+import threading as _threading
+import time as _time
+import uuid as _uuid
+
+_FW_UNDO_DIR = _os.path.join(
+    _os.environ.get("PROGRAMDATA", r"C:\ProgramData"), "Asteria", "fw_undo"
+)
+_DEAD_MAN: Dict[str, _threading.Timer] = {}
+_DEAD_MAN_LOCK = _threading.Lock()
+
+
+def resolve_rule_by_id(rule_id: str, direction: Optional[str] = None) -> Optional[dict]:
+    dirs = []
+    if direction:
+        dirs = [_norm_direction(str(direction), "In")]
+    else:
+        dirs = ["In", "Out"]
+    for d in dirs:
+        ok, rules = _enumerate_rules(d)
+        if not ok:
+            continue
+        for r in rules:
+            if r.get("id") == rule_id or r.get("guid") == rule_id:
+                return r
+    return None
+
+
+def _firewall_rule_edit(params: dict) -> dict:
+    """Set-NetFirewallRule / AddressFilter by id or name (remote_address etc.)."""
+    name = str(params.get("name") or "").strip()
+    rule_id = str(params.get("id") or params.get("guid") or "").strip()
+    resolved = None
+    if rule_id:
+        resolved = resolve_rule_by_id(rule_id, direction=params.get("direction"))
+        if not resolved:
+            return {"ok": False, "error": "rule_not_found", "message": f"id {rule_id} not found"}
+        name = str(resolved.get("name") or name)
+    if not name:
+        return {"ok": False, "error": "missing_name", "message": "name or id is required"}
+
+    g = guard_firewall_mutation(op="edit", params={**params, "name": name,
+                                                   "remote_address": params.get("remote_address"),
+                                                   "local_port": (resolved or {}).get("local_port")})
+    if not g.get("ok"):
+        return g
+
+    # Snapshot before change
+    before = resolved or {"name": name, "direction": params.get("direction") or "In",
+                          "remote_address": params.get("remote_address_before")}
+    changes = {}
+    for key_ps, key_param in (
+        ("RemoteAddress", "remote_address"),
+        ("LocalAddress", "local_address"),
+        ("LocalPort", "local_port"),
+        ("RemotePort", "remote_port"),
+        ("Protocol", "protocol"),
+        ("Action", "action"),
+        ("Enabled", "enabled"),
+        ("Profile", "profile"),
+        ("DisplayName", "display_name"),
+    ):
+        if key_param in params and params.get(key_param) is not None:
+            changes[key_ps] = params.get(key_param)
+
+    if not changes:
+        return {"ok": False, "error": "no_changes", "message": "provide at least one editable field"}
+
+    # Prefer PowerShell Set-NetFirewallRule (handles AddressFilter cleanly)
+    assigns = []
+    for k, v in changes.items():
+        if k == "Enabled":
+            assigns.append(f"-Enabled {'True' if bool(v) else 'False'}")
+        elif k == "Action":
+            a = "Block" if str(v).lower() == "block" else "Allow"
+            assigns.append(f"-Action {a}")
+        elif k in ("RemoteAddress", "LocalAddress"):
+            # Set-NetFirewallAddressFilter via pipeline
+            continue
+        else:
+            assigns.append(f"-{k} '{str(v).replace(chr(39), '')}'")
+
+    ps = f"Get-NetFirewallRule -DisplayName '{name.replace(chr(39), '')}' -ErrorAction Stop"
+    if assigns:
+        ps_set = ps + " | Set-NetFirewallRule " + " ".join(assigns)
+    else:
+        ps_set = "$null"
+    rem = changes.get("RemoteAddress")
+    loc = changes.get("LocalAddress")
+    if rem is not None or loc is not None:
+        filt = []
+        if rem is not None:
+            filt.append(f"-RemoteAddress '{str(rem).replace(chr(39), '')}'")
+        if loc is not None:
+            filt.append(f"-LocalAddress '{str(loc).replace(chr(39), '')}'")
+        ps_addr = (
+            f"Get-NetFirewallRule -DisplayName '{name.replace(chr(39), '')}' "
+            f"| Get-NetFirewallAddressFilter "
+            f"| Set-NetFirewallAddressFilter {' '.join(filt)}"
+        )
+    else:
+        ps_addr = "$null"
+
+    script = f"try {{ {ps_set}; {ps_addr}; 'OK' }} catch {{ $_.Exception.Message; exit 1 }}"
+    rc, out, err = run_cmd(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", script], timeout=90,
+    )
+    if rc != 0:
+        # Fallback: netsh set rule new remoteip=…
+        if rem is not None:
+            cmd = [
+                "netsh", "advfirewall", "firewall", "set", "rule",
+                f"name={name}", "new", f"remoteip={rem}",
+            ]
+            rc2, out2, err2 = run_cmd(cmd, timeout=60)
+            if rc2 != 0:
+                return {
+                    "ok": False, "error": "edit_failed",
+                    "message": (err or out or err2 or out2 or "edit failed")[:300],
+                    "name": name, "op": "edit",
+                }
+        else:
+            return {
+                "ok": False, "error": "edit_failed",
+                "message": (err or out or "edit failed")[:300],
+                "name": name, "op": "edit",
+            }
+
+    result = {
+        "ok": True, "name": name, "op": "edit", "changes": changes,
+        "id": rule_id or rule_stable_id({"name": name, "direction": params.get("direction") or "In"}),
+        "before": {
+            "remote_address": before.get("remote_address"),
+            "local_address": before.get("local_address"),
+            "enabled": before.get("enabled"),
+            "action": before.get("action"),
+        },
+    }
+    return _attach_undo(result, op="edit", params={**params, "name": name, "before": result["before"]})
+
+
+def _attach_undo(result: dict, *, op: str, params: dict) -> dict:
+    if not result.get("ok"):
+        return result
+    try:
+        undo_id = str(_uuid.uuid4())
+        snap = {
+            "kind": "firewall_rule", "op": op, "name": result.get("name") or params.get("name"),
+            "direction": params.get("direction") or "In",
+            "before": params.get("before") or result.get("before") or {},
+            "params": {k: params.get(k) for k in (
+                "remote_address", "local_address", "local_port", "action", "enabled", "protocol"
+            ) if k in params},
+            "created_at": _time.time(),
+        }
+        # For add: undo = delete the created rule
+        # For delete/disable: undo = re-add / re-enable (best effort: store name)
+        # For edit: undo = restore before.remote_address
+        _os.makedirs(_FW_UNDO_DIR, exist_ok=True)
+        with open(_os.path.join(_FW_UNDO_DIR, f"{undo_id}.json"), "w", encoding="utf-8") as fh:
+            _json.dump(snap, fh)
+        result["undo_id"] = undo_id
+        # Dead-man on risky edits (RDP remote narrowed / disabled)
+        if _is_risky_rule_change(op, params):
+            arm_firewall_dead_man(undo_id, minutes=5)
+            result["dead_man_minutes"] = 5
+    except Exception:
+        pass
+    return result
+
+
+def firewall_undo(undo_id: str) -> dict:
+    path = _os.path.join(_FW_UNDO_DIR, f"{undo_id}.json")
+    if not _os.path.isfile(path):
+        return {"ok": False, "error": "UNDO_MISSING", "message": f"undo_id {undo_id} yok"}
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            snap = _json.load(fh)
+    except Exception as e:
+        return {"ok": False, "error": "UNDO_BAD", "message": str(e)}
+    op = snap.get("op")
+    name = snap.get("name") or ""
+    before = snap.get("before") or {}
+    ok = True
+    detail = ""
+    if op == "add":
+        rc, out, err = run_cmd(
+            ["netsh", "advfirewall", "firewall", "delete", "rule", f"name={name}"], 60,
+        )
+        ok = rc == 0
+        detail = "deleted created rule" if ok else (err or out)
+    elif op == "delete":
+        # Cannot fully recreate arbitrary rules; best effort no-op message
+        ok = False
+        detail = "delete undo not fully reconstructable — restore from snapshot manually"
+    elif op in ("enable", "disable"):
+        enable = "yes" if op == "disable" else "no"  # invert
+        # If we disabled, re-enable; if we enabled, re-disable
+        rc, out, err = run_cmd(
+            ["netsh", "advfirewall", "firewall", "set", "rule",
+             f"name={name}", "new", f"enable={enable}"], 60,
+        )
+        ok = rc == 0
+        detail = f"enable={enable}"
+    elif op == "edit":
+        rem = before.get("remote_address")
+        if rem is not None:
+            rc, out, err = run_cmd(
+                ["netsh", "advfirewall", "firewall", "set", "rule",
+                 f"name={name}", "new", f"remoteip={rem}"], 60,
+            )
+            ok = rc == 0
+            detail = f"remoteip→{rem}"
+        else:
+            ok = False
+            detail = "no before.remote_address"
+    try:
+        _os.remove(path)
+    except OSError:
+        pass
+    cancel_firewall_dead_man(undo_id)
+    return {"ok": ok, "op": "undo", "name": name, "undo_id": undo_id, "message": detail,
+            "error": None if ok else "UNDO_FAILED"}
+
+
+def _is_risky_rule_change(op: str, params: dict) -> bool:
+    lp = str(params.get("local_port") or "")
+    name = str(params.get("name") or "").lower()
+    if "3389" in lp or "remote desktop" in name or "term" in name:
+        if op in ("disable", "delete", "edit"):
+            return True
+    return False
+
+
+def _management_ips(params: Optional[dict] = None) -> List[str]:
+    ips = []
+    params = params or {}
+    for key in ("management_ip", "operator_ip", "client_ip"):
+        v = str(params.get(key) or "").strip()
+        if v:
+            ips.append(v)
+    try:
+        from client_constants import MANAGEMENT_IP as _MIP
+        if _MIP:
+            ips.append(str(_MIP).strip())
+    except Exception:
+        pass
+    # Last known public IP of this host (egress) — never used as management
+    return [i for i in ips if i]
+
+
+def guard_firewall_mutation(*, op: str, params: dict) -> dict:
+    """Refuse changes that would lock the operator out of RDP or cut Asteria WSS."""
+    force = bool(params.get("force"))
+    confirm_name = str(params.get("confirm_name") or "").strip()
+    name = str(params.get("name") or "")
+    lp = str(params.get("local_port") or "")
+    rem = str(params.get("remote_address") or "")
+    program = str(params.get("program") or "")
+    direction = _norm_direction(str(params.get("direction") or "In"), "In")
+
+    # Never block outbound 443 / asteria.run
+    if direction == "Out" and op in ("add", "edit"):
+        action = str(params.get("action") or "").lower()
+        rp = str(params.get("remote_port") or "")
+        if action == "block" and ("443" in rp or rp.lower() in ("any", "")):
+            hostish = rem.lower()
+            if (not rem) or "asteria.run" in hostish or hostish in ("any", ""):
+                if not (force and confirm_name):
+                    return {
+                        "ok": False, "error": "GUARD_ASTERIA_443",
+                        "code": "GUARD_ASTERIA_443",
+                        "message": "Outbound 443 / asteria.run cannot be blocked "
+                                   "(override: force+confirm_name)",
+                    }
+
+    # RDP inbound allow — only when the rule actually targets the RDP listen port.
+    if not lp and name:
+        try:
+            resolved = next(
+                (r for r in (_enumerate_rules(direction)[1] or [])
+                 if (r.get("name") or "") == name),
+                None,
+            )
+            if resolved:
+                lp = str(resolved.get("local_port") or "")
+        except Exception:
+            pass
+    try:
+        from client_netports import listen_port_for
+        rdp_port = str(listen_port_for("RDP") or 3389)
+    except Exception:
+        rdp_port = "3389"
+    ports = {x.strip() for x in lp.split(",") if x.strip()}
+    is_rdp = (rdp_port in ports) or name.lower().startswith(f"ar-port-{rdp_port}")
+    if is_rdp and op in ("disable", "delete"):
+        if not (force and confirm_name):
+            return {
+                "ok": False, "error": "GUARD_RDP",
+                "code": "GUARD_RDP",
+                "message": "Refusing to disable/delete an RDP allow rule "
+                           "(override: force+confirm_name matching server)",
+            }
+    if is_rdp and op == "edit" and rem:
+        mgmt = set(_management_ips(params))
+        rem_set = {x.strip() for x in rem.split(",") if x.strip()}
+        if mgmt and not (mgmt & rem_set) and rem.lower() not in ("any",):
+            if not (force and confirm_name):
+                return {
+                    "ok": False, "error": "GUARD_RDP_MGMT",
+                    "code": "GUARD_RDP_MGMT",
+                    "message": f"Edit would drop management IP(s) {sorted(mgmt)} from RDP allow",
+                }
+    return {"ok": True}
+
+
+def guard_port_change(*, port: int, mode: str, ips: List[str], force: bool = False) -> dict:
+    """port_expose self-lockout: RDP close / ips without management IP."""
+    try:
+        from client_netports import listen_port_for
+        rdp = listen_port_for("RDP")
+    except Exception:
+        rdp = 3389
+    if int(port) != int(rdp):
+        return {"ok": True}
+    if mode == "close" and not force:
+        return {
+            "ok": False, "code": "GUARD_RDP_CLOSE",
+            "message": "Refusing to close RDP port (override with force+typed confirm)",
+        }
+    if mode == "ips":
+        mgmt = set(_management_ips({"ips": ips}))
+        # Also treat listed ips as the intended allow-list — operator must include self
+        # We don't know management IP here unless provided; require force if empty mgmt
+        if not ips:
+            return {"ok": False, "code": "GUARD_RDP_IPS", "message": "ips empty"}
+    return {"ok": True}
+
+
+def arm_firewall_dead_man(undo_id: str, minutes: int = 5) -> None:
+    cancel_firewall_dead_man(undo_id)
+
+    def _fire():
+        try:
+            # If cloud is reachable, leave the change; else undo
+            reachable = False
+            try:
+                from client_contain import _cloud_reachable
+                reachable = bool(_cloud_reachable())
+            except Exception:
+                reachable = False
+            if not reachable:
+                firewall_undo(undo_id)
+                try:
+                    from client_helpers import log
+                    log(f"[FW-DEADMAN] auto-undid {undo_id} (cloud unreachable)")
+                except Exception:
+                    pass
+        finally:
+            with _DEAD_MAN_LOCK:
+                _DEAD_MAN.pop(undo_id, None)
+
+    t = _threading.Timer(max(30, int(minutes) * 60), _fire)
+    t.daemon = True
+    with _DEAD_MAN_LOCK:
+        _DEAD_MAN[undo_id] = t
+    t.start()
+
+
+def cancel_firewall_dead_man(undo_id: str) -> None:
+    with _DEAD_MAN_LOCK:
+        t = _DEAD_MAN.pop(undo_id, None)
+    if t:
+        try:
+            t.cancel()
+        except Exception:
+            pass

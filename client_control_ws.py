@@ -23,6 +23,35 @@ from urllib.parse import urlencode
 
 from client_helpers import log
 
+
+def _system_proxies() -> dict:
+    """Proxy map for websocket-client / HTTPS (env + Windows system proxy)."""
+    try:
+        from urllib.request import getproxies
+        proxies = dict(getproxies() or {})
+    except Exception:
+        proxies = {}
+    # Prefer HTTPS proxy for wss
+    out = {}
+    for k in ("https", "http", "all"):
+        if proxies.get(k):
+            out[k] = proxies[k]
+    # Explicit env wins
+    import os as _os
+    for env_k, key in (
+        ("HTTPS_PROXY", "https"), ("https_proxy", "https"),
+        ("HTTP_PROXY", "http"), ("http_proxy", "http"),
+        ("ALL_PROXY", "all"), ("all_proxy", "all"),
+    ):
+        if _os.environ.get(env_k):
+            out[key] = _os.environ[env_k]
+    return out
+
+
+def _http_proxy_url() -> str:
+    p = _system_proxies()
+    return p.get("https") or p.get("http") or p.get("all") or ""
+
 PROTOCOL_V = 1
 PING_INTERVAL_SEC = 25.0
 RECV_TIMEOUT_SEC = 0.5
@@ -104,6 +133,8 @@ class AgentControlWebSocket:
         self._connected_since = 0.0
         self._last_rx = 0.0
         self._backoff = RECONNECT_MIN
+        self._https_fallback = False
+        self._https_fails = 0
         self._poll_fallback_sec = 5.0
         self._stats = {
             "connects": 0,
@@ -293,13 +324,27 @@ class AgentControlWebSocket:
                     import ssl
                     sslopt = {"cert_reqs": ssl.CERT_NONE}
 
-                ws = websocket.create_connection(
-                    url,
+                kw = dict(
+                    url=url,
                     timeout=15,
                     sslopt=sslopt,
                     enable_multithread=True,
                     header=[f"Authorization: Bearer {token}"],
                 )
+                proxy = _http_proxy_url()
+                if proxy:
+                    try:
+                        from urllib.parse import urlparse as _up
+                        pu = _up(proxy if "://" in proxy else ("http://" + proxy))
+                        if pu.hostname:
+                            kw["http_proxy_host"] = pu.hostname
+                            kw["http_proxy_port"] = pu.port or (443 if pu.scheme == "https" else 80)
+                            if pu.username:
+                                kw["http_proxy_auth"] = (pu.username, pu.password or "")
+                            self._stats["proxy"] = f"{pu.hostname}:{kw['http_proxy_port']}"
+                    except Exception as pe:
+                        _warn(f"proxy parse skip: {pe}")
+                ws = websocket.create_connection(**kw)
                 with self._ws_lock:
                     self._ws = ws
                 self._connected = True
@@ -511,3 +556,30 @@ class AgentControlWebSocket:
             return str(VERSION)
         except Exception:
             return ""
+
+
+def https_long_poll_pending(api_client, token: str, timeout: int = 25) -> list:
+    """HTTPS long-poll fallback when WSS is down (contract 1.4.107).
+
+    Blocks up to *timeout* seconds on GET /api/commands/pending?wait=N.
+    Cloud may ignore wait= and return immediately — still a valid fallback.
+    """
+    if not api_client or not token:
+        return []
+    try:
+        resp = api_client.api_request(
+            "GET", "commands/pending",
+            params={"wait": int(timeout)},
+            token=token,
+            timeout=timeout + 5,
+        )
+    except Exception:
+        return []
+    if isinstance(resp, list):
+        return [c for c in resp if isinstance(c, dict)]
+    if isinstance(resp, dict):
+        for key in ("commands", "pending", "items", "data"):
+            val = resp.get(key)
+            if isinstance(val, list):
+                return [c for c in val if isinstance(c, dict)]
+    return []

@@ -330,6 +330,29 @@ DEFAULT_BLOCK_RULES = [
 ]
 
 
+# Slow / distributed brute force: per-service long window, independent of the
+# dashboard short-window rules (honeypot on/off irrelevant).
+DEFAULT_LONG_WINDOW_RULES = [
+    {"name": "long_mssql", "services": "MSSQL", "threshold_count": 5,
+     "window_minutes": 1440, "actions": "email,block", "enabled": True},
+    {"name": "long_mysql", "services": "MYSQL", "threshold_count": 5,
+     "window_minutes": 1440, "actions": "email,block", "enabled": True},
+]
+
+# Auth-source label for /api/attack (cloud Attack.source)
+CHANNEL_SOURCE_LABELS = {
+    "mysql_error_log": "mysql_log",
+    "mysql_log": "mysql_log",
+    "mssql_errorlog": "mssql_errorlog",
+    "iis_ftp_w3c": "ftp_log",
+}
+
+
+def attack_source_for(event: dict) -> str:
+    ch = str(event.get("channel") or "").strip().lower()
+    return CHANNEL_SOURCE_LABELS.get(ch, "eventlog")
+
+
 # ── IP Context ────────────────────────────────────────────────────
 
 # Maximum number of usernames to track per IP (memory cap)
@@ -347,7 +370,7 @@ class IPContext:
     services_targeted: Set[str] = field(default_factory=set)
     usernames_tried: Set[str] = field(default_factory=set)
     threat_score: float = 0.0
-    events: deque = field(default_factory=lambda: deque(maxlen=100))
+    events: deque = field(default_factory=lambda: deque(maxlen=500))
     is_blocked: bool = False
     alerts_sent: int = 0
     last_alert_time: float = 0.0
@@ -374,6 +397,7 @@ class IPContext:
             "target_service": (
                 event.get("target_service", "") or event.get("service", "") or ""
             ),
+            "username": str(event.get("username") or "")[:64],
         })
 
         # Update counters
@@ -448,6 +472,17 @@ class ThreatEngine:
         # Real auth-fail → /api/attack rate limit: (ip, service, user) → last ts
         self._auth_fail_report_ts: Dict[str, float] = {}
         self._AUTH_FAIL_REPORT_INTERVAL = 15.0
+        # Attempts suppressed by the report rate-limit → sent as `attempts` on next report
+        self._auth_fail_suppressed: Dict[str, int] = {}
+        # Long-window (slow brute) rules — always on, independent of dashboard rules
+        self._long_window_rules: List[dict] = [dict(r) for r in DEFAULT_LONG_WINDOW_RULES]
+        # SQL: block on first failed privileged login (sa/root) when port is internet-exposed
+        self._sql_priv_first_fail: Dict[str, object] = {
+            "enabled": False, "usernames": ["sa", "root"], "services": ["MSSQL", "MYSQL"],
+        }
+        self._exposure_checker: Optional[Callable[[str], bool]] = None
+        # MSSQL writes one failed login to both ERRORLOG and Application(18456)
+        self._sql_xchan: Dict[str, deque] = {}
 
         # Urgent alert dedup: "ip:event_type" → last emit (başarılı logon spam engeli)
         self._urgent_dedup: Dict[str, float] = {}
@@ -560,6 +595,10 @@ class ThreatEngine:
                 return
 
             ip_key = source_ip if source_ip else "local"
+
+            if self._is_sql_cross_channel_duplicate(event):
+                self._stats["sql_xchan_dupes"] = int(self._stats.get("sql_xchan_dupes", 0)) + 1
+                return
 
             # ── RDP bağlantı kopma/yeniden bağlanma yönetimi ─────
             # Event 24 = rdp_session_disconnect → grace süresi başlat
@@ -1029,8 +1068,16 @@ class ThreatEngine:
         now = time.time()
         last = self._auth_fail_report_ts.get(dedup_key, 0.0)
         if now - last < self._AUTH_FAIL_REPORT_INTERVAL:
+            # Rate-limited for the Attacks list / e-mail only — count it so the
+            # next report carries the real attempt total.
+            self._auth_fail_suppressed[dedup_key] = (
+                self._auth_fail_suppressed.get(dedup_key, 0) + 1
+            )
             return
         self._auth_fail_report_ts[dedup_key] = now
+        attempts = 1 + int(self._auth_fail_suppressed.pop(dedup_key, 0) or 0)
+        if len(self._auth_fail_suppressed) > 4096:
+            self._auth_fail_suppressed.clear()
         # Bound map under scan floods
         if len(self._auth_fail_report_ts) > 4096:
             cutoff = now - 600.0
@@ -1077,7 +1124,8 @@ class ThreatEngine:
                 "service": service,
                 "port": port,
                 "timestamp": now,
-                "source": "eventlog",
+                "source": attack_source_for(event),
+                "attempts": attempts,
                 "auth_package": str(auth_package or "")[:64],
                 "logon_process": str(logon_process or "")[:64],
                 "status": str(status or "")[:32],
@@ -1211,7 +1259,148 @@ class ThreatEngine:
                 ),
                 auto_response=auto_response,
             )
-            break  # İlk eşleşen kural yeterli
+            return  # İlk eşleşen kural yeterli
+
+        # Privileged SQL login (sa/root) on an internet-exposed port → first fail blocks
+        if self._check_sql_priv_first_fail(ip, ctx, event, event_service):
+            return
+        # Slow brute force: per-service long window (default SQL 5 / 24h)
+        self._check_long_window_rules(ip, ctx, event, event_service)
+
+    # ── Long-window / privileged SQL / cross-channel helpers ─────────
+
+    def update_long_window_rules(self, rules: Optional[List[dict]]) -> None:
+        """Replace long-window rules (cloud protection.long_window_rules); None → defaults."""
+        if rules is None:
+            self._long_window_rules = [dict(r) for r in DEFAULT_LONG_WINDOW_RULES]
+            return
+        out = []
+        for r in rules:
+            if not isinstance(r, dict):
+                continue
+            try:
+                th = max(1, int(r.get("threshold_count", r.get("threshold", 5))))
+                win = max(1, int(r.get("window_minutes", 1440)))
+            except (TypeError, ValueError):
+                continue
+            out.append({
+                "name": str(r.get("name") or f"long_{r.get('services', 'svc')}").lower(),
+                "services": str(r.get("services") or r.get("service") or ""),
+                "threshold_count": th, "window_minutes": win,
+                "actions": str(r.get("actions") or "email,block"),
+                "enabled": bool(r.get("enabled", True)),
+            })
+        self._long_window_rules = out
+
+    def update_sql_priv_first_fail(self, cfg: Optional[dict]) -> None:
+        cfg = cfg if isinstance(cfg, dict) else {}
+        users = cfg.get("usernames") or ["sa", "root"]
+        if isinstance(users, str):
+            users = [u.strip() for u in users.split(",") if u.strip()]
+        self._sql_priv_first_fail = {
+            "enabled": bool(cfg.get("enabled", False)),
+            "usernames": [str(u).lower() for u in users],
+            "services": [str(x).upper() for x in (cfg.get("services") or ["MSSQL", "MYSQL"])],
+        }
+
+    def set_exposure_checker(self, fn: Optional[Callable[[str], bool]]) -> None:
+        """fn(service) → True when the service port is reachable from the internet."""
+        self._exposure_checker = fn
+
+    def _count_fails(self, ctx: "IPContext", window_sec: int, rule_services) -> int:
+        return sum(
+            1 for e in ctx.get_recent_events(window_sec)
+            if e["event_type"] in self._BLOCK_RULE_FAIL_TYPES
+            and self._fail_matches_services(e.get("target_service", ""), rule_services)
+        )
+
+    def _rule_block(self, ip, ctx, event, event_service, rule_name, description, actions):
+        self._rule_blocked_ips.add(ip)
+        self._stats["rule_blocks"] += 1
+        auto_response = []
+        if "block" in actions:
+            auto_response.append("block_ip")
+        if "email" in actions:
+            auto_response.append("notify_urgent")
+        log(f"[THREAT] Block rule '{rule_name}' triggered: IP={ip} service={event_service} — {description}")
+        self._emit_alert(
+            event=event, ctx=ctx, score=95, severity="critical",
+            rule_name=f"api_rule_{rule_name}", description=description,
+            auto_response=auto_response or ["block_ip", "notify_urgent"],
+        )
+
+    def _check_long_window_rules(self, ip, ctx, event, event_service) -> bool:
+        for rule in list(self._long_window_rules):
+            if not rule.get("enabled", True):
+                continue
+            svcs = self._rule_service_set(rule)
+            if svcs is not None and (not event_service or event_service not in svcs):
+                continue
+            window_sec = int(rule.get("window_minutes", 1440)) * 60
+            threshold = int(rule.get("threshold_count", 5))
+            n = self._count_fails(ctx, window_sec, svcs)
+            if n < threshold:
+                continue
+            actions = {a.strip().lower() for a in str(rule.get("actions") or "email,block").split(",") if a.strip()}
+            self._rule_block(
+                ip, ctx, event, event_service, rule.get("name", "long_window"),
+                f"Slow brute force: {n} failed login(s) from {ip} to {event_service} "
+                f"in {window_sec // 3600}h (threshold: {threshold})",
+                actions,
+            )
+            return True
+        return False
+
+    def _check_sql_priv_first_fail(self, ip, ctx, event, event_service) -> bool:
+        cfg = self._sql_priv_first_fail or {}
+        if not cfg.get("enabled"):
+            return False
+        if event_service not in set(cfg.get("services") or []):
+            return False
+        user = str(event.get("username") or "").strip().lower()
+        if not user or user not in set(cfg.get("usernames") or []):
+            return False
+        if event.get("event_type") == "honeypot_credential":
+            return False
+        checker = self._exposure_checker
+        try:
+            exposed = bool(checker(event_service)) if checker else False
+        except Exception:
+            exposed = False
+        if not exposed:
+            return False
+        self._rule_block(
+            ip, ctx, event, event_service, "sql_privileged_first_fail",
+            f"Privileged SQL login '{user}' failed from {ip} on internet-exposed {event_service}",
+            {"block", "email"},
+        )
+        return True
+
+    def _is_sql_cross_channel_duplicate(self, event: dict) -> bool:
+        """MSSQL logs one failed login to ERRORLOG *and* Application 18456.
+
+        Count it once: an event from one channel cancels a not-yet-matched event
+        from the other channel with the same ip+login within 3 seconds.
+        """
+        svc = str(event.get("target_service") or "").upper()
+        if svc != "MSSQL" or event.get("event_type") != "sql_failed_logon":
+            return False
+        ch = "errorlog" if str(event.get("channel") or "").lower() == "mssql_errorlog" else "eventlog"
+        key = f"{event.get('source_ip') or ''}|{str(event.get('username') or '').lower()}"
+        now = time.time()
+        q = self._sql_xchan.get(key)
+        if q is None:
+            q = self._sql_xchan[key] = deque(maxlen=64)
+        while q and now - q[0][0] > 3.0:
+            q.popleft()
+        for i, (ts, other) in enumerate(q):
+            if other != ch:
+                del q[i]
+                return True
+        q.append((now, ch))
+        if len(self._sql_xchan) > 4096:
+            self._sql_xchan = {k: v for k, v in self._sql_xchan.items() if v}
+        return False
 
     # ── Correlation ───────────────────────────────────────────────
 

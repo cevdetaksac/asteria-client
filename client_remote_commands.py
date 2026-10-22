@@ -75,6 +75,7 @@ ALLOWED_COMMANDS: Set[str] = {
     "sync_firewall_rules",
     # Firewall Management (contract ≥1.4.40 — agent/firewall-management.md)
     "list_firewall", "firewall_set_profile", "firewall_rule",
+    "port_expose", "firewall_undo", "sql_auth_diag",
     "logoff_user", "disable_account", "enable_account", "reset_password",
     "contain_user",  # IR: logoff + password reset (+ optional disable) in one shot
     "disable_all_users",  # IR panic: disable every local SAM user (excl. machine IDs)
@@ -133,6 +134,7 @@ _ADMIN_ACK_COMMANDS = frozenset({
     "enable_account", "disable_account", "reset_password",
     "isolate_host", "lift_isolation",
     "run_playbook", "undo_playbook",
+    "port_expose", "firewall_undo",
 })
 
 # Hard timeout per handler (seconds). None = no wrapper (self_update exits process).
@@ -150,6 +152,8 @@ _HANDLER_TIMEOUTS = {
     "isolate_host": 120, "lift_isolation": 120,
     "run_playbook": 300, "undo_playbook": 300,
     "list_sessions": 30, "list_processes": 45, "list_local_users": 30, "list_services": 60,
+    "port_expose": 120, "firewall_undo": 60, "sql_auth_diag": 60,
+    "list_firewall": 180, "firewall_rule": 90,
 }
 _DEFAULT_HANDLER_TIMEOUT = 300
 
@@ -182,6 +186,7 @@ _IR_URGENT_COMMANDS = frozenset({
     "unlock_ransomware_quarantine",
     "clear_firewall", "migrate_firewall_brand",
     "list_firewall", "firewall_set_profile", "firewall_rule",
+    "port_expose", "firewall_undo", "sql_auth_diag",
     "self_update", "check_update",  # dashboard update — same urgency as IR
     "remote_session_prepare", "list_local_users",
     "list_processes", "inspect_process", "list_sessions",
@@ -251,6 +256,7 @@ REQUIRES_CONFIRMATION: Set[str] = {
     "set_gui_pin", "clear_gui_pin",
     # Firewall Management — profile mutate (cloud confirm:true)
     "firewall_set_profile",
+    "port_expose",
     # Easy port relocate — TermService/RDP listen move (anti-brick golden rollback)
     "relocate_service",
 }
@@ -642,7 +648,22 @@ class RemoteCommandExecutor:
         """HTTP pending poll — safety net; primary path is control WS push."""
         while self._running:
             try:
-                commands = self._fetch_pending()
+                # When control-WS is down, use HTTPS long-poll (proxy-aware Session)
+                use_lp = False
+                try:
+                    use_lp = not (self._control_ws and self._control_ws.connected)
+                except Exception:
+                    use_lp = True
+                if use_lp:
+                    try:
+                        from client_control_ws import https_long_poll_pending
+                        commands = https_long_poll_pending(
+                            self.api_client, self.token_getter(), timeout=20,
+                        )
+                    except Exception:
+                        commands = self._fetch_pending()
+                else:
+                    commands = self._fetch_pending()
                 commands, cancelled_starts = self._coalesce_stream_starts(commands)
                 for stale in cancelled_starts:
                     self._stats["commands_received"] += 1
@@ -2270,14 +2291,15 @@ class RemoteCommandExecutor:
             n_out = len(data.get("outbound_rules") or [])
             n_ar = len(data.get("asteria_rules") or [])
             return {
-                "success": True,
+                "ok": True, "success": True, "code": "FW_LIST",
                 "message": (
                     f"Firewall inventory (in={n_in} out={n_out} asteria={n_ar})"
                 ),
                 "data": data,
             }
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {"ok": False, "success": False, "code": "FW_LIST_FAILED",
+                    "error": str(e), "message": str(e)}
 
     def _cmd_firewall_set_profile(self, params: dict) -> dict:
         """Change Domain/Private/Public/(all) profile (confirm-gated; C-FW-PROF)."""
@@ -2330,7 +2352,8 @@ class RemoteCommandExecutor:
             result = firewall_rule(params)
             if not result.get("ok"):
                 return {
-                    "success": False,
+                    "ok": False, "success": False,
+                    "code": result.get("error") or result.get("code") or "firewall_rule_failed",
                     "error": result.get("error") or "firewall_rule_failed",
                     "message": result.get("message") or "",
                     "data": result,
@@ -2345,15 +2368,89 @@ class RemoteCommandExecutor:
                 "include_counts": True,
             })
             return {
-                "success": True,
+                "ok": True, "success": True,
+                "code": "FW_RULE_" + str(result.get("op") or "ok").upper(),
                 "message": f"firewall_rule {result.get('op')} {result.get('name')}",
                 "data": {
                     "rule_change": result,
+                    "undo_id": result.get("undo_id"),
                     **snapshot,
                 },
+                "undo_id": result.get("undo_id"),
             }
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {"ok": False, "success": False, "code": "FW_RULE_ERROR",
+                    "error": str(e), "message": str(e)}
+
+    def _cmd_port_expose(self, params: dict) -> dict:
+        from client_netports import port_expose
+        # Inject management_ip from request if cloud sent it
+        return port_expose(params or {})
+
+    def _cmd_firewall_undo(self, params: dict) -> dict:
+        from client_firewall_inventory import firewall_undo
+        uid = str((params or {}).get("undo_id") or "")
+        if not uid:
+            return {"ok": False, "success": False, "code": "MISSING_UNDO",
+                    "error": "missing_undo_id", "message": "undo_id gerekli"}
+        r = firewall_undo(uid)
+        r.setdefault("success", r.get("ok"))
+        r.setdefault("code", "FW_UNDONE" if r.get("ok") else (r.get("error") or "UNDO_FAILED"))
+        return r
+
+    def _cmd_sql_auth_diag(self, params: dict) -> dict:
+        """Read-only: SQL Server audit level + 18456 counts (24h)."""
+        from client_admin_ops import std, step
+        steps = []
+        audit = {"login_mode": None, "audit_level": None, "raw": ""}
+        # xp_logininfo / registry for LoginMode; ERRORLOG count of 18456
+        ps = r"""
+$ErrorActionPreference='Continue'
+$out=@{}
+try {
+  $k=Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\MSSQL*\MSSQLServer' -ErrorAction SilentlyContinue |
+    Select-Object -First 1 LoginMode
+  if($k){ $out.login_mode=$k.LoginMode }
+} catch {}
+try {
+  $n=(Get-WinEvent -FilterHashtable @{LogName='Application'; Id=18456; StartTime=(Get-Date).AddHours(-24)} -ErrorAction SilentlyContinue |
+    Measure-Object).Count
+  $out.event_18456_24h=[int]$n
+} catch { $out.event_18456_24h=-1 }
+try {
+  $paths=Get-ChildItem 'C:\Program Files\Microsoft SQL Server\*\MSSQL\Log\ERRORLOG' -ErrorAction SilentlyContinue
+  $c=0
+  foreach($p in $paths){
+    $c += (Select-String -Path $p.FullName -Pattern 'Login failed for user' -SimpleMatch -ErrorAction SilentlyContinue | Measure-Object).Count
+  }
+  $out.errorlog_login_failed_lines=[int]$c
+} catch { $out.errorlog_login_failed_lines=-1 }
+$out | ConvertTo-Json -Compress
+"""
+        try:
+            import subprocess
+            p = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                capture_output=True, text=True, timeout=45,
+                creationflags=0x08000000,
+            )
+            import json as _json
+            raw = (p.stdout or "").strip()
+            if raw:
+                audit = _json.loads(raw)
+            steps.append(step("query", p.returncode == 0, raw[:200]))
+        except Exception as e:
+            steps.append(step("query", False, str(e)))
+            return std(False, "DIAG_FAILED", str(e), steps=steps)
+        # AuthLogWatcher health
+        health = {}
+        try:
+            # Prefer live watcher via client singleton if present
+            from client_auth_log_watchers import AuthLogWatcher
+            health = {"note": "use system_health.auth_log_health for live paths"}
+        except Exception:
+            pass
+        return std(True, "SQL_AUTH_DIAG", "ok", steps=steps, audit=audit, auth_log=health)
 
     def _cmd_migrate_firewall_brand(self, params: dict) -> dict:
         """Force the idempotent HP→AR migration and snapshot sync."""

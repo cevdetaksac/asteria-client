@@ -567,7 +567,7 @@ class AsteriaAPIClient:
             }
             for key in (
                 "source", "logon_type", "auth_package", "logon_process",
-                "status", "substatus", "workstation",
+                "status", "substatus", "workstation", "attempts",
             ):
                 val = extra.get(key)
                 if val is None or val == "":
