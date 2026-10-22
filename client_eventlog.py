@@ -444,7 +444,7 @@ class EventLogWatcher:
             return None
 
     @classmethod
-    def parse_event_xml(cls, xml_str: str) -> Optional[dict]:
+    def parse_event_xml(self, xml_str: str) -> Optional[dict]:
         """Parse an EvtRender XML string (also used by unit tests)."""
         try:
             root = ET.fromstring(xml_str)
