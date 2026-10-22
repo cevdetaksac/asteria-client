@@ -1213,10 +1213,16 @@ class FirewallAgent:
                 if ip:
                     ips = [ip]
             suffix = str(r.get("suffix", ""))
+            try:
+                from client_block_store import report_targets_from_rule
+                _targets = report_targets_from_rule(r)
+            except Exception:
+                _targets = {}
             for ip in ips:
                 if not ip:
                     continue
                 sync_ips[ip] = {
+                    "report_ip": _targets.get(ip, ip),
                     "rule_name": r["name"],
                     "source": "dashboard" if suffix.isdigit() else "firewall",
                     "reason": (persisted.get(ip) or {}).get("reason", "firewall_rule"),
@@ -1298,7 +1304,7 @@ class FirewallAgent:
             else:
                 continue
             blocks.append({
-                "ip": ip,
+                "ip": info.get("report_ip") or ip,
                 "rule_name": info.get("rule_name", f"{BLOCK_PREFIX}{ip}"),
                 "source": info.get("source", "unknown"),
                 "reason": info.get("reason", ""),

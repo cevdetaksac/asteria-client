@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.146"  # C-BF-NET-1: SQL brute-force + Ag&Portlar + WSS proxy/HTTPS long-poll
+VERSION = "4.9.147"  # Server 2016 RD (DXGI1/GDI fallback) + /24 block report keeps prefix
 
 
 

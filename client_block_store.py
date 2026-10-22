@@ -74,6 +74,34 @@ def extract_ip_from_rule(rule: dict) -> Optional[str]:
     return ips[0] if ips else None
 
 
+def report_targets_from_rule(rule: dict) -> Dict[str, str]:
+    """bare ip -> canonical report target, keeping subnet prefixes.
+
+    Windows lists a /24 block as "a.b.c.0/24" or "a.b.c.0/255.255.255.0";
+    extract_ips_from_rule() drops the prefix for local bookkeeping, but the
+    cloud inventory must get "a.b.c.0/24" or it re-sends the block forever.
+    Host routes (/32, /128) and bare IPs map to themselves.
+    """
+    out: Dict[str, str] = {}
+    remoteip = str(rule.get("remoteip") or "").strip()
+    for part in remoteip.split(","):
+        part = part.strip()
+        if not part or "/" not in part:
+            continue
+        bare = part.split("/")[0].strip()
+        if not _looks_like_ip(bare) or bare in out:
+            continue
+        try:
+            net = ipaddress.ip_network(part, strict=False)
+        except ValueError:
+            continue
+        if net.num_addresses == 1:
+            out[bare] = str(net.network_address)
+        else:
+            out[bare] = str(net)
+    return out
+
+
 def load_blocked_map(*, force: bool = False) -> Dict[str, dict]:
     """Return ip -> {ip, rule_name, source, reason, blocked_at}.
 

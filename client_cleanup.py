@@ -508,6 +508,11 @@ class DataCleanupManager:
                     blocks = []
                     for r in remaining:
                         ip = r.get("ip") or (r.get("remoteip") or "").split("/")[0]
+                        try:
+                            from client_block_store import report_targets_from_rule
+                            ip = report_targets_from_rule(r).get(ip, ip)
+                        except Exception:
+                            pass
                         if ip:
                             blocks.append({
                                 "ip": ip,
