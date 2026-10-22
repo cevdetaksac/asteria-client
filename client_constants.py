@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.144"  # C-ADMIN-V2: admin commands own lane + hard timeouts, WinAPI create_user/logoff, exact kill, dependent-aware restart, reboot back-online
+VERSION = "4.9.145"  # C-CONTAIN-1: contain_process/release, IFEO unblock, isolate+dead-man, disable_service/delete_user cloud+UI, playbooks, admin-std results
 
 
 

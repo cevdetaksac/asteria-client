@@ -79,9 +79,12 @@ ALLOWED_COMMANDS: Set[str] = {
     "contain_user",  # IR: logoff + password reset (+ optional disable) in one shot
     "disable_all_users",  # IR panic: disable every local SAM user (excl. machine IDs)
     "kill_process", "suspend_process", "resume_process", "block_process",
+    "unblock_process", "contain_process", "release_process",
     "allow_process", "list_allowed_processes",
     "isolate_host", "lift_isolation",
     "stop_service", "start_service", "restart_service", "disable_service",
+    "delete_user",
+    "run_playbook", "undo_playbook", "list_playbooks",
     # Easy port relocate (dashboard) — stop→config→start→bind verify→golden rollback
     "relocate_service",
     "emergency_lockdown", "lift_lockdown",
@@ -124,6 +127,12 @@ _ADMIN_ACK_COMMANDS = frozenset({
     "reboot", "create_user", "kill_process", "restart_service",
     "logoff_session", "logoff_user", "logoff_all_sessions", "disconnect_session",
     "stop_service", "start_service",
+    "suspend_process", "resume_process", "block_process", "unblock_process",
+    "contain_process", "release_process",
+    "disable_service", "delete_user",
+    "enable_account", "disable_account", "reset_password",
+    "isolate_host", "lift_isolation",
+    "run_playbook", "undo_playbook",
 })
 
 # Hard timeout per handler (seconds). None = no wrapper (self_update exits process).
@@ -134,6 +143,12 @@ _HANDLER_TIMEOUTS = {
     "kill_process": 30, "create_user": 60, "reboot": 30,
     "logoff_session": 60, "logoff_user": 60, "logoff_all_sessions": 90, "disconnect_session": 30,
     "restart_service": 150, "stop_service": 60, "start_service": 60,
+    "suspend_process": 30, "resume_process": 30, "block_process": 30, "unblock_process": 30,
+    "contain_process": 120, "release_process": 120,
+    "disable_service": 60, "delete_user": 60,
+    "enable_account": 30, "disable_account": 30, "reset_password": 30,
+    "isolate_host": 120, "lift_isolation": 120,
+    "run_playbook": 300, "undo_playbook": 300,
     "list_sessions": 30, "list_processes": 45, "list_local_users": 30, "list_services": 60,
 }
 _DEFAULT_HANDLER_TIMEOUT = 300
@@ -150,8 +165,10 @@ _STREAM_COMMANDS = frozenset({
 # Incident-response: always fast poll + no rate limit (breach containment)
 _IR_URGENT_COMMANDS = frozenset({
     "kill_process", "suspend_process", "resume_process", "block_process",
+    "unblock_process", "contain_process", "release_process",
     "allow_process",
     "isolate_host", "lift_isolation",
+    "delete_user", "run_playbook", "undo_playbook", "list_playbooks",
     "logoff_user", "contain_user",
     "logoff_session", "disconnect_session", "logoff_all_sessions", "emergency_lockdown_undo",
     "block_ip", "unblock_ip",
@@ -211,7 +228,12 @@ REQUIRES_CONFIRMATION: Set[str] = {
     "emergency_lockdown_undo",
     # Process containment is only sent after explicit operator approval.
     "suspend_process",
+    "contain_process",
+    "block_process",
+    "delete_user",
+    "disable_service",
     "allow_process",
+    "run_playbook",
     # Network isolate — P2; always confirm; client hard-rejects unsafe policy
     "isolate_host",
     "lift_isolation",
@@ -388,6 +410,11 @@ class RemoteCommandExecutor:
         """Start HTTP poll + control WebSocket (push)."""
         if self._running:
             return
+        try:
+            from client_contain import resume_dead_man_if_needed
+            resume_dead_man_if_needed()
+        except Exception:
+            pass
         self._running = True
         self._poll_thread = threading.Thread(
             target=self._poll_loop,
@@ -1298,17 +1325,30 @@ class RemoteCommandExecutor:
             if sid is not None and str(sid).strip() == "0":
                 return "Cannot logoff session 0 (services)"
 
-        if cmd_type in ("kill_process", "suspend_process", "resume_process"):
-            pname = params.get("process_name", "").lower()
+        if cmd_type in ("kill_process", "suspend_process", "resume_process", "contain_process"):
+            pname = params.get("process_name", "").lower() or str(params.get("expected_image") or "").lower()
             if pname in PROTECTED_PROCESSES:
                 return f"Protected process: {pname}"
-        if cmd_type in ("suspend_process", "resume_process"):
+        if cmd_type in ("suspend_process", "resume_process", "contain_process"):
             if params.get("pid") is None:
                 return "missing_pid"
             if not (params.get("expected_image") or params.get("process_name")):
                 return "missing_expected_image"
             if params.get("process_start_time") is None:
                 return "missing_process_start_time"
+        if cmd_type == "release_process" and not params.get("undo_id"):
+            return "missing_undo_id"
+        if cmd_type == "delete_user":
+            u = (params.get("username") or "").strip()
+            if not u:
+                return "missing_username"
+            if u.upper() in PROTECTED_ACCOUNTS or u.lower() in ("administrator", "guest"):
+                return f"Protected account: {u}"
+        if cmd_type == "run_playbook":
+            if not (params.get("playbook") or params.get("playbook_id")):
+                return "missing_playbook"
+        if cmd_type == "undo_playbook" and not params.get("undo_id"):
+            return "missing_undo_id"
 
         if cmd_type in ("stop_service", "disable_service"):
             sname = params.get("service_name", "").lower()
@@ -2501,30 +2541,18 @@ class RemoteCommandExecutor:
         }
 
     def _cmd_disable_account(self, params: dict) -> dict:
+        from client_contain import disable_account
         username = self._sam_account_name(params.get("username", ""))
-        if not username:
-            return {"success": False, "ok": False, "error": "No username specified"}
-        if self.auto_response:
-            ok = self.auto_response.disable_account(username, allow_privileged=True)
-        else:
-            raw = self._run_net_user(username, "/active:no", "disabled")
-            ok = bool(raw.get("ok") or raw.get("success"))
-        return self._account_mutate_result(
-            username, want_enabled=False, ok=ok, action="disabled"
-        )
+        if username.upper() in PROTECTED_ACCOUNTS:
+            from client_admin_ops import std
+            return std(False, "PROTECTED_ACCOUNT", f"Korunan hesap: {username}", username=username)
+        return disable_account(username)
+
 
     def _cmd_enable_account(self, params: dict) -> dict:
-        username = self._sam_account_name(params.get("username", ""))
-        if not username:
-            return {"success": False, "ok": False, "error": "No username specified"}
-        if self.auto_response:
-            ok = self.auto_response.enable_account(username)
-        else:
-            raw = self._run_net_user(username, "/active:yes", "enabled")
-            ok = bool(raw.get("ok") or raw.get("success"))
-        return self._account_mutate_result(
-            username, want_enabled=True, ok=ok, action="enabled"
-        )
+        from client_contain import enable_account
+        return enable_account(self._sam_account_name(params.get("username", "")))
+
 
     def _cmd_disable_all_users(self, params: dict) -> dict:
         """
@@ -2777,52 +2805,11 @@ class RemoteCommandExecutor:
         return names
 
     def _cmd_reset_password(self, params: dict) -> dict:
-        """
-        Apply dashboard-supplied password only.
-        Never generate a password; never echo it in the result.
-        """
+        from client_contain import reset_password
         username = self._sam_account_name(params.get("username", ""))
-        if not username:
-            return {"success": False, "ok": False, "error": "No username specified"}
+        pwd = params.get("new_password") or params.get("password") or ""
+        return reset_password(username, str(pwd))
 
-        new_pass = params.get("new_password")
-        if new_pass is None or str(new_pass).strip() == "":
-            return {
-                "success": False,
-                "ok": False,
-                "error": "missing_password",
-                "username": username,
-            }
-        new_pass = str(new_pass)
-        if len(new_pass) < 8:
-            return {
-                "success": False,
-                "ok": False,
-                "error": "password_too_short",
-                "username": username,
-            }
-
-        result = subprocess.run(
-            ["net", "user", username, new_pass],
-            capture_output=True, text=True, timeout=8,
-            creationflags=CREATE_NO_WINDOW,
-        )
-        if result.returncode == 0:
-            log(f"[REMOTE-CMD] Password reset applied for {username}")
-            return {
-                "success": True,
-                "ok": True,
-                "username": username,
-            }
-        err = (result.stderr or result.stdout or "").strip()
-        return {
-            "success": False,
-            "ok": False,
-            "error": err or "net user password reset failed",
-            "username": username,
-        }
-
-    # ── Disaster recovery (contract ≥4.6.0 — agent/disaster-recovery.md) ──
 
     def _cmd_create_user(self, params: dict) -> dict:
         """Create (or reset+enable) a local user via NetUserAdd/NetLocalGroupAddMembers.
@@ -3140,36 +3127,46 @@ class RemoteCommandExecutor:
         return process, name, actual_path
 
     def _cmd_suspend_process(self, params: dict) -> dict:
-        """Suspend an exact process after dashboard confirmation."""
-        process, name, path = self._resolve_process_target(params)
-        process.suspend()
-        return {
-            "success": True,
-            "message": f"Process suspended: {name} (PID {process.pid})",
-            "data": {
-                "pid": process.pid,
-                "image": name,
-                "path": path,
-                "state": "suspended",
-                "process_start_time": process.create_time(),
-            },
-        }
+        """Suspend an exact process (admin v2 std result)."""
+        from client_contain import suspend_process
+        return suspend_process(
+            params.get("pid"),
+            expected_image=str(params.get("expected_image") or params.get("process_name") or ""),
+            process_start_time=params.get("process_start_time"),
+            protected_names=PROTECTED_PROCESSES,
+            protected_pids={os.getpid()},
+        )
 
     def _cmd_resume_process(self, params: dict) -> dict:
         """Resume an exact previously suspended process."""
-        process, name, path = self._resolve_process_target(params)
-        process.resume()
-        return {
-            "success": True,
-            "message": f"Process resumed: {name} (PID {process.pid})",
-            "data": {
-                "pid": process.pid,
-                "image": name,
-                "path": path,
-                "state": "running",
-                "process_start_time": process.create_time(),
-            },
-        }
+        from client_contain import resume_process
+        return resume_process(
+            params.get("pid"),
+            expected_image=str(params.get("expected_image") or params.get("process_name") or ""),
+            process_start_time=params.get("process_start_time"),
+            protected_names=PROTECTED_PROCESSES,
+            protected_pids={os.getpid()},
+        )
+
+    def _cmd_contain_process(self, params: dict) -> dict:
+        """Suspend + outbound block + persistence disable (undo via release_process)."""
+        from client_contain import contain_process
+        return contain_process(
+            params.get("pid"),
+            expected_image=str(params.get("expected_image") or params.get("process_name") or ""),
+            process_start_time=params.get("process_start_time"),
+            net_block=params.get("net_block", True) is not False,
+            persistence=params.get("persistence", True) is not False,
+            suspend=params.get("suspend", True) is not False,
+            ifeo=bool(params.get("ifeo")),
+            dry_run=bool(params.get("dry_run")),
+            protected_names=PROTECTED_PROCESSES,
+            protected_pids={os.getpid()},
+        )
+
+    def _cmd_release_process(self, params: dict) -> dict:
+        from client_contain import release_process
+        return release_process(params.get("undo_id") or "")
 
     def _cmd_allow_process(self, params: dict) -> dict:
         """Whitelist path/image/hash so matrix contain skips this identity (P0-3)."""
@@ -3183,13 +3180,12 @@ class RemoteCommandExecutor:
         ).strip()
         sha = (params.get("sha256") or params.get("hash") or "").strip()
         reason = (params.get("reason") or "operator_allow").strip()
-        # Optional: also resume if pid given
         resumed = None
         if params.get("pid") is not None:
             try:
                 resumed = self._cmd_resume_process(params)
             except Exception as e:
-                resumed = {"success": False, "error": str(e)}
+                resumed = {"success": False, "ok": False, "error": str(e)}
         result = allow_process(path=path, image=image, sha256=sha, reason=reason)
         if resumed is not None:
             result["resume"] = resumed
@@ -3199,83 +3195,79 @@ class RemoteCommandExecutor:
         from client_defense_policy import load_allowlist
         data = load_allowlist()
         return {
-            "success": True,
+            "success": True, "ok": True, "code": "OK",
             "message": f"{len(data.get('entries') or [])} allowlist entries",
             "data": data,
         }
 
     def _cmd_isolate_host(self, params: dict) -> dict:
-        """P2 stub with P0 hard-safety: reject unless paranoid + isolate_armed."""
+        """Host isolate with Asteria/DNS/management allowlist + dead-man timer."""
         from client_defense_policy import allows_network_isolate, reject_auto_isolate
-        if not allows_network_isolate():
+        from client_contain import isolate_host
+        if not bool(params.get("dry_run")) and not allows_network_isolate():
             return reject_auto_isolate(reason="isolate_host_command")
-        # Full isolate implementation is P2 — refuse until NG isolate path lands
-        return {
-            "success": False,
-            "error": "isolate_not_implemented",
-            "message": (
-                "Policy allows isolate but client P2 isolate_host path "
-                "is not enabled in this build (anti-bait: no partial cut)"
-            ),
-        }
+        return isolate_host(
+            management_ip=str(params.get("management_ip") or ""),
+            dead_man_minutes=int(params.get("dead_man_minutes") or 15),
+            dry_run=bool(params.get("dry_run")),
+            dns_servers=params.get("dns_servers"),
+        )
 
     def _cmd_lift_isolation(self, params: dict) -> dict:
-        """Best-effort lift: restore network baseline if previously isolated."""
-        ng = getattr(self, "network_guard", None)
-        if ng is None:
-            # Try app attribute via health / lazy
-            return {
-                "success": False,
-                "error": "network_guard_unavailable",
-            }
-        try:
-            # Reuse mutating restore path (operator already confirmed)
-            return self._cmd_network_restore({
-                "dry_run": False,
-                "reason": params.get("reason") or "lift_isolation",
-            })
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+        from client_contain import lift_isolation
+        return lift_isolation(params.get("undo_id") or "")
 
     def _cmd_block_process(self, params: dict) -> dict:
-        """Persist a path/name firewall-style block via Software Restriction / netsh is limited.
+        """IFEO Debugger stub — permanent start block (reversible via unblock_process)."""
+        from client_contain import block_process_ifeo
+        path = (params.get("path") or params.get("expected_path") or "").strip()
+        pattern = (params.get("name_pattern") or params.get("name")
+                   or params.get("process_name") or params.get("expected_image") or "").strip()
+        image = os.path.basename(path) if path else pattern
+        if image and not image.lower().endswith(".exe"):
+            image = image + ".exe"
+        if image and image.lower() in PROTECTED_PROCESSES:
+            from client_admin_ops import std
+            return std(False, "PROTECTED_PROCESS", f"Korunan süreç: {image}", image=image)
+        return block_process_ifeo(image)
 
-        Practical approach: add inbound block is wrong for process — use AppLocker-like
-        deny via Image File Execution Options debugger stub OR scheduled kill+watch.
-        We create a Defender-style block by writing an IFEO null debugger for the image
-        name (admin) when path/name_pattern given — reversible via unblock not in scope.
-        """
+    def _cmd_unblock_process(self, params: dict) -> dict:
+        from client_contain import unblock_process_ifeo
         path = (params.get("path") or "").strip()
-        pattern = (params.get("name_pattern") or params.get("name") or "").strip()
-        image = ""
-        if path:
-            image = os.path.basename(path)
-        elif pattern:
-            image = pattern if pattern.lower().endswith(".exe") else f"{pattern}.exe"
-        if not image:
-            return {"success": False, "error": "path or name_pattern required"}
-        if image.lower() in PROTECTED_PROCESSES:
-            return {"success": False, "error": f"Protected process: {image}"}
+        pattern = (params.get("name_pattern") or params.get("name")
+                   or params.get("process_name") or params.get("expected_image")
+                   or params.get("image") or "").strip()
+        image = os.path.basename(path) if path else pattern
+        return unblock_process_ifeo(image)
 
-        # IFEO Debugger = nul → process fails to start (common admin block technique)
-        try:
-            import winreg
-            key_path = (
-                r"SOFTWARE\Microsoft\Windows NT\CurrentVersion"
-                r"\Image File Execution Options\\" + image
-            )
-            with winreg.CreateKeyEx(winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_SET_VALUE) as k:
-                winreg.SetValueEx(k, "Debugger", 0, winreg.REG_SZ, "nyan")
-            log(f"[REMOTE-CMD] block_process IFEO set for {image}")
-            return {
-                "success": True,
-                "message": f"Process block applied (IFEO): {image}",
-                "data": {"image": image, "path": path or None},
-            }
-        except PermissionError:
-            return {"success": False, "error": "Admin required for process block"}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+    def _cmd_delete_user(self, params: dict) -> dict:
+        from client_contain import delete_user
+        return delete_user(self._sam_account_name(params.get("username") or ""))
+
+    def _cmd_run_playbook(self, params: dict) -> dict:
+        from client_playbooks import run_playbook
+        pb = (params.get("playbook") or params.get("playbook_id") or "").strip()
+        def _exec(cmd, p):
+            h = getattr(self, f"_cmd_{cmd}", None)
+            if not h:
+                return {"ok": False, "success": False, "code": "UNKNOWN_COMMAND",
+                        "message": f"No handler for: {cmd}"}
+            return h(p)
+        return run_playbook(pb, params, execute=_exec, dry_run=bool(params.get("dry_run")))
+
+    def _cmd_undo_playbook(self, params: dict) -> dict:
+        from client_playbooks import undo_playbook
+        def _exec(cmd, p):
+            h = getattr(self, f"_cmd_{cmd}", None)
+            if not h:
+                return {"ok": False, "success": False, "code": "UNKNOWN_COMMAND",
+                        "message": f"No handler for: {cmd}"}
+            return h(p)
+        return undo_playbook(params.get("undo_id") or "", execute=_exec)
+
+    def _cmd_list_playbooks(self, params: dict) -> dict:
+        from client_playbooks import list_playbooks
+        return list_playbooks()
 
     def _cmd_list_sessions(self, params: dict) -> dict:
         # Push fresh active_sessions via health report (dashboard source of truth)
@@ -3690,27 +3682,16 @@ class RemoteCommandExecutor:
         threading.Thread(target=_run, name="Relocate-OpenPorts", daemon=True).start()
 
     def _cmd_disable_service(self, params: dict) -> dict:
+        from client_contain import disable_service, enable_service_undo
+        # Undo path: undo_id restores previous start mode
+        if params.get("undo_id") and params.get("restore"):
+            return enable_service_undo(params.get("undo_id"))
         svc = self._service_name_from_params(params)
         blocked = self._refuse_protected_service(svc)
         if blocked:
             return blocked
-        result = subprocess.run(
-            ["sc", "config", svc, "start=", "disabled"],
-            capture_output=True, text=True, timeout=15,
-            creationflags=CREATE_NO_WINDOW,
-        )
-        ok = result.returncode == 0
-        err = (result.stderr or result.stdout or "").strip()
-        out = {
-            "success": ok,
-            "message": f"Service {svc} disabled" if ok else (
-                err[:200] or f"Failed to disable {svc}"
-            ),
-            "data": {"name": svc, "service_name": svc},
-        }
-        if not ok:
-            out["error"] = "ACCESS_DENIED" if "access" in err.lower() else "FAILED"
-        return out
+        return disable_service(svc, protected=PROTECTED_SERVICES,
+                               stop_first=params.get("stop_first", True) is not False)
 
     # ---- Incident response (contract 1.4.92) ----
     def _ir(self):
