@@ -369,7 +369,7 @@ export function StatusPage({ status, online, statusLoading = false, updatedAt, o
         <article className={`clickable${pending ? ' loading' : ''}`} onClick={() => setDetail('motor')}>
           <p>{t('status_card_motor')}</p>
           <strong>{pending ? t('label_loading') : online ? t('label_active') : t('status_motor_down')}</strong>
-          <small>IPC 127.0.0.1:58632 · {pending ? '…' : pick(status, 'version')}</small>
+          <small>{pending ? '' : `v${pick(status, 'version')}`}</small>
         </article>
         <article className={`clickable${pending ? ' loading' : ''}`} onClick={() => setDetail('mode')}>
           <p>{t('status_card_mode')}</p>

@@ -11,7 +11,6 @@ type Props = {
 
 export function IdentityStrip({
   serverName,
-  tokenPreview,
   tokenPresent,
   clientId,
   publicIp,
@@ -19,9 +18,6 @@ export function IdentityStrip({
 }: Props) {
   const host = serverName.trim() || '—'
   const ip = (publicIp || '').trim() || '—'
-  const tokenLabel = tokenPresent
-    ? tokenPreview || t('identity_token_present')
-    : t('identity_token_missing')
 
   return (
     <div className="identity-strip">
@@ -41,9 +37,6 @@ export function IdentityStrip({
         {ip}
       </span>
       <span className="identity-sep" aria-hidden="true" />
-      <span className={`identity-token mono ${tokenPresent ? '' : 'missing'}`}>
-        {t('identity_token')}: {tokenLabel}
-      </span>
       <button
         type="button"
         className="btn ghost sm identity-copy tip"

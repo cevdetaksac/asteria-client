@@ -545,9 +545,6 @@ export function ThreatPage({ onToast }: Props) {
           <button type="button" className="btn ghost sm" onClick={() => setPageHelp(true)}>
             {t('help_more')}
           </button>
-          <button type="button" className="btn ghost" disabled={busy} onClick={() => void snapshot()}>
-            {t('btn_snapshot')}
-          </button>
           <button type="button" className="btn" onClick={() => void refreshAll()}>{t('btn_refresh')}</button>
         </div>
       </div>
