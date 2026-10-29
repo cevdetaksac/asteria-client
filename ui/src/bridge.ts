@@ -1,3 +1,4 @@
+import { READ_TTL, sharedRead, sharedWrite } from './data/shared'
 export type MotorStatus = Record<string, unknown> & {
   ok?: boolean
   motor_ok?: boolean
@@ -138,15 +139,27 @@ export const motorBridge = {
   ping: () => withApi((api) => api.ping()),
   status: () => withApi((api) => api.status()),
   catalog: () => withApi((api) => api.catalog()),
-  ipc: (cmd: string, args?: Record<string, unknown>) => withApi((api) => api.ipc(cmd, args)),
-  cloud: (method: string, path: string, body?: Record<string, unknown>) =>
-    withApi((api) => api.cloud(method, path, body)),
+  ipc: (cmd: string, args?: Record<string, unknown>) => {
+    const key = `ipc:${cmd}`
+    const run = () => withApi((api) => api.ipc(cmd, args))
+    if (args && Object.keys(args).length > 0) return READ_TTL[key] ? run() : sharedWrite(key, run)
+    return READ_TTL[key] ? sharedRead(key, run) : sharedWrite(key, run)
+  },
+  cloud: (method: string, path: string, body?: Record<string, unknown>) => {
+    const key = `cloud:${path}`
+    const run = () => withApi((api) => api.cloud(method, path, body))
+    if (method.toUpperCase() === 'GET') return body ? run() : sharedRead(key, run)
+    return sharedWrite(key, run)
+  },
   pin: (action: string, value = '', current = '') =>
     withApi((api) => api.pin(action, value, current)),
   shell: (action: string, path = '') => withApi((api) => api.shell(action, path)),
   account: (action = 'status', email = '', password = '', pin = '', code = '') =>
     optional('account', (api) => api.account(action, email, password, pin, code)),
-  harden: (action = 'status', target = '') => optional('harden', (api) => api.harden(action, target)),
+  harden: (action = 'status', target = '') => {
+    const run = () => optional('harden', (api) => api.harden(action, target))
+    return action === 'status' ? sharedRead('harden:status', run) : sharedWrite(`harden:${action}`, run)
+  },
   tools: (action = 'catalog', target = '', confirm = false) =>
     optional('tools', (api) => api.tools!(action, target, confirm)),
   rdp: (action = 'status', mode = '') => optional('rdp', (api) => api.rdp(action, mode)),

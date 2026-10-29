@@ -4,6 +4,7 @@ import { PasswordInput } from '../components/PasswordInput'
 import { Switch } from '../components/Switch'
 import { t } from '../i18n'
 import { asRecord } from '../lib'
+import { invalidate } from '../data/shared'
 
 type Props = {
   pinEnabled: boolean
@@ -349,7 +350,8 @@ export function SettingsPage({ pinEnabled, onToast, onSession }: Props) {
   >('rules')
 
   const load = async () => {
-    const result = await motorBridge.cloud('GET', 'threats/config')
+    invalidate('cloud:threats/config')
+      const result = await motorBridge.cloud('GET', 'threats/config')
     if (result.ok && result.data && typeof result.data === 'object') {
       const data = result.data as Record<string, unknown>
       setDraft(data)

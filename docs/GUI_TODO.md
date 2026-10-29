@@ -12,7 +12,7 @@ Kurallar: 443 çıkış bağlantısı asla kesilmez, yıkıcı komut yok, her fa
 
 ## Faz 2 — Temizlik
 - [ ] **C1** Eski CTk GUI'yi kaldır (önce kullanım logla, bir sürüm gözle). Dosyalar: `client_gui.py`, `client.py` (ModernGUI yolu), `asteria-client.spec`. Efor 0.5-1 gün. Risk orta.
-- [ ] **C2** Ortak veri katmanı: threats/config, whitelist, IP_TABLE, harden tek yerden (hook/store), tek poll. Dosyalar: `ui/src/pages/*`, yeni `ui/src/data/*`. Efor 1 gün. Risk orta.
+- [x] **C2** Ortak veri katmanı: threats/config, whitelist, IP_TABLE, harden tek yerden (hook/store), tek poll. Dosyalar: `ui/src/pages/*`, yeni `ui/src/data/*`. Efor 1 gün. Risk orta.
 - [ ] **C3** Ölü kod: kullanılmayan i18n anahtarları (~209/748), `RdpSecureMoveModal`, `Brand` (doğrula), inline style → CSS. Dosyalar: `ui/src/i18n/catalog.ts`, `ui/src/components/*`. Efor 3 sa. Risk düşük.
 - [ ] **C4** Büyük dosyaları böl: `ThreatPage.tsx` (1039), `SettingsPage.tsx` (767), `StatusPage.tsx` (727), `App.tsx` (783), `style.css` (2398), `asteria_gui.py` (2682). Efor 1 gün. Risk orta.
 

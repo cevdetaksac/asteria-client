@@ -7,6 +7,7 @@ import { IconBtn, icons } from '../components/IconBtn'
 import { Switch } from '../components/Switch'
 import { t } from '../i18n'
 import { asRecord, boolLabel, formatBps, pick, triLabel } from '../lib'
+import { invalidate } from '../data/shared'
 
 type Props = {
   status: MotorStatus | null
@@ -187,7 +188,8 @@ export function StatusPage({ status, online, statusLoading = false, updatedAt, o
   const addWhitelist = async (ip: string) => {
     setBusy(true)
     try {
-      const cloud = await motorBridge.cloud('GET', 'threats/config')
+      invalidate('cloud:threats/config')
+    const cloud = await motorBridge.cloud('GET', 'threats/config')
       const data = cloud.ok && cloud.data && typeof cloud.data === 'object'
         ? (cloud.data as Record<string, unknown>)
         : {}
@@ -204,7 +206,8 @@ export function StatusPage({ status, online, statusLoading = false, updatedAt, o
   const removeWhitelist = async (ip: string) => {
     setBusy(true)
     try {
-      const cloud = await motorBridge.cloud('GET', 'threats/config')
+      invalidate('cloud:threats/config')
+    const cloud = await motorBridge.cloud('GET', 'threats/config')
       const data = cloud.ok && cloud.data && typeof cloud.data === 'object'
         ? (cloud.data as Record<string, unknown>)
         : {}
