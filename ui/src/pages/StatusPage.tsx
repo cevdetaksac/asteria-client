@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
+import { usePoll } from '../usePoll'
 import { motorBridge, type MotorStatus } from '../bridge'
 import { DetailModal } from '../components/DetailModal'
 import { FeatureGuide } from '../components/FeatureGuide'
@@ -110,14 +111,8 @@ export function StatusPage({ status, online, statusLoading = false, updatedAt, o
     }
   }
 
-  useEffect(() => {
-    void loadExtras()
-    const timer = window.setInterval(() => void loadExtras(), 20000)
-    return () => window.clearInterval(timer)
-    // Intentionally not tied to `status` — App silent poll was re-firing
-    // harden/IP_TABLE/threats/config every ~2s and spamming logs.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  // P1/P2: visible-only, no overlap. Not tied to `status` (App poll would re-fire it).
+  usePoll(loadExtras, 20000)
 
   const unlockRs = async () => {
     const result = await motorBridge.ipc('RS_UNLOCK')

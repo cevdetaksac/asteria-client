@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useState } from 'react'
+import { usePoll } from '../usePoll'
 import { motorBridge } from '../bridge'
 import { DetailModal } from '../components/DetailModal'
 import { FeatureGuide } from '../components/FeatureGuide'
@@ -133,11 +134,7 @@ export function ServicesPage({ onToast }: Props) {
     }
   }, [onToast, refreshRelocate])
 
-  useEffect(() => {
-    void refresh()
-    const timer = window.setInterval(() => void refresh(), 12000)
-    return () => window.clearInterval(timer)
-  }, [refresh])
+  usePoll(refresh, 12000)
 
   const toggle = async (svc: CatalogService, start: boolean) => {
     setBusy(svc.service)

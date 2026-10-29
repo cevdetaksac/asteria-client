@@ -4,11 +4,11 @@ Kaynak: GUI denetimi 29.10.2026 (Trello 0JIeL9iJ). Aktif GUI: `asteria_gui.py` (
 Kurallar: 443 çıkış bağlantısı asla kesilmez, yıkıcı komut yok, her faz sonunda testler.
 
 ## Faz 1 — Performans hızlı kazanç
-- [ ] **P1** Pencere gizliyken poll'ları durdur. Hedef: tepsideyken sıfır arka plan sorgusu. Dosyalar: `ui/src/App.tsx`, `ui/src/pages/{Status,Services,Threat}Page.tsx`, yeni `ui/src/usePoll.ts`. Efor 2 sa. Risk düşük.
-- [ ] **P2** In-flight guard: önceki tur bitmeden yeni tur yok (setInterval → bitince planla). Dosyalar: `ui/src/usePoll.ts`, sayfalar. Efor 2 sa. Risk düşük.
-- [ ] **P3** SVC_LIST / SHARES_LIST / harden sonuçları 60 sn önbellek; ağır sorgular sadece ilgili sekme açıkken. Dosyalar: `client_threat_local.py`, `asteria_gui.py` (`_harden_checks`), `ui/src/pages/ThreatPage.tsx`. Efor 3 sa. Risk düşük.
-- [ ] **P4** Motor control socket istekleri paralel (bağlantı başına thread, üst sınırlı); STATUS ağır işleri beklemez. Dosya: `client.py` (`control_server_loop`). Efor 0.5-1 gün. Risk orta (motor) — test + 65'te doğrulama.
-- [ ] **P5** ipify senkron çağrısı arka plana. Dosya: `asteria_gui.py` (`_ensure_public_ip`). Efor 1 sa. Risk düşük.
+- [x] **P1** Pencere gizliyken poll'ları durdur. Hedef: tepsideyken sıfır arka plan sorgusu. Dosyalar: `ui/src/App.tsx`, `ui/src/pages/{Status,Services,Threat}Page.tsx`, yeni `ui/src/usePoll.ts`. Efor 2 sa. Risk düşük.
+- [x] **P2** In-flight guard: önceki tur bitmeden yeni tur yok (setInterval → bitince planla). Dosyalar: `ui/src/usePoll.ts`, sayfalar. Efor 2 sa. Risk düşük.
+- [x] **P3** SVC_LIST / SHARES_LIST / harden sonuçları 60 sn önbellek; ağır sorgular sadece ilgili sekme açıkken. Dosyalar: `client_threat_local.py`, `asteria_gui.py` (`_harden_checks`), `ui/src/pages/ThreatPage.tsx`. Efor 3 sa. Risk düşük.
+- [x] **P4** Motor control socket istekleri paralel (bağlantı başına thread, üst sınırlı); STATUS ağır işleri beklemez. Dosya: `client.py` (`control_server_loop`). Efor 0.5-1 gün. Risk orta (motor) — test + 65'te doğrulama.
+- [x] **P5** ipify senkron çağrısı arka plana. Dosya: `asteria_gui.py` (`_ensure_public_ip`). Efor 1 sa. Risk düşük.
 
 ## Faz 2 — Temizlik
 - [ ] **C1** Eski CTk GUI'yi kaldır (önce kullanım logla, bir sürüm gözle). Dosyalar: `client_gui.py`, `client.py` (ModernGUI yolu), `asteria-client.spec`. Efor 0.5-1 gün. Risk orta.

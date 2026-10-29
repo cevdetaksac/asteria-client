@@ -38,6 +38,51 @@ KNOWN_SAFE_TOKENS = (
 MAX_THIRD_PARTY_ROWS = 20
 
 
+# --- P3: read caches (SVC_LIST / SHARES_LIST spawn PowerShell ~2-3 s) ---
+import threading as _threading
+import time as _time
+
+READ_CACHE_TTL_SEC = 60.0
+_cache_lock = _threading.Lock()
+_cache: Dict[str, tuple] = {}
+_inflight: Dict[str, "_threading.Event"] = {}
+
+
+def _cached(key: str, fn, ttl: float = READ_CACHE_TTL_SEC):
+    """Return fn() cached for ttl seconds; concurrent callers share one run."""
+    while True:
+        with _cache_lock:
+            hit = _cache.get(key)
+            if hit and (_time.monotonic() - hit[0]) < ttl:
+                return hit[1]
+            ev = _inflight.get(key)
+            if ev is None:
+                ev = _threading.Event()
+                _inflight[key] = ev
+                owner = True
+            else:
+                owner = False
+        if not owner:
+            ev.wait(timeout=30.0)
+            continue
+        try:
+            val = fn()
+            if isinstance(val, dict) and val.get("ok", True):
+                with _cache_lock:
+                    _cache[key] = (_time.monotonic(), val)
+            return val
+        finally:
+            with _cache_lock:
+                _inflight.pop(key, None)
+            ev.set()
+
+
+def invalidate_read_cache(*keys: str) -> None:
+    with _cache_lock:
+        for k in (keys or list(_cache.keys())):
+            _cache.pop(k, None)
+
+
 def _run_ps(script: str, timeout: float = 15.0) -> tuple[int, str, str]:
     try:
         from client_winproc import run_ps, run_ps_script
@@ -86,6 +131,10 @@ def _safe_share_name(name: str) -> Optional[str]:
 
 
 def list_smb_shares() -> Dict[str, Any]:
+    return _cached("shares", _list_smb_shares_uncached)
+
+
+def _list_smb_shares_uncached() -> Dict[str, Any]:
     """Return SMB shares for Threat Center."""
     rc, out, err = _run_ps(
         "Get-SmbShare | Select-Object Name, Path, Description, "
@@ -125,6 +174,13 @@ def list_smb_shares() -> Dict[str, Any]:
 
 
 def remove_smb_share(name: str) -> Dict[str, Any]:
+    try:
+        return _remove_smb_share(name)
+    finally:
+        invalidate_read_cache("shares")
+
+
+def _remove_smb_share(name: str) -> Dict[str, Any]:
     """Remove a non-default SMB share."""
     share = _safe_share_name(name)
     if not share:
@@ -163,6 +219,10 @@ def _protected_names() -> Set[str]:
 
 
 def list_third_party_services(*, max_rows: int = MAX_THIRD_PARTY_ROWS) -> Dict[str, Any]:
+    return _cached(f"svc:{max_rows}", lambda: _list_third_party_services_uncached(max_rows=max_rows))
+
+
+def _list_third_party_services_uncached(*, max_rows: int = MAX_THIRD_PARTY_ROWS) -> Dict[str, Any]:
     """Running non-Microsoft services (Threat Center filter)."""
     script = (
         "Get-CimInstance Win32_Service | "
@@ -212,6 +272,13 @@ def list_third_party_services(*, max_rows: int = MAX_THIRD_PARTY_ROWS) -> Dict[s
 
 
 def stop_windows_service(name: str) -> Dict[str, Any]:
+    try:
+        return _stop_windows_service(name)
+    finally:
+        invalidate_read_cache()
+
+
+def _stop_windows_service(name: str) -> Dict[str, Any]:
     """Stop a service with PROTECTED_SERVICES guard (same as remote stop_service)."""
     svc = str(name or "").strip()
     if not svc or len(svc) > 128:

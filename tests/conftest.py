@@ -22,3 +22,17 @@ try:
     _cl.LIFECYCLE_QUEUE = os.path.join(_tmp, "lifecycle_queue.jsonl")
 except Exception:
     pass
+
+
+import sys as _sys
+
+import pytest as _pytest
+
+
+@_pytest.fixture(autouse=True)
+def _reset_threat_local_read_cache():
+    """P3 read cache must not leak between tests."""
+    mod = _sys.modules.get("client_threat_local")
+    if mod is not None and hasattr(mod, "invalidate_read_cache"):
+        mod.invalidate_read_cache()
+    yield

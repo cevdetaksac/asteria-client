@@ -348,6 +348,18 @@ def _acquire_single_instance() -> bool:
     return False
 
 
+def _pulse_host_visibility(window: Any, visible: bool) -> None:
+    """P1: tell the WebView whether it is on screen so polls pause in tray."""
+    flag = "false" if visible else "true"
+    try:
+        window.evaluate_js(
+            "try{window.__asteriaHostHidden=" + flag + ";"
+            "window.dispatchEvent(new CustomEvent('asteria-host-visibility'))}catch(e){}"
+        )
+    except Exception:
+        pass
+
+
 def _pulse_session_gate(window: Any) -> None:
     """Tell the WebView to re-read session() (e.g. after tray hide re-locks PIN)."""
     try:
@@ -394,6 +406,7 @@ def _hide_to_tray(window: Any, bridge: Optional["MotorBridge"] = None) -> None:
             try:
                 window.hide()
                 logger.info("hide_to_tray: window.hide() ok")
+                _pulse_host_visibility(window, False)
             except Exception:
                 logger.exception("hide_to_tray: window.hide() failed")
             try:
@@ -420,6 +433,7 @@ def _show_from_tray(window: Any) -> None:
         try:
             window.show()
             window.restore()
+            _pulse_host_visibility(window, True)
             _pulse_session_gate(window)
             logger.info("show_from_tray: show+restore ok")
         except Exception:
@@ -949,29 +963,37 @@ class MotorBridge:
         return safe if isinstance(safe, dict) else {"ok": False, "error": "bad_status"}
 
     def _ensure_public_ip(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """Fill public_ip for the identity strip when motor STATUS omits it."""
+        """Fill public_ip for the identity strip when motor STATUS omits it.
+
+        P5: never blocks the STATUS bridge call - uses the cached value and
+        refreshes it on a background thread at most once a minute.
+        """
         current = str(payload.get("public_ip") or "").strip()
         if current and current not in ("0.0.0.0", "None"):
             return payload
         now = time.time()
         cached = str(getattr(self, "_public_ip_cache", "") or "").strip()
         cached_at = float(getattr(self, "_public_ip_cache_at", 0.0) or 0.0)
-        if cached and (now - cached_at) < 60.0:
+        if cached:
             payload["public_ip"] = cached
-            return payload
-        ip = ""
-        try:
-            import requests
-
-            ip = str(requests.get("https://api.ipify.org", timeout=2).text or "").strip()
-        except Exception:
-            ip = cached
-        if ip and ip not in ("0.0.0.0", "None"):
-            self._public_ip_cache = ip
+        if (now - cached_at) >= 60.0 and not getattr(self, "_public_ip_inflight", False):
+            self._public_ip_inflight = True
             self._public_ip_cache_at = now
-            payload["public_ip"] = ip
-        elif cached:
-            payload["public_ip"] = cached
+
+            def _fetch() -> None:
+                try:
+                    import requests
+
+                    ip = str(requests.get("https://api.ipify.org", timeout=3).text or "").strip()
+                    if ip and ip not in ("0.0.0.0", "None"):
+                        self._public_ip_cache = ip
+                        self._public_ip_cache_at = time.time()
+                except Exception:
+                    pass
+                finally:
+                    self._public_ip_inflight = False
+
+            threading.Thread(target=_fetch, name="PublicIpRefresh", daemon=True).start()
         return payload
 
     def catalog(self) -> Dict[str, Any]:
@@ -1259,11 +1281,12 @@ class MotorBridge:
             return self._deny_locked()
         act = str(action or "status").strip().lower()
         if act == "status":
-            return _json_safe({"ok": True, "checks": self._harden_checks()})
+            return _json_safe({"ok": True, "checks": self._harden_checks_cached()})
         if act == "fix":
             tgt = str(target or "").strip().lower()
             if tgt not in _HARDEN_FIX_TARGETS:
                 return {"ok": False, "error": "harden_unknown_target"}
+            self._harden_cache = None
             return _json_safe(self._harden_fix(tgt))
         return {"ok": False, "error": "harden_unknown_action"}
 
@@ -2226,6 +2249,19 @@ class MotorBridge:
         except Exception as exc:
             self.log.info("token load failed: %s", exc)
             return None
+
+    HARDEN_CACHE_TTL_SEC = 60.0
+
+    def _harden_checks_cached(self) -> list:
+        """P3: netsh + PowerShell + sc + reg per call -> cache 60 s (cleared on fix)."""
+        lock = self.__dict__.setdefault("_harden_lock", threading.Lock())
+        with lock:
+            hit = getattr(self, "_harden_cache", None)
+            if hit and (time.monotonic() - hit[0]) < self.HARDEN_CACHE_TTL_SEC:
+                return hit[1]
+            checks = self._harden_checks()
+            self._harden_cache = (time.monotonic(), checks)
+            return checks
 
     def _harden_checks(self) -> list:
         from client_winproc import run_hidden, run_ps

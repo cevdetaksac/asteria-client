@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
+import { usePoll } from '../usePoll'
 import { motorBridge, type MotorStatus } from '../bridge'
 import { DataTable, type DataColumn } from '../components/DataTable'
 import { DetailModal } from '../components/DetailModal'
@@ -188,11 +189,13 @@ export function ThreatPage({ onToast }: Props) {
     await Promise.all([refreshThreats(), refreshUsers(), refreshExtras()])
   }, [refreshThreats, refreshUsers, refreshExtras])
 
-  useEffect(() => {
-    void refreshAll()
-    const timer = window.setInterval(() => void refreshAll(), 10000)
-    return () => window.clearInterval(timer)
-  }, [refreshAll])
+  // P1-P3: threats/users every 10 s; heavy extras (harden, shares, services:
+  // PowerShell on the motor) every 60 s. Visible-only, never overlapping.
+  const refreshFast = useCallback(async () => {
+    await Promise.all([refreshThreats(), refreshUsers()])
+  }, [refreshThreats, refreshUsers])
+  usePoll(refreshFast, 10000)
+  usePoll(refreshExtras, 60000)
 
   const sessions = useMemo(() => users.filter((u) => u.has_session), [users])
   const logoffable = useMemo(() => {

@@ -2087,470 +2087,526 @@ class CloudHoneypotClient:
         except Exception:
             return {"active": False, "entries": 0}
 
+    # Read-only IPC commands may run in parallel; everything else keeps the
+    # historical one-at-a-time semantics behind _ctrl_mutation_lock.
+    _CTRL_PARALLEL_SAFE = frozenset({
+        "PING", "STATUS", "THREAT_TOP", "IP_TABLE", "SHARES_LIST", "SVC_LIST",
+        "RS_STATUS", "RS_QUARANTINE", "HONEYPOT_LIST",
+    })
+    _CTRL_MAX_WORKERS = 8
+
     def control_server_loop(self, sock):
-        """Handle control server connections — SHOW/QUIT + daemon IPC."""
-        MAX_CMD_LEN = 256
+        """Accept control connections; each is handled on a bounded worker thread.
+
+        Slow read commands (SVC_LIST / SHARES_LIST spawn PowerShell ~2-3 s) must
+        not block STATUS (GUI timeout 3 s). Mutating commands stay serialized.
+        """
+        if not hasattr(self, "_ctrl_mutation_lock"):
+            self._ctrl_mutation_lock = threading.Lock()
+        sem = threading.BoundedSemaphore(self._CTRL_MAX_WORKERS)
         while True:
             conn = None
             try:
                 conn, _ = sock.accept()
-                conn.settimeout(2.0)
-
-                buf = conn.recv(MAX_CMD_LEN)
-                if not buf:
-                    continue
-
-                line = buf.split(b"\n", 1)[0]
-                cmd = line.decode("utf-8", "ignore").strip()
-                cmd_u = cmd.upper()
-
-                def _send(data: str):
-                    try:
-                        if not data.endswith("\n"):
-                            data += "\n"
-                        conn.sendall(data.encode("utf-8"))
-                    except Exception:
-                        pass
-
-                if cmd_u == "PING":
-                    _send("PONG")
-                    continue
-
-                if cmd_u == "STATUS":
-                    try:
-                        _send(json.dumps(self._ipc_status_payload(), ensure_ascii=False))
-                    except Exception as e:
-                        _send(json.dumps({"ok": False, "error": str(e)}))
-                    continue
-
-                if cmd_u == "ACL_HEAL":
-                    # Unelevated GUI → SYSTEM motor restores Users RX on _internal
-                    try:
-                        from client_install_acl import ensure_motor_runtime_user_rx
-                        ok = bool(ensure_motor_runtime_user_rx(log=log))
-                        _send(json.dumps({"ok": ok}, ensure_ascii=False))
-                    except Exception as e:
-                        log(f"[CTRL] ACL_HEAL error: {e}")
-                        _send(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
-                    continue
-
-                if cmd_u == "CLEAR_FIREWALL":
-                    # GUI (unelevated) → SYSTEM motor purges HP-BLOCK-* + API sync
-                    try:
-                        cm = getattr(self, "cleanup_manager", None)
-                        if cm is None:
-                            _send(json.dumps({
-                                "ok": False,
-                                "error": "no_cleanup_manager",
-                            }, ensure_ascii=False))
-                            continue
-                        out = cm.clear_firewall(sync_dashboard=True)
-                        payload = {"ok": True}
-                        if isinstance(out, dict):
-                            payload.update(out)
-                        if out.get("error"):
-                            payload["ok"] = False
-                        _send(json.dumps(payload, ensure_ascii=False))
-                    except Exception as e:
-                        log(f"[CTRL] CLEAR_FIREWALL error: {e}")
-                        _send(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
-                    continue
-
-                if cmd_u in ("NG_MAINT_START", "NG_MAINT_END", "NG_MAINT_END_SNAPSHOT",
-                             "NG_SNAPSHOT", "NG_ACCEPT_SURFACE"):
-                    try:
-                        ng = getattr(self, "network_guard", None)
-                        if ng is None:
-                            _send(json.dumps({
-                                "ok": False, "error": "no_network_guard",
-                            }, ensure_ascii=False))
-                            continue
-                        if cmd_u == "NG_MAINT_START":
-                            out = ng.enter_maintenance(
-                                reason="gui_maintenance", paused_by="gui",
-                            )
-                        elif cmd_u == "NG_MAINT_END_SNAPSHOT":
-                            out = ng.exit_maintenance(
-                                snapshot=True, paused_by="gui",
-                            )
-                        elif cmd_u == "NG_MAINT_END":
-                            out = ng.exit_maintenance(
-                                snapshot=False, paused_by="gui",
-                            )
-                        elif cmd_u == "NG_ACCEPT_SURFACE":
-                            out = ng.accept_surface()
-                        else:
-                            saved = ng.snapshot_now()
-                            out = {
-                                "ok": True,
-                                "version": saved.get("version"),
-                                "captured_at": saved.get("captured_at"),
-                            }
-                        if "ok" not in out:
-                            out = {"ok": True, **out}
-                        _send(json.dumps(out, ensure_ascii=False))
-                    except Exception as e:
-                        log(f"[CTRL] NG_MAINT error: {e}")
-                        _send(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
-                    continue
-
-                if cmd_u.startswith("BLOCK_IP ") or cmd_u.startswith("UNBLOCK_IP "):
-                    try:
-                        parts = cmd.split()
-                        op = parts[0].upper()
-                        ip = parts[1] if len(parts) > 1 else ""
-                        reason = parts[2] if len(parts) > 2 else "gui_ipc"
-                        ar = getattr(self, "auto_response", None)
-                        if not ip:
-                            _send(json.dumps({"ok": False, "error": "missing_ip"}))
-                            continue
-                        if ar is None:
-                            _send(json.dumps({"ok": False, "error": "no_auto_response"}))
-                            continue
-                        if op == "BLOCK_IP":
-                            ok = bool(ar.block_ip(ip, reason=reason or "gui_ipc"))
-                        else:
-                            ok = bool(ar.unblock_ip(ip))
-                        _send(json.dumps({"ok": ok, "ip": ip, "op": op.lower()}, ensure_ascii=False))
-                    except Exception as e:
-                        log(f"[CTRL] BLOCK/UNBLOCK error: {e}")
-                        _send(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
-                    continue
-
-                if cmd_u in ("RS_UNLOCK", "UNLOCK_RS_QUARANTINE"):
-                    try:
-                        rs = getattr(self, "ransomware_shield", None)
-                        if rs is None:
-                            _send(json.dumps({"ok": False, "error": "no_ransomware_shield"}))
-                            continue
-                        out = rs.unlock_quarantine(reason="gui_ipc")
-                        _send(json.dumps({"ok": True, **out}, ensure_ascii=False))
-                    except Exception as e:
-                        log(f"[CTRL] RS_UNLOCK error: {e}")
-                        _send(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
-                    continue
-
-                if cmd_u == "THREAT_TOP":
-                    try:
-                        _send(json.dumps(self._ipc_threat_top_payload(), ensure_ascii=False))
-                    except Exception as e:
-                        log(f"[CTRL] THREAT_TOP error: {e}")
-                        _send(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
-                    continue
-
-                if cmd_u == "SELF_UPDATE":
-                    # GUI "Check for updates" → silent install (same path as dashboard).
-                    try:
-                        from client_operation_gate import snapshot, busy_result_from_snapshot
-
-                        snap = snapshot()
-                        if snap or getattr(self, "_gui_self_update_running", False):
-                            busy = busy_result_from_snapshot(snap) if snap else {
-                                "busy": True,
-                                "error": "update_busy",
-                                "phase": "queued",
-                                "progress_pct": 0,
-                            }
-                            _send(json.dumps({
-                                "ok": True,
-                                "started": False,
-                                "busy": True,
-                                "in_flight": True,
-                                "error": "update_busy",
-                                "phase": busy.get("phase"),
-                                "progress_pct": busy.get("progress_pct"),
-                                "from_version": busy.get("from_version"),
-                                "to_version": busy.get("to_version"),
-                                "detail": busy.get("detail") or "operation_in_progress",
-                                "message": "operation_in_progress",
-                            }, ensure_ascii=False))
-                            continue
-                        self._gui_self_update_running = True
-
-                        def _gui_self_update_worker():
-                            try:
-                                from client_updater import run_self_update_command
-                                api = getattr(self, "api_client", None)
-                                result = run_self_update_command(
-                                    {
-                                        "force": False,
-                                        "triggered_by": "gui_check_updates",
-                                    },
-                                    api_client=api,
-                                ) or {}
-                                log(
-                                    f"[CTRL] SELF_UPDATE done ok={result.get('ok')} "
-                                    f"err={result.get('error')} restart={result.get('restart_required')}"
-                                )
-                                if result.get("restart_required"):
-                                    time.sleep(1.2)
-                                    try:
-                                        from client_self_protection import disarm_for_update
-                                        disarm_for_update(reason="gui_self_update")
-                                    except Exception:
-                                        pass
-                                    os._exit(0)
-                            except Exception as exc:
-                                log(f"[CTRL] SELF_UPDATE worker error: {exc}")
-                                try:
-                                    from client_update_ui import set_update_ui_status
-                                    from client_constants import VERSION as _ver
-                                    set_update_ui_status(
-                                        "failed",
-                                        from_version=str(_ver),
-                                        detail=str(exc),
-                                        error=str(exc),
-                                    )
-                                except Exception:
-                                    pass
-                            finally:
-                                try:
-                                    self._gui_self_update_running = False
-                                except Exception:
-                                    pass
-
-                        import threading
-                        threading.Thread(
-                            target=_gui_self_update_worker,
-                            name="gui-self-update",
-                            daemon=True,
-                        ).start()
-                        try:
-                            from client_update_ui import set_update_ui_status
-                            from client_constants import VERSION as _cur
-                            set_update_ui_status(
-                                "accepted",
-                                from_version=str(_cur),
-                                detail="gui_check_updates",
-                            )
-                        except Exception:
-                            pass
-                        _send(json.dumps({
-                            "ok": True,
-                            "started": True,
-                            "message": "update_accepted",
-                        }, ensure_ascii=False))
-                    except Exception as e:
-                        log(f"[CTRL] SELF_UPDATE error: {e}")
-                        try:
-                            self._gui_self_update_running = False
-                        except Exception:
-                            pass
-                        _send(json.dumps({"ok": False, "error": str(e), "started": False}, ensure_ascii=False))
-                    continue
-
-                if cmd_u == "IP_TABLE":
-                    try:
-                        _send(json.dumps(self._ipc_ip_table_payload(), ensure_ascii=False))
-                    except Exception as e:
-                        log(f"[CTRL] IP_TABLE error: {e}")
-                        _send(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
-                    continue
-
-                if cmd_u == "SHARES_LIST":
-                    try:
-                        from client_threat_local import list_smb_shares
-                        _send(json.dumps(list_smb_shares(), ensure_ascii=False))
-                    except Exception as e:
-                        log(f"[CTRL] SHARES_LIST error: {e}")
-                        _send(json.dumps({"ok": False, "error": str(e), "shares": []}, ensure_ascii=False))
-                    continue
-
-                if cmd_u.startswith("SHARE_REMOVE "):
-                    try:
-                        from client_threat_local import remove_smb_share
-                        share = cmd.split(None, 1)[1].strip() if " " in cmd else ""
-                        _send(json.dumps(remove_smb_share(share), ensure_ascii=False))
-                    except Exception as e:
-                        log(f"[CTRL] SHARE_REMOVE error: {e}")
-                        _send(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
-                    continue
-
-                if cmd_u == "SVC_LIST":
-                    try:
-                        from client_threat_local import list_third_party_services
-                        _send(json.dumps(list_third_party_services(), ensure_ascii=False))
-                    except Exception as e:
-                        log(f"[CTRL] SVC_LIST error: {e}")
-                        _send(json.dumps({"ok": False, "error": str(e), "services": []}, ensure_ascii=False))
-                    continue
-
-                if cmd_u.startswith("SVC_STOP "):
-                    try:
-                        from client_threat_local import stop_windows_service
-                        svc = cmd.split(None, 1)[1].strip() if " " in cmd else ""
-                        _send(json.dumps(stop_windows_service(svc), ensure_ascii=False))
-                    except Exception as e:
-                        log(f"[CTRL] SVC_STOP error: {e}")
-                        _send(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
-                    continue
-
-                if cmd_u in ("RS_STATUS", "RS_QUARANTINE"):
-                    try:
-                        rs = getattr(self, "ransomware_shield", None)
-                        if rs is None:
-                            _send(json.dumps({"ok": False, "error": "no_ransomware_shield"}))
-                            continue
-                        _send(json.dumps({
-                            "ok": True,
-                            "stats": rs.get_stats(),
-                            "quarantine": rs.get_quarantine(),
-                            "detections": rs.get_detections()[-20:],
-                        }, ensure_ascii=False))
-                    except Exception as e:
-                        log(f"[CTRL] RS_STATUS error: {e}")
-                        _send(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
-                    continue
-
-                if cmd_u.startswith("HONEYPOT "):
-                    # HONEYPOT START SVC PORT | HONEYPOT STOP SVC | HONEYPOT LIST
-                    try:
-                        parts = cmd.split()
-                        op = (parts[1] if len(parts) > 1 else "").upper()
-                        if op == "LIST":
-                            _send(json.dumps({
-                                "ok": True,
-                                "services": list(self.service_manager.running_services or []),
-                            }, ensure_ascii=False))
-                        elif op == "START" and len(parts) >= 4:
-                            svc = parts[2].upper()
-                            port = int(parts[3])
-                            ok = bool(self.service_manager.start_service(svc, port))
-                            if ok:
-                                try:
-                                    self._on_service_started(svc, port)
-                                except Exception:
-                                    pass
-                            _send(json.dumps({"ok": ok, "service": svc, "port": port}, ensure_ascii=False))
-                        elif op == "STOP" and len(parts) >= 3:
-                            svc = parts[2].upper()
-                            ok = False
-                            try:
-                                if hasattr(self.service_manager, "stop_service"):
-                                    ok = bool(self.service_manager.stop_service(svc))
-                                else:
-                                    # fallback: shutdown matching honeypot
-                                    hp = getattr(self.service_manager, "_honeypots", {}).get(svc)
-                                    if hp:
-                                        hp.stop()
-                                        ok = True
-                            except Exception as e:
-                                _send(json.dumps({"ok": False, "error": str(e)}))
-                                continue
-                            if ok:
-                                try:
-                                    self.write_status(self._active_rows_from_services(), running=True)
-                                except Exception:
-                                    pass
-                            _send(json.dumps({"ok": ok, "service": svc}, ensure_ascii=False))
-                        else:
-                            _send(json.dumps({"ok": False, "error": "bad_honeypot_cmd"}))
-                    except Exception as e:
-                        _send(json.dumps({"ok": False, "error": str(e)}))
-                    continue
-
-                if cmd_u == "SHOW":
-                    if is_session_zero() or getattr(self, "_is_daemon_motor", False):
-                        log("[CTRL] SHOW received on daemon/Session0 — NOGUI")
-                        _send("NOGUI")
-                        continue
-                    has_gui = bool(
-                        self.show_cb
-                        and getattr(self, "root", None) is not None
-                    )
-                    if has_gui:
-                        try:
-                            if not self.root.winfo_exists():
-                                has_gui = False
-                        except Exception:
-                            has_gui = False
-                    if has_gui:
-                        log("[CTRL] SHOW received — bringing GUI to front")
-                        self._gui_safe(self.show_cb)
-                        _send("OK")
-                    else:
-                        log("[CTRL] SHOW received — no GUI window (NOGUI)")
-                        _send("NOGUI")
-                    continue
-
-                if cmd_u in ("QUIT", "EXIT", "STOP", "SHUTDOWN"):
-                    updating = False
-                    try:
-                        from client_utils import is_update_in_progress
-                        updating = bool(is_update_in_progress())
-                    except Exception:
-                        updating = False
-
-                    protect_until = float(getattr(self, "_quit_protect_until", 0) or 0)
-                    if (not updating) and time.time() < protect_until:
-                        log("[CTRL] QUIT ignored — GUI startup grace active")
-                        _send("BUSY")
-                        continue
-
-                    # Motor (≥4.6.0): honour QUIT only with update-lock or signed PIN stop
-                    if getattr(self, "_is_daemon_motor", False) and not updating:
-                        try:
-                            from client_operator_stop import is_operator_stop_active
-                            allowed = is_operator_stop_active()
-                        except Exception:
-                            allowed = False
-                        if not allowed:
-                            log("[CTRL] QUIT rejected — no operator_stop token (tamper)")
-                            try:
-                                from client_tamper import report_tamper
-                                report_tamper(
-                                    reason="terminate_attempt",
-                                    leg="daemon",
-                                    resurrected=False,
-                                    resurrect_ms=0,
-                                )
-                            except Exception:
-                                pass
-                            _send("DENIED")
-                            continue
-
-                    self._quit_protect_until = 0.0
-                    try:
-                        from client_self_protection import disarm_for_update
-                        disarm_for_update(reason="ctrl_quit")
-                    except Exception:
-                        pass
-
-                    log("[CTRL] QUIT received — graceful exit for install/update")
-                    try:
-                        from client_lifecycle import report_now
-                        report_now(
-                            "gui_quit",
-                            "control_socket_quit",
-                            {"cmd": cmd_u, "daemon": bool(getattr(self, "_is_daemon_motor", False))},
-                            severity="warning",
-                            log_func=log,
-                        )
-                    except Exception:
-                        pass
-                    try:
-                        from client_utils import write_watchdog_token
-                        write_watchdog_token("stop", WATCHDOG_TOKEN_FILE)
-                    except Exception:
-                        pass
-                    _send("OK")
-                    threading.Thread(
-                        target=lambda: (time.sleep(0.2), self.graceful_exit(0)),
-                        daemon=True,
-                    ).start()
-                    continue
-
             except Exception as e:
                 msg = str(e)
                 if "10038" not in msg and "10004" not in msg:
                     log(f"Control server loop error: {e}")
                 time.sleep(0.05)
-            finally:
-                if conn is not None:
+                continue
+            if not sem.acquire(timeout=10.0):
+                # Saturated: handle inline rather than drop (old behaviour).
+                self._ctrl_conn_worker(conn, None)
+                continue
+            try:
+                threading.Thread(
+                    target=self._ctrl_conn_worker, args=(conn, sem),
+                    daemon=True, name="CtrlConn",
+                ).start()
+            except Exception as e:
+                sem.release()
+                log(f"[CTRL] worker spawn failed, inline: {e}")
+                self._ctrl_conn_worker(conn, None)
+
+    def _ctrl_conn_worker(self, conn, sem):
+        try:
+            self._handle_ctrl_conn(conn)
+        except Exception as e:
+            msg = str(e)
+            if "10038" not in msg and "10004" not in msg:
+                log(f"Control server loop error: {e}")
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            if sem is not None:
+                try:
+                    sem.release()
+                except Exception:
+                    pass
+
+    def _ctrl_cmd_is_parallel_safe(self, cmd_u: str) -> bool:
+        head = (cmd_u or "").split(" ", 1)[0]
+        return head in self._CTRL_PARALLEL_SAFE
+
+    def _handle_ctrl_conn(self, conn):
+        MAX_CMD_LEN = 256
+        conn.settimeout(2.0)
+
+        buf = conn.recv(MAX_CMD_LEN)
+        if not buf:
+            return
+
+        line = buf.split(b"\n", 1)[0]
+        cmd = line.decode("utf-8", "ignore").strip()
+        cmd_u = cmd.upper()
+
+        def _send(data: str):
+            try:
+                if not data.endswith("\n"):
+                    data += "\n"
+                conn.sendall(data.encode("utf-8"))
+            except Exception:
+                pass
+
+        if self._ctrl_cmd_is_parallel_safe(cmd_u):
+            return self._dispatch_ctrl(conn, cmd, cmd_u, _send)
+        lk = getattr(self, "_ctrl_mutation_lock", None)
+        if lk is None:
+            return self._dispatch_ctrl(conn, cmd, cmd_u, _send)
+        with lk:
+            return self._dispatch_ctrl(conn, cmd, cmd_u, _send)
+
+    def _dispatch_ctrl(self, conn, cmd, cmd_u, _send):
+        MAX_CMD_LEN = 256
+        if cmd_u == "PING":
+            _send("PONG")
+            return
+
+        if cmd_u == "STATUS":
+            try:
+                _send(json.dumps(self._ipc_status_payload(), ensure_ascii=False))
+            except Exception as e:
+                _send(json.dumps({"ok": False, "error": str(e)}))
+            return
+
+        if cmd_u == "ACL_HEAL":
+            # Unelevated GUI → SYSTEM motor restores Users RX on _internal
+            try:
+                from client_install_acl import ensure_motor_runtime_user_rx
+                ok = bool(ensure_motor_runtime_user_rx(log=log))
+                _send(json.dumps({"ok": ok}, ensure_ascii=False))
+            except Exception as e:
+                log(f"[CTRL] ACL_HEAL error: {e}")
+                _send(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
+            return
+
+        if cmd_u == "CLEAR_FIREWALL":
+            # GUI (unelevated) → SYSTEM motor purges HP-BLOCK-* + API sync
+            try:
+                cm = getattr(self, "cleanup_manager", None)
+                if cm is None:
+                    _send(json.dumps({
+                        "ok": False,
+                        "error": "no_cleanup_manager",
+                    }, ensure_ascii=False))
+                    return
+                out = cm.clear_firewall(sync_dashboard=True)
+                payload = {"ok": True}
+                if isinstance(out, dict):
+                    payload.update(out)
+                if out.get("error"):
+                    payload["ok"] = False
+                _send(json.dumps(payload, ensure_ascii=False))
+            except Exception as e:
+                log(f"[CTRL] CLEAR_FIREWALL error: {e}")
+                _send(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
+            return
+
+        if cmd_u in ("NG_MAINT_START", "NG_MAINT_END", "NG_MAINT_END_SNAPSHOT",
+                     "NG_SNAPSHOT", "NG_ACCEPT_SURFACE"):
+            try:
+                ng = getattr(self, "network_guard", None)
+                if ng is None:
+                    _send(json.dumps({
+                        "ok": False, "error": "no_network_guard",
+                    }, ensure_ascii=False))
+                    return
+                if cmd_u == "NG_MAINT_START":
+                    out = ng.enter_maintenance(
+                        reason="gui_maintenance", paused_by="gui",
+                    )
+                elif cmd_u == "NG_MAINT_END_SNAPSHOT":
+                    out = ng.exit_maintenance(
+                        snapshot=True, paused_by="gui",
+                    )
+                elif cmd_u == "NG_MAINT_END":
+                    out = ng.exit_maintenance(
+                        snapshot=False, paused_by="gui",
+                    )
+                elif cmd_u == "NG_ACCEPT_SURFACE":
+                    out = ng.accept_surface()
+                else:
+                    saved = ng.snapshot_now()
+                    out = {
+                        "ok": True,
+                        "version": saved.get("version"),
+                        "captured_at": saved.get("captured_at"),
+                    }
+                if "ok" not in out:
+                    out = {"ok": True, **out}
+                _send(json.dumps(out, ensure_ascii=False))
+            except Exception as e:
+                log(f"[CTRL] NG_MAINT error: {e}")
+                _send(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
+            return
+
+        if cmd_u.startswith("BLOCK_IP ") or cmd_u.startswith("UNBLOCK_IP "):
+            try:
+                parts = cmd.split()
+                op = parts[0].upper()
+                ip = parts[1] if len(parts) > 1 else ""
+                reason = parts[2] if len(parts) > 2 else "gui_ipc"
+                ar = getattr(self, "auto_response", None)
+                if not ip:
+                    _send(json.dumps({"ok": False, "error": "missing_ip"}))
+                    return
+                if ar is None:
+                    _send(json.dumps({"ok": False, "error": "no_auto_response"}))
+                    return
+                if op == "BLOCK_IP":
+                    ok = bool(ar.block_ip(ip, reason=reason or "gui_ipc"))
+                else:
+                    ok = bool(ar.unblock_ip(ip))
+                _send(json.dumps({"ok": ok, "ip": ip, "op": op.lower()}, ensure_ascii=False))
+            except Exception as e:
+                log(f"[CTRL] BLOCK/UNBLOCK error: {e}")
+                _send(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
+            return
+
+        if cmd_u in ("RS_UNLOCK", "UNLOCK_RS_QUARANTINE"):
+            try:
+                rs = getattr(self, "ransomware_shield", None)
+                if rs is None:
+                    _send(json.dumps({"ok": False, "error": "no_ransomware_shield"}))
+                    return
+                out = rs.unlock_quarantine(reason="gui_ipc")
+                _send(json.dumps({"ok": True, **out}, ensure_ascii=False))
+            except Exception as e:
+                log(f"[CTRL] RS_UNLOCK error: {e}")
+                _send(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
+            return
+
+        if cmd_u == "THREAT_TOP":
+            try:
+                _send(json.dumps(self._ipc_threat_top_payload(), ensure_ascii=False))
+            except Exception as e:
+                log(f"[CTRL] THREAT_TOP error: {e}")
+                _send(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
+            return
+
+        if cmd_u == "SELF_UPDATE":
+            # GUI "Check for updates" → silent install (same path as dashboard).
+            try:
+                from client_operation_gate import snapshot, busy_result_from_snapshot
+
+                snap = snapshot()
+                if snap or getattr(self, "_gui_self_update_running", False):
+                    busy = busy_result_from_snapshot(snap) if snap else {
+                        "busy": True,
+                        "error": "update_busy",
+                        "phase": "queued",
+                        "progress_pct": 0,
+                    }
+                    _send(json.dumps({
+                        "ok": True,
+                        "started": False,
+                        "busy": True,
+                        "in_flight": True,
+                        "error": "update_busy",
+                        "phase": busy.get("phase"),
+                        "progress_pct": busy.get("progress_pct"),
+                        "from_version": busy.get("from_version"),
+                        "to_version": busy.get("to_version"),
+                        "detail": busy.get("detail") or "operation_in_progress",
+                        "message": "operation_in_progress",
+                    }, ensure_ascii=False))
+                    return
+                self._gui_self_update_running = True
+
+                def _gui_self_update_worker():
                     try:
-                        conn.close()
+                        from client_updater import run_self_update_command
+                        api = getattr(self, "api_client", None)
+                        result = run_self_update_command(
+                            {
+                                "force": False,
+                                "triggered_by": "gui_check_updates",
+                            },
+                            api_client=api,
+                        ) or {}
+                        log(
+                            f"[CTRL] SELF_UPDATE done ok={result.get('ok')} "
+                            f"err={result.get('error')} restart={result.get('restart_required')}"
+                        )
+                        if result.get("restart_required"):
+                            time.sleep(1.2)
+                            try:
+                                from client_self_protection import disarm_for_update
+                                disarm_for_update(reason="gui_self_update")
+                            except Exception:
+                                pass
+                            os._exit(0)
+                    except Exception as exc:
+                        log(f"[CTRL] SELF_UPDATE worker error: {exc}")
+                        try:
+                            from client_update_ui import set_update_ui_status
+                            from client_constants import VERSION as _ver
+                            set_update_ui_status(
+                                "failed",
+                                from_version=str(_ver),
+                                detail=str(exc),
+                                error=str(exc),
+                            )
+                        except Exception:
+                            pass
+                    finally:
+                        try:
+                            self._gui_self_update_running = False
+                        except Exception:
+                            pass
+
+                import threading
+                threading.Thread(
+                    target=_gui_self_update_worker,
+                    name="gui-self-update",
+                    daemon=True,
+                ).start()
+                try:
+                    from client_update_ui import set_update_ui_status
+                    from client_constants import VERSION as _cur
+                    set_update_ui_status(
+                        "accepted",
+                        from_version=str(_cur),
+                        detail="gui_check_updates",
+                    )
+                except Exception:
+                    pass
+                _send(json.dumps({
+                    "ok": True,
+                    "started": True,
+                    "message": "update_accepted",
+                }, ensure_ascii=False))
+            except Exception as e:
+                log(f"[CTRL] SELF_UPDATE error: {e}")
+                try:
+                    self._gui_self_update_running = False
+                except Exception:
+                    pass
+                _send(json.dumps({"ok": False, "error": str(e), "started": False}, ensure_ascii=False))
+            return
+
+        if cmd_u == "IP_TABLE":
+            try:
+                _send(json.dumps(self._ipc_ip_table_payload(), ensure_ascii=False))
+            except Exception as e:
+                log(f"[CTRL] IP_TABLE error: {e}")
+                _send(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
+            return
+
+        if cmd_u == "SHARES_LIST":
+            try:
+                from client_threat_local import list_smb_shares
+                _send(json.dumps(list_smb_shares(), ensure_ascii=False))
+            except Exception as e:
+                log(f"[CTRL] SHARES_LIST error: {e}")
+                _send(json.dumps({"ok": False, "error": str(e), "shares": []}, ensure_ascii=False))
+            return
+
+        if cmd_u.startswith("SHARE_REMOVE "):
+            try:
+                from client_threat_local import remove_smb_share
+                share = cmd.split(None, 1)[1].strip() if " " in cmd else ""
+                _send(json.dumps(remove_smb_share(share), ensure_ascii=False))
+            except Exception as e:
+                log(f"[CTRL] SHARE_REMOVE error: {e}")
+                _send(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
+            return
+
+        if cmd_u == "SVC_LIST":
+            try:
+                from client_threat_local import list_third_party_services
+                _send(json.dumps(list_third_party_services(), ensure_ascii=False))
+            except Exception as e:
+                log(f"[CTRL] SVC_LIST error: {e}")
+                _send(json.dumps({"ok": False, "error": str(e), "services": []}, ensure_ascii=False))
+            return
+
+        if cmd_u.startswith("SVC_STOP "):
+            try:
+                from client_threat_local import stop_windows_service
+                svc = cmd.split(None, 1)[1].strip() if " " in cmd else ""
+                _send(json.dumps(stop_windows_service(svc), ensure_ascii=False))
+            except Exception as e:
+                log(f"[CTRL] SVC_STOP error: {e}")
+                _send(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
+            return
+
+        if cmd_u in ("RS_STATUS", "RS_QUARANTINE"):
+            try:
+                rs = getattr(self, "ransomware_shield", None)
+                if rs is None:
+                    _send(json.dumps({"ok": False, "error": "no_ransomware_shield"}))
+                    return
+                _send(json.dumps({
+                    "ok": True,
+                    "stats": rs.get_stats(),
+                    "quarantine": rs.get_quarantine(),
+                    "detections": rs.get_detections()[-20:],
+                }, ensure_ascii=False))
+            except Exception as e:
+                log(f"[CTRL] RS_STATUS error: {e}")
+                _send(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
+            return
+
+        if cmd_u.startswith("HONEYPOT "):
+            # HONEYPOT START SVC PORT | HONEYPOT STOP SVC | HONEYPOT LIST
+            try:
+                parts = cmd.split()
+                op = (parts[1] if len(parts) > 1 else "").upper()
+                if op == "LIST":
+                    _send(json.dumps({
+                        "ok": True,
+                        "services": list(self.service_manager.running_services or []),
+                    }, ensure_ascii=False))
+                elif op == "START" and len(parts) >= 4:
+                    svc = parts[2].upper()
+                    port = int(parts[3])
+                    ok = bool(self.service_manager.start_service(svc, port))
+                    if ok:
+                        try:
+                            self._on_service_started(svc, port)
+                        except Exception:
+                            pass
+                    _send(json.dumps({"ok": ok, "service": svc, "port": port}, ensure_ascii=False))
+                elif op == "STOP" and len(parts) >= 3:
+                    svc = parts[2].upper()
+                    ok = False
+                    try:
+                        if hasattr(self.service_manager, "stop_service"):
+                            ok = bool(self.service_manager.stop_service(svc))
+                        else:
+                            # fallback: shutdown matching honeypot
+                            hp = getattr(self.service_manager, "_honeypots", {}).get(svc)
+                            if hp:
+                                hp.stop()
+                                ok = True
+                    except Exception as e:
+                        _send(json.dumps({"ok": False, "error": str(e)}))
+                        return
+                    if ok:
+                        try:
+                            self.write_status(self._active_rows_from_services(), running=True)
+                        except Exception:
+                            pass
+                    _send(json.dumps({"ok": ok, "service": svc}, ensure_ascii=False))
+                else:
+                    _send(json.dumps({"ok": False, "error": "bad_honeypot_cmd"}))
+            except Exception as e:
+                _send(json.dumps({"ok": False, "error": str(e)}))
+            return
+
+        if cmd_u == "SHOW":
+            if is_session_zero() or getattr(self, "_is_daemon_motor", False):
+                log("[CTRL] SHOW received on daemon/Session0 — NOGUI")
+                _send("NOGUI")
+                return
+            has_gui = bool(
+                self.show_cb
+                and getattr(self, "root", None) is not None
+            )
+            if has_gui:
+                try:
+                    if not self.root.winfo_exists():
+                        has_gui = False
+                except Exception:
+                    has_gui = False
+            if has_gui:
+                log("[CTRL] SHOW received — bringing GUI to front")
+                self._gui_safe(self.show_cb)
+                _send("OK")
+            else:
+                log("[CTRL] SHOW received — no GUI window (NOGUI)")
+                _send("NOGUI")
+            return
+
+        if cmd_u in ("QUIT", "EXIT", "STOP", "SHUTDOWN"):
+            updating = False
+            try:
+                from client_utils import is_update_in_progress
+                updating = bool(is_update_in_progress())
+            except Exception:
+                updating = False
+
+            protect_until = float(getattr(self, "_quit_protect_until", 0) or 0)
+            if (not updating) and time.time() < protect_until:
+                log("[CTRL] QUIT ignored — GUI startup grace active")
+                _send("BUSY")
+                return
+
+            # Motor (≥4.6.0): honour QUIT only with update-lock or signed PIN stop
+            if getattr(self, "_is_daemon_motor", False) and not updating:
+                try:
+                    from client_operator_stop import is_operator_stop_active
+                    allowed = is_operator_stop_active()
+                except Exception:
+                    allowed = False
+                if not allowed:
+                    log("[CTRL] QUIT rejected — no operator_stop token (tamper)")
+                    try:
+                        from client_tamper import report_tamper
+                        report_tamper(
+                            reason="terminate_attempt",
+                            leg="daemon",
+                            resurrected=False,
+                            resurrect_ms=0,
+                        )
                     except Exception:
                         pass
+                    _send("DENIED")
+                    return
+
+            self._quit_protect_until = 0.0
+            try:
+                from client_self_protection import disarm_for_update
+                disarm_for_update(reason="ctrl_quit")
+            except Exception:
+                pass
+
+            log("[CTRL] QUIT received — graceful exit for install/update")
+            try:
+                from client_lifecycle import report_now
+                report_now(
+                    "gui_quit",
+                    "control_socket_quit",
+                    {"cmd": cmd_u, "daemon": bool(getattr(self, "_is_daemon_motor", False))},
+                    severity="warning",
+                    log_func=log,
+                )
+            except Exception:
+                pass
+            try:
+                from client_utils import write_watchdog_token
+                write_watchdog_token("stop", WATCHDOG_TOKEN_FILE)
+            except Exception:
+                pass
+            _send("OK")
+            threading.Thread(
+                target=lambda: (time.sleep(0.2), self.graceful_exit(0)),
+                daemon=True,
+            ).start()
+            return
 
     def start_single_instance_server(self):
         """Bind control socket — ONLY Session-0 daemon motor. GUI never binds."""

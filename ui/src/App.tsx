@@ -1,4 +1,5 @@
 import { type FormEvent, useCallback, useEffect, useState } from 'react'
+import { usePoll } from './usePoll'
 import { motorBridge, type MotorStatus } from './bridge'
 import { AccountActionModal } from './components/AccountActionModal'
 import { AboutModal, type AboutInfo } from './components/AboutModal'
@@ -366,19 +367,18 @@ export default function App() {
     void ready()
     // Quiet poll: remote cmds still surface within a few seconds without
     // hammering STATUS / threats/config (StatusPage extras) every 2s.
-    const ms = locked === false ? (statusGeneration > 0 ? 3000 : 5000) : 8000
-    const timer = window.setInterval(() => {
-      if (locked === false) void refresh({ silent: true })
-      else void refreshSession()
-    }, ms)
     return () => {
       window.removeEventListener('pywebviewready', ready)
       window.removeEventListener('asteria-session-gate', syncGate)
       window.removeEventListener('focus', syncGate)
       document.removeEventListener('visibilitychange', syncGate)
-      window.clearInterval(timer)
     }
   }, [locked, refresh, refreshSession, statusGeneration])
+  // P1/P2: visible-only quiet poll, next tick only after the previous finished.
+  usePoll(
+    () => (locked === false ? refresh({ silent: true }) : refreshSession()),
+    locked === false ? (statusGeneration > 0 ? 3000 : 5000) : 8000,
+  )
 
   const onMenuAction = useCallback(
     (action: MenuAction) => {
@@ -490,17 +490,12 @@ export default function App() {
   }, [status?.version])
 
   // Fast banner poll while an update is in flight.
-  useEffect(() => {
-    if (locked !== false) return
-    const active =
+  const bannerActive = Boolean(
+    locked === false &&
       banner &&
-      ['accepted', 'downloading', 'staging', 'installing'].includes(String(banner.phase || ''))
-    if (!active) return
-    const timer = window.setInterval(() => {
-      void refreshBanner()
-    }, 800)
-    return () => window.clearInterval(timer)
-  }, [banner, locked, refreshBanner])
+      ['accepted', 'downloading', 'staging', 'installing'].includes(String(banner.phase || '')),
+  )
+  usePoll(refreshBanner, 800, bannerActive)
 
   // PIN gate: never render Control Center chrome while host session is locked.
   if (locked !== false) {
