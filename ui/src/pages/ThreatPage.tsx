@@ -9,6 +9,7 @@ import { t } from '../i18n'
 import { asRecord, pick } from '../lib'
 import { formatLogon, formatThreatTime, normalizeAlertList, alertFields, type ThreatTab, type Attacker, type LocalUser } from './threat/model'
 import type { HardenCheck } from '../data/types'
+import { toastResult } from '../feedback'
 
 
 type Props = {
@@ -174,7 +175,7 @@ export function ThreatPage({ onToast }: Props) {
     setBusy(true)
     try {
       const result = await motorBridge.ipc('BLOCK_IP', { ip, reason: 'threat_center' })
-      onToast(result.ok ? t('toast_blocked', { ip }) : String(result.error || 'Block'), result.ok ? 'ok' : 'err')
+      toastResult(onToast, result, t('toast_blocked', { ip }))
       setBlockIp('')
       await refreshThreats()
     } finally {
@@ -187,10 +188,7 @@ export function ThreatPage({ onToast }: Props) {
     setBusy(true)
     try {
       const result = await motorBridge.ipc('UNBLOCK_IP', { ip, reason: 'threat_center' })
-      onToast(
-        result.ok ? t('toast_unblocked', { ip }) : String(result.error || 'Unblock'),
-        result.ok ? 'ok' : 'err',
-      )
+      toastResult(onToast, result, t('toast_unblocked', { ip }))
       await refreshThreats()
     } finally {
       setBusy(false)
@@ -207,7 +205,7 @@ export function ThreatPage({ onToast }: Props) {
     try {
       const next = [...whitelist, ip]
       const result = await motorBridge.cloud('POST', 'threats/config', { whitelist_ips: next })
-      onToast(result.ok ? t('toast_wl_ok') : String(result.error || 'Whitelist'), result.ok ? 'ok' : 'err')
+      toastResult(onToast, result, t('toast_wl_ok'))
       if (result.ok) setWhitelist(next)
     } finally {
       setBusy(false)
@@ -218,7 +216,7 @@ export function ThreatPage({ onToast }: Props) {
     setBusy(true)
     try {
       const result = await motorBridge.ipc('NG_SNAPSHOT')
-      onToast(result.ok ? t('toast_snapshot') : String(result.error || 'Snapshot'), result.ok ? 'ok' : 'err')
+      toastResult(onToast, result, t('toast_snapshot'))
     } finally {
       setBusy(false)
     }
@@ -228,7 +226,7 @@ export function ThreatPage({ onToast }: Props) {
     setBusy(true)
     try {
       const result = await motorBridge.harden('fix', target)
-      onToast(result.ok ? t('toast_harden_ok') : String(result.error || 'harden'), result.ok ? 'ok' : 'err')
+      toastResult(onToast, result, t('toast_harden_ok'))
       await refreshExtras()
     } finally {
       setBusy(false)
@@ -241,10 +239,7 @@ export function ThreatPage({ onToast }: Props) {
     setBusy(true)
     try {
       const result = await motorBridge.ipc('SHARE_REMOVE', { name })
-      onToast(
-        result.ok ? t('toast_share_removed', { name }) : String(result.error || 'SHARE_REMOVE'),
-        result.ok ? 'ok' : 'err',
-      )
+      toastResult(onToast, result, t('toast_share_removed', { name }))
       await refreshExtras()
     } finally {
       setBusy(false)
@@ -257,10 +252,7 @@ export function ThreatPage({ onToast }: Props) {
     setBusy(true)
     try {
       const result = await motorBridge.ipc('SVC_STOP', { name })
-      onToast(
-        result.ok ? t('toast_svc_stopped', { name: display || name }) : String(result.error || 'SVC_STOP'),
-        result.ok ? 'ok' : 'err',
-      )
+      toastResult(onToast, result, t('toast_svc_stopped', { name: display || name }))
       await refreshExtras()
     } finally {
       setBusy(false)

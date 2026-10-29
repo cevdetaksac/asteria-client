@@ -24,7 +24,8 @@ Kurallar: 443 çıkış bağlantısı asla kesilmez, yıkıcı komut yok, her fa
 - [x] **U2** Teknik jargonu kaldır ('THREAT_TOP total', 'Cloud SoT', 'IPC 127.0.0.1:58632', çift Snapshot, başlıkta token). Dosyalar: `ui/src/i18n/catalog.ts`, sayfalar. Efor 3 sa. Risk düşük.
   - Sonu? (v4.9.153): SoT/IPC/threats-config/THREAT_TOP ifadeleri sade TR+EN metinlerle de?i?ti; Durum kart?nda 127.0.0.1:58632 yerine s?r?m; Tehditler ba?l???ndaki ?ift Snapshot d??mesi kald?r?ld?; ba?l?k ?eridinde token metni yok (kopyalama d??mesi + men? kald?).
 - [ ] **U3** En sık aksiyonlar Durum'da tek tık: IP engelle/kaldır, beyaz liste, koruma modu, güncelle, motoru kurtar. Dosya: `StatusPage.tsx`. Efor 0.5 gün. Risk düşük.
-- [ ] **U4** Ortak Loading / Empty / Error bileşenleri + tek hata/toast formatı. Dosyalar: `ui/src/components/*`. Efor 0.5 gün. Risk düşük.
+- [x] **U4** Ortak Loading / Empty / Error bileşenleri + tek hata/toast formatı. Dosyalar: `ui/src/components/*`. Efor 0.5 gün. Risk düşük.
+  - Sonu?: `ui/src/feedback.ts` (toastResult/errorText: tek hata format?, ham kodlar '??lem ba?ar?s?z oldu (KOD)'), 23 toast yeri; `components/StateViews.tsx` (Loading/Empty/Error), DataTable bo? durumu ortak bile?ende.
 - [x] **U5** Başlık şeridi sade: durum noktası + makine adı, detay açılır. Dosyalar: `IdentityStrip.tsx`, `LiveMeters.tsx`, `App.tsx`. Efor 2 sa. Risk düşük.
   - Sonu?: ba?l?kta yaln?zca durum noktas? + makine ad?; t?klay?nca ID, IP, canl? ?l?erler ve token kopyala a??l?r (Esc/d??ar? t?k kapat?r).
 - [ ] **U6** Ağır/nadir görünümler dashboard'a link (uyarı geçmişi, servis/paylaşım envanteri, yönetim konsolları). Dosyalar: `ThreatPage.tsx`, `ToolsPage.tsx`. Efor 0.5 gün. Risk düşük.
@@ -32,3 +33,8 @@ Kurallar: 443 çıkış bağlantısı asla kesilmez, yıkıcı komut yok, her fa
 ## Faz 4 — Mimari (başlanmadı)
 - [ ] **A1** Motorda periyodik snapshot + olay push; GUI poll'suz. Dosyalar: `client.py`, `client_daemon_ipc.py`, `asteria_gui.py`, `ui/`. Efor 2-3 gün. Risk orta.
 - [ ] **A2** Hafif tray + mini pencere; ağır yönetim asteria.run dashboard'da. Efor 1-2 hafta. Risk yüksek. **Ürün kararı gerekli (Cevdet).**
+
+## Ek ? Eski kod temizli?i (Cevdet onay? 01:57)
+
+- [ ] **L1** Eski CTk `client_gui.py` kald?r; `client.py` i?indeki ModernGUI yolu g?venli fallback ile yeni GUI'ye (asteria_gui) y?nlensin.
+- [ ] **L2** Kullan?lmayan .py dosyalar?: import grafi?i + PyInstaller .spec + dinamik importlar + testler ile kan?tlanm?? olanlar? sil.

@@ -8,6 +8,7 @@ import { RowActionMenu } from '../components/RowActionMenu'
 import { t } from '../i18n'
 import { asRecord, pick } from '../lib'
 import type { IpRow } from '../data/types'
+import { toastResult } from '../feedback'
 
 type Props = {
   onToast: (msg: string, kind?: 'ok' | 'err') => void
@@ -67,7 +68,7 @@ export function IpListPage({ onToast }: Props) {
     setBusy(true)
     try {
       const result = await motorBridge.cloud('POST', 'threats/config', { whitelist_ips: next })
-      onToast(result.ok ? t('toast_wl_ok') : String(result.error || 'Whitelist'), result.ok ? 'ok' : 'err')
+      toastResult(onToast, result, t('toast_wl_ok'))
       await refresh()
     } finally {
       setBusy(false)
@@ -79,7 +80,7 @@ export function IpListPage({ onToast }: Props) {
     setBusy(true)
     try {
       const result = await motorBridge.ipc('CLEAR_FIREWALL')
-      onToast(result.ok ? t('toast_fw_cleared') : String(result.error || 'CLEAR_FIREWALL'), result.ok ? 'ok' : 'err')
+      toastResult(onToast, result, t('toast_fw_cleared'))
       await refresh()
     } finally {
       setBusy(false)

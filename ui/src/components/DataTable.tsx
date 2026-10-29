@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { t } from '../i18n'
+import { EmptyState } from './StateViews'
 
 export type DataColumn<T> = {
   id: string
@@ -121,7 +122,7 @@ export function DataTable<T>({
             {slice.length === 0 && (
               <tr>
                 <td colSpan={columns.length} className="empty">
-                  {empty ?? t('dt_empty')}
+                  <EmptyState>{empty}</EmptyState>
                 </td>
               </tr>
             )}

@@ -5,6 +5,7 @@ import { FeatureGuide } from '../components/FeatureGuide'
 import { Switch } from '../components/Switch'
 import { t } from '../i18n'
 import { asRecord, pick, triLabel } from '../lib'
+import { toastResult } from '../feedback'
 
 type Props = {
   status: MotorStatus | null
@@ -56,7 +57,7 @@ export function LayersPage({ status, statusLoading = false, onRefresh, onToast }
       const result = await motorBridge.cloud('POST', 'threats/config', {
         protection: { defense_policy: policy },
       })
-      onToast(result.ok ? t('toast_policy', { policy }) : String(result.error || 'policy'), result.ok ? 'ok' : 'err')
+      toastResult(onToast, result, t('toast_policy', { policy }))
       onRefresh()
     } finally {
       setToggleBusy(false)
@@ -70,7 +71,7 @@ export function LayersPage({ status, statusLoading = false, onRefresh, onToast }
       const result = await motorBridge.cloud('POST', 'threats/config', {
         protection: { defense_policy: 'observe', defense_policy_locked: true },
       })
-      onToast(result.ok ? t('toast_lock_ok') : String(result.error || 'lock'), result.ok ? 'ok' : 'err')
+      toastResult(onToast, result, t('toast_lock_ok'))
       onRefresh()
     } finally {
       setToggleBusy(false)
@@ -86,7 +87,7 @@ export function LayersPage({ status, statusLoading = false, onRefresh, onToast }
       if (key === 'canaries') patch.canary_files_enabled = value
       if (key === 'network_guard') patch.protection = { network_guard: { enabled: value } }
       const result = await motorBridge.cloud('POST', 'threats/config', patch)
-      onToast(result.ok ? t('toast_layer_ok') : String(result.error || 'layer'), result.ok ? 'ok' : 'err')
+      toastResult(onToast, result, t('toast_layer_ok'))
       onRefresh()
     } finally {
       setToggleBusy(false)
@@ -98,10 +99,7 @@ export function LayersPage({ status, statusLoading = false, onRefresh, onToast }
     setToggleBusy(true)
     try {
       const result = await motorBridge.ipc(start ? 'NG_MAINT_START' : 'NG_MAINT_END_SNAPSHOT')
-      onToast(
-        result.ok ? (start ? t('toast_ng_maint_on') : t('toast_ng_maint_off')) : String(result.error || 'NG'),
-        result.ok ? 'ok' : 'err',
-      )
+      toastResult(onToast, result, (start ? t('toast_ng_maint_on') : t('toast_ng_maint_off')))
       onRefresh()
     } finally {
       setToggleBusy(false)
@@ -113,7 +111,7 @@ export function LayersPage({ status, statusLoading = false, onRefresh, onToast }
     setToggleBusy(true)
     try {
       const result = await motorBridge.ipc('NG_ACCEPT_SURFACE')
-      onToast(result.ok ? t('toast_ng_accept') : String(result.error || 'NG accept'), result.ok ? 'ok' : 'err')
+      toastResult(onToast, result, t('toast_ng_accept'))
       onRefresh()
     } finally {
       setToggleBusy(false)

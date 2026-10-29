@@ -2409,3 +2409,10 @@ th.actions-head {
 .identity-pop dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; }
 .identity-pop dt { opacity: 0.65; }
 .identity-pop dd { margin: 0; }
+
+/* U4: shared state views */
+.state-view { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 18px 12px; opacity: 0.8; text-align: center; }
+.state-view.error { color: #e5484d; opacity: 1; }
+.state-spinner { width: 14px; height: 14px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: state-spin 0.8s linear infinite; }
+@keyframes state-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .state-spinner { animation: none; } }

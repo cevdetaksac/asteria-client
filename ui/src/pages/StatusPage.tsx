@@ -9,6 +9,7 @@ import { t } from '../i18n'
 import { asRecord, boolLabel, formatBps, pick, triLabel } from '../lib'
 import { invalidate } from '../data/shared'
 import type { HardenCheck, IpRow } from '../data/types'
+import { toastResult } from '../feedback'
 
 type Props = {
   status: MotorStatus | null
@@ -100,22 +101,19 @@ export function StatusPage({ status, online, statusLoading = false, updatedAt, o
 
   const unlockRs = async () => {
     const result = await motorBridge.ipc('RS_UNLOCK')
-    onToast(result.ok ? t('toast_rs_cleared') : String(result.error || 'RS unlock'), result.ok ? 'ok' : 'err')
+    toastResult(onToast, result, t('toast_rs_cleared'))
     onRefresh()
   }
 
   const ngAccept = async () => {
     const result = await motorBridge.ipc('NG_ACCEPT_SURFACE')
-    onToast(result.ok ? t('toast_ng_accept') : String(result.error || 'NG accept'), result.ok ? 'ok' : 'err')
+    toastResult(onToast, result, t('toast_ng_accept'))
     onRefresh()
   }
 
   const ngMaint = async (start: boolean) => {
     const result = await motorBridge.ipc(start ? 'NG_MAINT_START' : 'NG_MAINT_END_SNAPSHOT')
-    onToast(
-      result.ok ? (start ? t('toast_ng_maint_on') : t('toast_ng_maint_off')) : String(result.error || 'NG'),
-      result.ok ? 'ok' : 'err',
-    )
+    toastResult(onToast, result, (start ? t('toast_ng_maint_on') : t('toast_ng_maint_off')))
     onRefresh()
   }
 
@@ -128,7 +126,7 @@ export function StatusPage({ status, online, statusLoading = false, updatedAt, o
           ? { ransomware_protection_enabled: value }
           : { protection: { network_guard: { enabled: value } } }
       const result = await motorBridge.cloud('POST', 'threats/config', patch)
-      onToast(result.ok ? t('toast_layer_ok') : String(result.error || 'layer'), result.ok ? 'ok' : 'err')
+      toastResult(onToast, result, t('toast_layer_ok'))
       onRefresh()
     } finally {
       setBusy(false)
@@ -139,10 +137,7 @@ export function StatusPage({ status, online, statusLoading = false, updatedAt, o
     setBusy(true)
     try {
       const result = await motorBridge.harden('fix', target)
-      onToast(
-        result.ok ? t('toast_fix_ok', { target }) : String(result.error || t('toast_fix_fail')),
-        result.ok ? 'ok' : 'err',
-      )
+      toastResult(onToast, result, t('toast_fix_ok', { target }))
       await loadExtras()
     } finally {
       setBusy(false)
@@ -179,7 +174,7 @@ export function StatusPage({ status, online, statusLoading = false, updatedAt, o
       const current = Array.isArray(data.whitelist_ips) ? data.whitelist_ips.map(String) : []
       const next = Array.from(new Set([...current, ip]))
       const result = await motorBridge.cloud('POST', 'threats/config', { whitelist_ips: next })
-      onToast(result.ok ? t('toast_wl_ok') : String(result.error || 'Whitelist'), result.ok ? 'ok' : 'err')
+      toastResult(onToast, result, t('toast_wl_ok'))
       await loadExtras()
     } finally {
       setBusy(false)
@@ -197,7 +192,7 @@ export function StatusPage({ status, online, statusLoading = false, updatedAt, o
       const current = Array.isArray(data.whitelist_ips) ? data.whitelist_ips.map(String) : []
       const next = current.filter((x) => x !== ip)
       const result = await motorBridge.cloud('POST', 'threats/config', { whitelist_ips: next })
-      onToast(result.ok ? t('toast_wl_ok') : String(result.error || 'Whitelist'), result.ok ? 'ok' : 'err')
+      toastResult(onToast, result, t('toast_wl_ok'))
       await loadExtras()
     } finally {
       setBusy(false)

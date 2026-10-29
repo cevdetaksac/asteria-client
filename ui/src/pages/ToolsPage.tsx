@@ -3,6 +3,7 @@ import { motorBridge } from '../bridge'
 import { DetailModal } from '../components/DetailModal'
 import { FeatureGuide } from '../components/FeatureGuide'
 import { t } from '../i18n'
+import { toastResult } from '../feedback'
 
 type Props = {
   onToast: (msg: string, kind?: 'ok' | 'err') => void
@@ -95,7 +96,7 @@ export function ToolsPage({ onToast }: Props) {
     setBusy(`open:${id}`)
     try {
       const r = await motorBridge.tools('open', id)
-      onToast(r.ok ? t('tools_open_ok', { name: id }) : String(r.error || 'open'), r.ok ? 'ok' : 'err')
+      toastResult(onToast, r, t('tools_open_ok', { name: id }))
     } finally {
       setBusy('')
     }
@@ -114,10 +115,7 @@ export function ToolsPage({ onToast }: Props) {
       const r = await motorBridge.tools('repair', id, Boolean(destructive))
       const detail = String(r.detail || r.error || (r.ok ? 'ok' : 'failed'))
       setLastResult(`${id}: ${detail}`)
-      onToast(
-        r.ok ? t('tools_repair_ok', { name: t(`tools_repair_${id}` as 'tools_repair_webview2') }) : String(r.error || detail),
-        r.ok ? 'ok' : 'err',
-      )
+      toastResult(onToast, r, t('tools_repair_ok', { name: t(`tools_repair_${id}` as 'tools_repair_webview2') }))
       await refresh()
     } finally {
       setBusy('')
