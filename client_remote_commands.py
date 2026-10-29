@@ -112,6 +112,8 @@ ALLOWED_COMMANDS: Set[str] = {
     "system_recovery_diff", "system_recovery_restore",
     # Windows Tools Repair (contract ≥1.4.49 — agent/tools-repair.md)
     "tools_repair_catalog", "tools_repair_diagnose", "tools_repair",
+    # Secure remote console (2FA + blacklist; signature required)
+    "console_exec",
     # GUI PIN management from dashboard (contract ≥4.8.3)
     "set_gui_pin", "clear_gui_pin",
     # Honeypot bait start/stop (contract attacks-and-services — dashboard "tunnel")
@@ -155,6 +157,7 @@ _HANDLER_TIMEOUTS = {
     "port_expose": 120, "firewall_undo": 60, "sql_auth_diag": 60,
     "list_firewall": 180, "firewall_rule": 90,
 }
+_HANDLER_TIMEOUTS["console_exec"] = 150
 _DEFAULT_HANDLER_TIMEOUT = 300
 
 # High-frequency IR commands — skip global cmd/min rate limit
@@ -1246,6 +1249,10 @@ class RemoteCommandExecutor:
             )
         if verdict == "invalid":
             return "Invalid command signature"
+        # console_exec: signature REQUIRED (missing soft-allow does not apply)
+        _ctype_early = str(cmd.get("command_type") or cmd.get("type") or "")
+        if _ctype_early == "console_exec" and verdict != "ok":
+            return f"console_exec requires valid signature (got {verdict})"
 
         # 0b. Envelope v2 observe-only (api/12) — never hard-fail v1 path
         try:
@@ -4206,6 +4213,15 @@ $out | ConvertTo-Json -Compress
             return {"success": False, "error": str(e)}
 
     # ── Windows Tools Repair (contract ≥1.4.49 — agent/tools-repair.md) ─
+
+
+    def _cmd_console_exec(self, params: dict) -> dict:
+        """Secure remote CMD/PowerShell — blacklist + approval_id enforced here."""
+        try:
+            from client_console_exec import execute_console
+            return execute_console(params or {})
+        except Exception as e:
+            return {"success": False, "ok": False, "error": str(e), "code": "HANDLER_ERROR"}
 
     def _cmd_tools_repair_catalog(self, params: dict) -> dict:
         try:
