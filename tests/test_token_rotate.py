@@ -162,7 +162,7 @@ class TestRotateTokenApiHelper(unittest.TestCase):
         with mock.patch("requests.post", side_effect=_post), \
                 mock.patch("client_api.resolve_tls_verify", return_value=True):
             out = rotate_token_api(
-                "https://honeypot.yesnext.com.tr/api",
+                "https://asteria.run/api",
                 "old-uuid",
                 "new-uuid",
                 machine_id="fp123",

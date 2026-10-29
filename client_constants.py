@@ -76,9 +76,21 @@ INSTALLER_FILE_PREFIXES = ("asteria-client-installer", "cloud-client-installer")
 
 # API Configuration Ã¢â‚¬â€ primary asteria.run; legacy YesNext host for failover
 API_URL = get_from_config("api.base_url", "https://asteria.run/api")
-API_URL_LEGACY = get_from_config(
-    "api.legacy_base_url", "https://honeypot.yesnext.com.tr/api"
-)
+# Legacy honeypot.yesnext.com.tr host retired: failover disabled. Any
+# configured value pointing at a retired host is ignored (asteria.run only).
+RETIRED_API_HOSTS = ("honeypot.yesnext.com.tr", "api.yesnext.com.tr")
+
+
+def _sanitize_api_url(url, fallback=""):
+    u = (url or "").strip()
+    low = u.lower()
+    if any(h in low for h in RETIRED_API_HOSTS):
+        return fallback
+    return u
+
+
+API_URL = _sanitize_api_url(API_URL, "https://asteria.run/api") or "https://asteria.run/api"
+API_URL_LEGACY = _sanitize_api_url(get_from_config("api.legacy_base_url", ""), "")
 
 # Local control server for single instance
 CONTROL_HOST = "127.0.0.1"
@@ -416,8 +428,6 @@ REGISTRY_KEY_PATH = r"SOFTWARE\Asteria"
 LEGITIMATE_DOMAINS = [
     "asteria.run",
     "www.asteria.run",
-    "honeypot.yesnext.com.tr",
-    "api.yesnext.com.tr",
     "github.com",
     "raw.githubusercontent.com",
 ]
@@ -603,7 +613,7 @@ __all__ = [
     'CLIENT_EXE_NAME', 'CLIENT_EXE_ALIASES',
     
     # Network configuration  
-    'API_URL', 'API_URL_LEGACY', 'CONTROL_HOST', 'CONTROL_PORT', 'SERVER_NAME', 'CONNECT_TIMEOUT',
+    'API_URL', 'API_URL_LEGACY', 'RETIRED_API_HOSTS', 'CONTROL_HOST', 'CONTROL_PORT', 'SERVER_NAME', 'CONNECT_TIMEOUT',
     
     # Honeypot service definitions
     'HONEYPOT_SERVICES', 'SSH_BANNER', 'FTP_BANNER', 'MYSQL_VERSION', 'MSSQL_VERSION', 'RDP_CERT_CN',

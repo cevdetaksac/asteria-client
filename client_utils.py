@@ -788,7 +788,7 @@ DEFAULT_CONFIG: dict = {
     },
     "api": {
         "base_url": "https://asteria.run/api",
-        "legacy_base_url": "https://honeypot.yesnext.com.tr/api",
+        "legacy_base_url": "",
         "timeout": 30,
         "retry_count": 3
     },

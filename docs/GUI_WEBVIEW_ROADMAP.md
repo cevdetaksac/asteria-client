@@ -56,7 +56,7 @@ WebView2 + React (dashboard dili), localhost IPC ile canlı; motor CTk/WebView t
 | PIN | `client_gui_lock.py` CTk diyalog | Host native dialog **veya** web modal + host doğrulama |
 | Toast | CTk + tray balloon | Web toast + tray balloon |
 | Build | PyInstaller onedir + NSIS | + `ui/` dist assets + WebView2 Runtime stratejisi |
-| Dashboard FE | Bu workspace’te yok (canlı: honeypot.yesnext.com.tr) | Token/bileşen hizalaması ayrı cloud FE repo ile |
+| Dashboard FE | Bu workspace’te yok (canlı: asteria.run) | Token/bileşen hizalaması ayrı cloud FE repo ile |
 
 **Korunacak yüzeyler (WebView dışında):**
 
@@ -428,7 +428,7 @@ Sonra: kullanıcı onayı ile Faz 2 sayfa sırasına geçilir.
 - `cloud-client/client_gui_theme.py` — geçici tokenler  
 - `cloud-client/client_daemon_ipc.py` — IPC  
 - `cloud-client/client_settings_util.py` — ayar şeması  
-- Canlı dashboard: `https://asteria.run` (legacy alias: honeypot.yesnext.com.tr)  
+- Canlı dashboard: `https://asteria.run`  
 - Üst plan: [`ASTERIA_DUAL_TRACK_ROADMAP.md`](ASTERIA_DUAL_TRACK_ROADMAP.md)
 
 ---

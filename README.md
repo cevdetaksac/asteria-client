@@ -31,7 +31,7 @@ Windows agent for [Asteria](https://asteria.run): honeypot tunnels, threat respo
    Installer ≥4.9.69 embeds the **offline Standalone x64** payload and installs it
    silently when missing (no internet required on the host). Motor/honeypots work without it.
 
-API base (default): `https://asteria.run/api` (legacy failover: honeypot.yesnext.com.tr)
+API base (default): `https://asteria.run/api`
 
 ## Build
 

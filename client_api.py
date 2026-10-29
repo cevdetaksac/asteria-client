@@ -39,14 +39,20 @@ class AsteriaAPIClient:
     """Asteria API bağlantı yönetimi sınıfı"""
     
     def __init__(self, base_url: str, log_func=None, legacy_base_url: str = ""):
-        self.base_url = base_url.rstrip('/')
+        _retired = ("honeypot.yesnext.com.tr", "api.yesnext.com.tr")
+
+        def _clean(u, fb=""):
+            u = (u or "").strip()
+            return fb if any(h in u.lower() for h in _retired) else u
+
+        self.base_url = _clean(base_url, "https://asteria.run/api").rstrip('/')
         self.primary_base_url = self.base_url
         try:
             from client_constants import API_URL_LEGACY
             default_legacy = API_URL_LEGACY
         except Exception:
-            default_legacy = "https://honeypot.yesnext.com.tr/api"
-        self.legacy_base_url = (legacy_base_url or default_legacy).rstrip("/")
+            default_legacy = ""
+        self.legacy_base_url = _clean(legacy_base_url or default_legacy).rstrip("/")
         self._using_legacy = False
         self.session = self._create_session()
         self.log = log_func if log_func else print
