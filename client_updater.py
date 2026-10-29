@@ -2187,6 +2187,11 @@ def run_self_update_command(
         try:
             from client_utils import fresh_helper_started, extract_update_fail_detail
             helper_ok = fresh_helper_started(_log_off0)
+            for _hw in range(30):  # helper may still be rotating its log - give it 30s
+                if helper_ok:
+                    break
+                time.sleep(1.0)
+                helper_ok = fresh_helper_started(_log_off0)
             if not helper_ok:
                 release_update_lock(resume_updaters=True)
                 from client_update_ui import set_update_ui_status

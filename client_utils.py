@@ -2511,17 +2511,77 @@ def archive_stale_update_install_log(*, reason: str = "pre_launch") -> bool:
         return False
 
 
+HELPER_START_MARKERS = ("update-and-install start", "helper_boot pid=")
+HELPER_FRESH_WINDOW_SEC = 300
+
+
 def read_update_log_since(byte_offset: int) -> str:
-    """Return bytes written to update-install.log after byte_offset."""
+    """Return bytes written to update-install.log after byte_offset.
+
+    The helper rotates/rewrites the log at start (Initialize-UpLogRetention),
+    so the file can SHRINK below our saved offset. In that case return the
+    whole (rewritten) file instead of nothing - callers then filter by time.
+    """
     log_path = update_install_log_path()
     try:
         if not os.path.isfile(log_path):
             return ""
+        off = max(0, int(byte_offset or 0))
+        if os.path.getsize(log_path) < off:
+            off = 0
         with open(log_path, "r", encoding="utf-8", errors="ignore") as fh:
-            fh.seek(max(0, int(byte_offset or 0)))
+            fh.seek(off)
             return fh.read() or ""
     except Exception:
         return ""
+
+
+def _log_line_ts(line: str):
+    import datetime as _dt
+    import re as _re
+    m = _re.match(r"^\ufeff?\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]", line.strip())
+    if not m:
+        return None
+    try:
+        return _dt.datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return None
+
+
+def fresh_helper_started(byte_offset: int, *, now=None, window_sec: int = HELPER_FRESH_WINDOW_SEC) -> bool:
+    """True if the helper logged a start marker after launch.
+
+    Accepts both the legacy marker and the first-line ``helper_boot`` marker.
+    Survives log rotation/truncation: if the file shrank, only marker lines
+    stamped within ``window_sec`` of now count (stale Sept lines never do).
+    """
+    import datetime as _dt
+    new = read_update_log_since(byte_offset)
+    if not new:
+        return False
+    truncated = not _offset_still_valid(byte_offset)
+    now = now or _dt.datetime.now()
+    for line in new.splitlines():
+        if not any(m in line for m in HELPER_START_MARKERS):
+            continue
+        ts = _log_line_ts(line)
+        if ts is None:
+            if not truncated:
+                return True
+            continue
+        if abs((now - ts).total_seconds()) <= window_sec:
+            return True
+        if not truncated:
+            # bytes are new (appended after launch) - trust even if clock skew
+            return True
+    return False
+
+
+def _offset_still_valid(byte_offset: int) -> bool:
+    try:
+        return os.path.getsize(update_install_log_path()) >= int(byte_offset or 0)
+    except Exception:
+        return False
 
 
 def extract_update_fail_detail(log_text: str = "", *, max_scan: int = 40) -> str:
@@ -2553,14 +2613,6 @@ def extract_update_fail_detail(log_text: str = "", *, max_scan: int = 40) -> str
                     return line.split("detail=", 1)[-1].strip()[:180]
                 return line.strip()[-180:]
     return ""
-
-
-def fresh_helper_started(byte_offset: int) -> bool:
-    """True only if NEW log bytes contain the helper start marker."""
-    new = read_update_log_since(byte_offset)
-    if not new:
-        return False
-    return "update-and-install start" in new
 
 
 def launch_safe_update_install(

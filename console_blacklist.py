@@ -13,7 +13,8 @@ MAX_OUTPUT_BYTES = 64 * 1024
 # Patterns applied after normalize(). All are case-insensitive substring/regex.
 _BLOCK_RES = [
     # Disk / partition wipe
-    r"\bformat\b",
+    # format COMMAND only (not Format-Table/Format-List/Format-Volume handled below)
+    r"(?:^|[;&|(]|\bcmd(?:\.exe)?\s+/[ck])\s*format(?:\.com|\.exe)?\b(?!-)",
     r"\bdiskpart\b",
     r"\bclean\s+all\b",
     r"\brecover\b.*\bdisk\b",
@@ -74,7 +75,8 @@ _BLOCK_RES = [
     r"\bdownloadstring\b",
     r"\bdownloadfile\b",
     r"\bfrombase64string\b",
-    r"\b[system\.convert]::",
+    r"\[system\.convert\]::",
+    r"\[convert\]::",
     # Recursive wipe of system roots
     r"\brd\s+/s\b",
     r"\brmdir\s+/s\b",
@@ -115,25 +117,62 @@ def normalize_command(raw: str) -> Optional[str]:
     return s
 
 
+_ENV_MAP = {
+    "systemroot": r"c:\windows", "windir": r"c:\windows", "systemdrive": "c:",
+    "programfiles": r"c:\program files", "programfiles(x86)": r"c:\program files (x86)",
+    "programw6432": r"c:\program files", "programdata": r"c:\programdata",
+    "allusersprofile": r"c:\programdata", "public": r"c:\users\public",
+    "homedrive": "c:", "commonprogramfiles": r"c:\program files\common files",
+}
+
+_DELETE_VERB = re.compile(r"(?:^|[\s;&|(])(remove-item|ri|rm|rmdir|rd|del|erase|clear-recyclebin)(?=$|[\s;&|)])")
+_FORCE_FLAG = re.compile(r"(?:^|\s)(?:-r|-rec\w*|-fo\w*|/s|/q|/f|/a)(?=$|[\s:])")
+_PROTECTED = [
+    re.compile(r"(?:^|[\s=,(])(?:\\\\\?\\)?[a-z]:\\?(?:\*(?:\.\*)?)?(?=$|[\s;|&),])"),  # drive root: c:  c:\  c:\*  c:\*.*
+    re.compile(r"(?:^|[\s=,(])\\\*?(?=$|[\s;|&),])"),                               # bare "\" root
+    re.compile(r"[a-z]:\\(?:windows|winnt|boot|recovery|system volume information)(?=$|[\\\s;|&),*])"),
+    re.compile(r"[a-z]:\\program files(?: \(x86\))?(?=$|[\\\s;|&),*])"),
+    re.compile(r"[a-z]:\\programdata(?=$|[\s;|&),*]|\\\*|\\asteria)"),
+    re.compile(r"[a-z]:\\users(?=$|[\s;|&),*]|\\\*)"),
+]
+
+
+def _match_form(norm: str) -> str:
+    """Canonical lowercase form for rule matching only (never executed).
+
+    Strips quotes/carets/backticks, expands well-known env vars (cmd %x%,
+    PowerShell $env:x / ${env:x}), unifies path separators.
+    """
+    s = norm.lower()
+    s = s.replace('"', "").replace("'", "").replace("^", "").replace("`", "")
+    def _env(m):
+        k = (m.group(1) or m.group(2) or m.group(3) or "").lower()
+        return _ENV_MAP.get(k, m.group(0))
+    s = re.sub(r"%([a-z0-9_()]+)%|\$\{env:([a-z0-9_()]+)\}|\$env:([a-z0-9_()]+)", _env, s)
+    s = re.sub(r"([a-z]):/", r"\1:\\", s)
+    s = re.sub(r"[a-z]:\\[^\s;|&]*", lambda m: m.group(0).replace("/", "\\"), s)
+    s = re.sub(r"\\{2,}(?!\?)", r"\\", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
 def is_blocked(command: str, shell: str = "cmd") -> Tuple[bool, str]:
     """Return (blocked, reason). blocked=True means must never run."""
     norm = normalize_command(command)
     if norm is None:
         return True, "unparseable_or_empty"
-    # Shell-specific: powershell -EncodedCommand already covered
+    low = _match_form(norm)
     for rx in _COMPILED:
-        if rx.search(norm):
+        if rx.search(norm) or rx.search(low):
             return True, f"blacklist:{rx.pattern[:60]}"
-    # Path-sensitive deletes of system dirs even without /s flag combo
-    low = norm.lower()
-    sys_roots = (
-        r"c:\windows", r"c:\program files", r"c:\programdata\asteria",
-        r"%systemroot%", r"%windir%", r"%programfiles%",
-    )
-    if re.search(r"\b(del|erase|rd|rmdir|remove-item)\b", low):
-        for root in sys_roots:
-            if root in low:
-                return True, f"blacklist:system_path:{root}"
+    if _DELETE_VERB.search(low):
+        if re.search(r"%[a-z0-9_()]+%|\$\{?env:", low):
+            return True, "blacklist:delete_with_unresolved_env"
+        for rx in _PROTECTED:
+            if rx.search(low):
+                return True, "blacklist:delete_protected_path"
+        if _FORCE_FLAG.search(low) and re.search(r"(?:^|\s)\*(?:\.\*)?(?=$|\s)", low):
+            return True, "blacklist:forced_wildcard_delete"
     return False, ""
 
 
