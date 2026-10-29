@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.148"  # tests never leak lifecycle to prod + post-restart update failure report (Billur)
+VERSION = "4.9.149"  # Billur: no /end suicide + fresh helper_ok + fail_detail to cloud
 
 
 

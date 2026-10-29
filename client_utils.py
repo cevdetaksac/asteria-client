@@ -4,6 +4,7 @@ Yardımcı fonksiyonlar ve araçlar modülü
 """
 
 import os
+import re
 import sys
 import json
 import hashlib
@@ -2059,13 +2060,11 @@ def prepare_client_for_installer(*, kill_processes: bool = True) -> None:
         "AsteriaClientGuard",
     ):
         try:
-            # Never /end SilentUpdater/Updater from the update process itself —
-            # that suicides --silent-update-check before the helper can start.
-            # The detached helper will /end everything after it is running.
-            if kill_processes or task not in (
-                "Asteria-SilentUpdater",
-                "Asteria-Updater",
-            ):
+            # kill_processes=False: ONLY disable respawn. Never /end here.
+            # The daemon IS Asteria-Background - /end suicides mid-launch_safe
+            # (Billur 4.9.146->148: launching_helper then no update-install.log).
+            # Detached helper stops/ends everything after it is running.
+            if kill_processes:
                 subprocess.run(
                     ["schtasks", "/end", "/tn", task],
                     capture_output=True,
@@ -2432,6 +2431,129 @@ def _shell_execute_runas(file_path: str, params: str = "", *, show_cmd: int = 0)
         return 0
 
 
+
+def update_install_log_path() -> str:
+    return os.path.join(
+        os.environ.get("ProgramData", r"C:\ProgramData"),
+        "Asteria", "update-install.log",
+    )
+
+
+def archive_stale_update_install_log(*, reason: str = "pre_launch") -> bool:
+    """Move non-today update-install.log aside so stale 'update-and-install start'
+    cannot false-positive helper_ok checks (Billur Sept/Oct log vs Oct 29 attempts).
+    Returns True if an archive was written.
+    """
+    log_path = update_install_log_path()
+    try:
+        if not os.path.isfile(log_path):
+            return False
+        with open(log_path, "r", encoding="utf-8", errors="ignore") as fh:
+            body = fh.read()
+        if not body.strip():
+            return False
+        today = time.strftime("%Y-%m-%d")
+        # Keep only lines that already belong to today; archive the rest.
+        keep: list = []
+        archived_any = False
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        archive = os.path.join(
+            os.path.dirname(log_path),
+            f"update-install-prelaunch-{stamp}.log",
+        )
+        out_lines: list = []
+        for line in body.splitlines(True):
+            m = re.match(r"^\[(\d{4}-\d{2}-\d{2})", line)
+            if m and m.group(1) != today:
+                out_lines.append(line)
+                archived_any = True
+            elif m and m.group(1) == today:
+                keep.append(line)
+            else:
+                # Undated / banner lines from older runs - archive with stale
+                out_lines.append(line)
+                archived_any = True
+        if not archived_any and ("update-and-install start" in body):
+            # Same-day stale start from a previous failed attempt still false-positives
+            # when we only check the whole tail; force rotate if no launcher token today.
+            if "launcher start launch-" not in body:
+                out_lines = body.splitlines(True)
+                keep = []
+                archived_any = True
+        if not archived_any:
+            return False
+        try:
+            with open(archive, "a", encoding="utf-8", errors="replace") as fh:
+                fh.write(f"# archived reason={reason}\n")
+                fh.writelines(out_lines)
+        except OSError:
+            pass
+        try:
+            with open(log_path, "w", encoding="utf-8", newline="\n") as fh:
+                fh.writelines(keep)
+                fh.write(
+                    f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
+                    f"log_rotated reason={reason} archived={os.path.basename(archive)}\n"
+                )
+        except OSError:
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def read_update_log_since(byte_offset: int) -> str:
+    """Return bytes written to update-install.log after byte_offset."""
+    log_path = update_install_log_path()
+    try:
+        if not os.path.isfile(log_path):
+            return ""
+        with open(log_path, "r", encoding="utf-8", errors="ignore") as fh:
+            fh.seek(max(0, int(byte_offset or 0)))
+            return fh.read() or ""
+    except Exception:
+        return ""
+
+
+def extract_update_fail_detail(log_text: str = "", *, max_scan: int = 40) -> str:
+    """Best-effort fail reason from update-install.log (preflight / methods_exhausted)."""
+    text = log_text
+    if not text:
+        try:
+            path = update_install_log_path()
+            if os.path.isfile(path):
+                with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+                    text = fh.read()
+        except Exception:
+            text = ""
+    if not text:
+        return ""
+    keys = (
+        "preflight_fail detail=",
+        "launch_helper_failed detail=",
+        "helper_stage_prefer_emergency=",
+        "method6_tr_too_long",
+        "method7_tr_len=",
+        "log_rotated reason=",
+    )
+    for line in reversed(text.splitlines()[-max_scan:]):
+        for k in keys:
+            if k in line:
+                # Prefer the detail= payload when present
+                if "detail=" in line:
+                    return line.split("detail=", 1)[-1].strip()[:180]
+                return line.strip()[-180:]
+    return ""
+
+
+def fresh_helper_started(byte_offset: int) -> bool:
+    """True only if NEW log bytes contain the helper start marker."""
+    new = read_update_log_since(byte_offset)
+    if not new:
+        return False
+    return "update-and-install start" in new
+
+
 def launch_safe_update_install(
     installer_path: str,
     *,
@@ -2546,6 +2668,15 @@ def launch_safe_update_install(
                         f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
                         f"preflight_fail detail={pf_detail}\n"
                     )
+                try:
+                    marker = os.path.join(
+                        os.environ.get("ProgramData", r"C:\ProgramData"),
+                        "Asteria", "last_update_fail.txt",
+                    )
+                    with open(marker, "w", encoding="ascii", errors="replace") as mf:
+                        mf.write(f"preflight_fail:{pf_detail}\n")
+                except Exception:
+                    pass
             except Exception:
                 pass
             return False
@@ -2651,6 +2782,10 @@ def launch_safe_update_install(
             os.environ.get("ProgramData", r"C:\ProgramData"),
             "Asteria", "update-install.log",
         )
+        try:
+            archive_stale_update_install_log(reason="silent_launch")
+        except Exception:
+            pass
         try:
             log_size0 = os.path.getsize(log_path) if os.path.isfile(log_path) else 0
         except OSError:

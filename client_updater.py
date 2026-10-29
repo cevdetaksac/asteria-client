@@ -574,6 +574,12 @@ def check_updates_and_apply_silent() -> bool:
             except Exception:
                 show_gui = False
 
+            try:
+                from client_utils import update_install_log_path as _uilp
+                _sulog = _uilp()
+                _silent_off0 = os.path.getsize(_sulog) if os.path.isfile(_sulog) else 0
+            except Exception:
+                _silent_off0 = 0
             ok = launch_safe_update_install(
                 staged_installer,
                 silent=True,
@@ -612,12 +618,10 @@ def check_updates_and_apply_silent() -> bool:
             for _ in range(40):  # ~12s
                 time.sleep(0.3)
                 try:
-                    if os.path.isfile(log_path):
-                        with open(log_path, "r", encoding="utf-8", errors="ignore") as fh:
-                            tail = fh.read()[-1200:]
-                        if "update-and-install start" in tail:
-                            helper_alive = True
-                            break
+                    from client_utils import fresh_helper_started as _fhs
+                    if _fhs(_silent_off0):
+                        helper_alive = True
+                        break
                 except Exception:
                     pass
             if not helper_alive:
@@ -634,11 +638,10 @@ def check_updates_and_apply_silent() -> bool:
                     for _ in range(30):
                         time.sleep(0.3)
                         try:
-                            if os.path.isfile(log_path):
-                                with open(log_path, "r", encoding="utf-8", errors="ignore") as fh:
-                                    if "update-and-install start" in fh.read()[-1200:]:
-                                        helper_alive = True
-                                        break
+                            from client_utils import fresh_helper_started as _fhs2
+                            if _fhs2(_silent_off0):
+                                helper_alive = True
+                                break
                         except Exception:
                             pass
             if not helper_alive:
@@ -2007,6 +2010,15 @@ def run_self_update_command(
         except Exception:
             show_gui = False
 
+        # Capture log offset BEFORE launch so stale "update-and-install start"
+        # cannot false-positive helper_ok (Billur 4.9.147/148 silent fail).
+        try:
+            from client_utils import update_install_log_path
+            _ulog = update_install_log_path()
+            _log_off0 = os.path.getsize(_ulog) if os.path.isfile(_ulog) else 0
+        except Exception:
+            _log_off0 = 0
+
         bus.tick(
             "installing",
             progress_pct=95,
@@ -2085,13 +2097,22 @@ def run_self_update_command(
                 )
             except Exception:
                 pass
-            _lifecycle_fail(api_client, "launch_helper_failed", from_version, tag)
-            log("[SELF-UPDATE] helper did NOT start (no update-install.log) — aborting exit")
+            try:
+                from client_utils import extract_update_fail_detail
+                _why = extract_update_fail_detail() or "methods_exhausted_or_suicide"
+            except Exception:
+                _why = "methods_exhausted_or_suicide"
+            _lifecycle_fail(
+                api_client, "launch_helper_failed", from_version, tag,
+                extra={"fail_detail": _why},
+            )
+            log(f"[SELF-UPDATE] helper did NOT start detail={_why} - aborting exit")
             return _ret({
                 "success": False,
                 "ok": False,
                 "error": "install_failed",
                 "detail": "launch_helper_failed",
+                "fail_detail": _why,
                 "from_version": from_version,
                 "to_version": tag,
                 "tag": f"v{tag}" if tag else "",
@@ -2107,17 +2128,10 @@ def run_self_update_command(
             )
         except Exception:
             pass
-        # Double-check log — never claim success / exit without a live helper
+        # Double-check log - require FRESH bytes after launch (stale Sept start != live)
         try:
-            log_path = os.path.join(
-                os.environ.get("ProgramData", r"C:\ProgramData"),
-                "Asteria", "update-install.log",
-            )
-            helper_ok = False
-            if os.path.isfile(log_path):
-                with open(log_path, "r", encoding="utf-8", errors="ignore") as fh:
-                    tail = fh.read()[-2400:]
-                helper_ok = "update-and-install start" in tail
+            from client_utils import fresh_helper_started, extract_update_fail_detail
+            helper_ok = fresh_helper_started(_log_off0)
             if not helper_ok:
                 release_update_lock(resume_updaters=True)
                 from client_update_ui import set_update_ui_status
@@ -2125,8 +2139,16 @@ def run_self_update_command(
                     "failed", from_version=from_version, to_version=tag,
                     detail="helper_log_missing", error="helper_log_missing",
                 )
-                _lifecycle_fail(api_client, "helper_log_missing", from_version, tag)
-                log("[SELF-UPDATE] helper_log_missing after launch — aborting")
+                _why2 = ""
+                try:
+                    _why2 = extract_update_fail_detail() or ""
+                except Exception:
+                    _why2 = ""
+                _lifecycle_fail(
+                    api_client, "helper_log_missing", from_version, tag,
+                    extra={"fail_detail": _why2 or "stale_or_missing_start"},
+                )
+                log(f"[SELF-UPDATE] helper_log_missing after launch detail={_why2} - aborting")
                 return _ret({
                     "success": False,
                     "ok": False,
@@ -2218,13 +2240,20 @@ def run_self_update_command(
             pass
 
 
-def _lifecycle_fail(api_client, reason: str, from_version: str, tag: str) -> None:
+def _lifecycle_fail(api_client, reason: str, from_version: str, tag: str,
+                     extra=None) -> None:
     try:
         from client_lifecycle import report_now
+        info = {"from_version": from_version, "to_version": tag}
+        if extra:
+            try:
+                info.update(dict(extra))
+            except Exception:
+                pass
         report_now(
             "self_update_failed",
             reason,
-            {"from_version": from_version, "to_version": tag},
+            info,
             severity="error",
             api_client=api_client,
             token=None,
