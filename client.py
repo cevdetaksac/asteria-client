@@ -4094,6 +4094,13 @@ class CloudHoneypotClient:
         self.row_controls = {}
 
         # ── Modern GUI ── #
+        # C1: legacy CTk GUI usage telemetry (one release observation before removal)
+        try:
+            log("[LEGACY-GUI] CTk ModernGUI path used (build_gui) - planned for removal")
+            from client_lifecycle import report_now as _rn_legacy
+            _rn_legacy("legacy_gui_used", "build_gui", {"argv": " ".join(sys.argv[1:])[:200]})
+        except Exception:
+            pass
         self.gui = ModernGUI(self)
 
         # Consent dialog (modern) — skip in debug/test mode
