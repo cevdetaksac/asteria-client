@@ -684,9 +684,11 @@ export default function App() {
               tokenPresent={tokenPresent}
               clientId={clientId}
               publicIp={String(status?.public_ip || '')}
+              online={online}
               onCopyToken={() => void runShell('copy_token', t('toast_token'))}
-            />
-            <LiveMeters status={status} />
+            >
+              <LiveMeters status={status} />
+            </IdentityStrip>
           </div>
           <div className="btn-row">
             {accountLinked && (

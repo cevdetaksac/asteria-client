@@ -1,3 +1,4 @@
+import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { t } from '../i18n'
 
 type Props = {
@@ -6,50 +7,74 @@ type Props = {
   tokenPresent: boolean
   clientId?: string
   publicIp?: string
+  online?: boolean
   onCopyToken: () => void
+  /** Extra detail shown only when the strip is expanded (e.g. live meters). */
+  children?: ReactNode
 }
 
+/** U5: compact header - status dot + machine name; ID, IP, token copy and meters open on click. */
 export function IdentityStrip({
   serverName,
   tokenPresent,
   clientId,
   publicIp,
+  online = false,
   onCopyToken,
+  children,
 }: Props) {
-  const host = serverName.trim() || '—'
-  const ip = (publicIp || '').trim() || '—'
+  const host = serverName.trim() || '-'
+  const ip = (publicIp || '').trim() || '-'
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDoc)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
 
   return (
-    <div className="identity-strip">
-      {clientId ? (
-        <>
-          <span className="identity-cid mono tip" data-tooltip={t('identity_id')} tabIndex={0}>
-            #{clientId}
-          </span>
-          <span className="identity-sep" aria-hidden="true" />
-        </>
-      ) : null}
-      <span className="identity-host tip" data-tooltip={t('identity_device')} tabIndex={0}>
-        {host}
-      </span>
-      <span className="identity-sep" aria-hidden="true" />
-      <span className="identity-ip mono tip" data-tooltip={t('identity_ip')} tabIndex={0}>
-        {ip}
-      </span>
-      <span className="identity-sep" aria-hidden="true" />
+    <div className="identity-strip" ref={ref}>
       <button
         type="button"
-        className="btn ghost sm identity-copy tip"
-        disabled={!tokenPresent}
-        onClick={onCopyToken}
-        data-tooltip={t('btn_copy_token')}
-        aria-label={t('btn_copy_token')}
+        className="identity-toggle"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        data-tooltip={online ? t('motor_online') : t('motor_offline')}
       >
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-          <rect x="9" y="9" width="11" height="11" rx="2" />
-          <path d="M5 15V7a2 2 0 0 1 2-2h8" />
-        </svg>
+        <span className={`identity-dot ${online ? 'ok' : 'down'}`} aria-hidden="true" />
+        <span className="identity-host">{host}</span>
+        <span className="identity-caret" aria-hidden="true">{open ? '\u25B4' : '\u25BE'}</span>
       </button>
+      {open && (
+        <div className="identity-pop" role="dialog" aria-label={t('identity_device')}>
+          <dl>
+            {clientId ? (
+              <>
+                <dt>{t('identity_id')}</dt>
+                <dd className="mono">#{clientId}</dd>
+              </>
+            ) : null}
+            <dt>{t('identity_ip')}</dt>
+            <dd className="mono">{ip}</dd>
+          </dl>
+          {children ? <div className="identity-pop-meters">{children}</div> : null}
+          <button type="button" className="btn ghost sm" disabled={!tokenPresent} onClick={onCopyToken}>
+            {t('btn_copy_token')}
+          </button>
+        </div>
+      )}
     </div>
   )
 }

@@ -2396,3 +2396,16 @@ th.actions-head {
   }
   .nav { margin: 0; }
 }
+
+
+/* U5: compact identity strip */
+.identity-strip { position: relative; }
+.identity-toggle { display: inline-flex; align-items: center; gap: 8px; background: transparent; border: 0; color: inherit; font: inherit; cursor: pointer; padding: 4px 8px; border-radius: 8px; }
+.identity-toggle:hover, .identity-toggle[aria-expanded="true"] { background: rgba(127, 127, 127, 0.12); }
+.identity-dot { width: 8px; height: 8px; border-radius: 50%; background: #e5484d; flex: none; }
+.identity-dot.ok { background: #30a46c; }
+.identity-caret { opacity: 0.6; font-size: 0.75em; }
+.identity-pop { position: absolute; top: calc(100% + 6px); left: 0; z-index: 50; min-width: 240px; padding: 12px; border-radius: 10px; background: var(--panel, #1b1d22); border: 1px solid rgba(127, 127, 127, 0.25); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3); display: grid; gap: 10px; }
+.identity-pop dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; }
+.identity-pop dt { opacity: 0.65; }
+.identity-pop dd { margin: 0; }

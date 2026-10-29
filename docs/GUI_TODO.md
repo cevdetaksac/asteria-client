@@ -25,7 +25,8 @@ Kurallar: 443 çıkış bağlantısı asla kesilmez, yıkıcı komut yok, her fa
   - Sonu? (v4.9.153): SoT/IPC/threats-config/THREAT_TOP ifadeleri sade TR+EN metinlerle de?i?ti; Durum kart?nda 127.0.0.1:58632 yerine s?r?m; Tehditler ba?l???ndaki ?ift Snapshot d??mesi kald?r?ld?; ba?l?k ?eridinde token metni yok (kopyalama d??mesi + men? kald?).
 - [ ] **U3** En sık aksiyonlar Durum'da tek tık: IP engelle/kaldır, beyaz liste, koruma modu, güncelle, motoru kurtar. Dosya: `StatusPage.tsx`. Efor 0.5 gün. Risk düşük.
 - [ ] **U4** Ortak Loading / Empty / Error bileşenleri + tek hata/toast formatı. Dosyalar: `ui/src/components/*`. Efor 0.5 gün. Risk düşük.
-- [ ] **U5** Başlık şeridi sade: durum noktası + makine adı, detay açılır. Dosyalar: `IdentityStrip.tsx`, `LiveMeters.tsx`, `App.tsx`. Efor 2 sa. Risk düşük.
+- [x] **U5** Başlık şeridi sade: durum noktası + makine adı, detay açılır. Dosyalar: `IdentityStrip.tsx`, `LiveMeters.tsx`, `App.tsx`. Efor 2 sa. Risk düşük.
+  - Sonu?: ba?l?kta yaln?zca durum noktas? + makine ad?; t?klay?nca ID, IP, canl? ?l?erler ve token kopyala a??l?r (Esc/d??ar? t?k kapat?r).
 - [ ] **U6** Ağır/nadir görünümler dashboard'a link (uyarı geçmişi, servis/paylaşım envanteri, yönetim konsolları). Dosyalar: `ThreatPage.tsx`, `ToolsPage.tsx`. Efor 0.5 gün. Risk düşük.
 
 ## Faz 4 — Mimari (başlanmadı)
