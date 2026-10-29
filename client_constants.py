@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.149"  # Billur: no /end suicide + fresh helper_ok + fail_detail to cloud
+VERSION = "4.9.149"  # Billur helper fix + console_exec blacklist/approval (f26409c, 13c2103, e13e4dd)
 
 
 
