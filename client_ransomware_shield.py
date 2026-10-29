@@ -185,6 +185,8 @@ CANARY_SELF_TOUCH_GRACE_SEC = 90
 CANARY_SYNC_DEBOUNCE_SEC = 1800  # ≥30 min for OneDrive / backup paths
 CANARY_SOFT_DEBOUNCE_SEC = 1800  # ≥30 min soft single-file MODIFIED (any path)
 CANARY_SOFT_CLUSTER_WINDOW_SEC = 120
+CANARY_BURST_COALESCE_SEC = 90  # one urgent for multi-file burst
+CANARY_BURST_MAX_FILES = 30
 
 
 def is_vss_inventory_cmdline(cmdline: str) -> bool:
@@ -282,6 +284,9 @@ class RansomwareShield:
         self._canary_self_touch_until: Dict[str, float] = {}
         self._canary_path_alert_at: Dict[str, float] = {}
         self._canary_recent_hits: deque = deque(maxlen=32)
+        self._canary_burst_until: float = 0.0
+        self._canary_burst_files: list = []
+        self._canary_burst_sent: bool = False
 
         # Stats
         self._stats = {
@@ -769,6 +774,38 @@ class RansomwareShield:
         )
         return any(m in p for m in markers)
 
+
+    @staticmethod
+    def _is_ms_signed_sync_image(image: str, path: str = "") -> bool:
+        """True for OneDrive / FileCoAuth under Microsoft-signed install paths."""
+        img = (image or "").strip().lower()
+        if img not in ("onedrive.exe", "onedriveupdater.exe", "filecoauth.exe"):
+            return False
+        pl = (path or "").replace("/", "\\").lower()
+        if not pl:
+            return True  # image match only — path verified when available
+        markers = (
+            "\\microsoft onedrive\\",
+            "\\onedrive\\",
+            "\\filecoauth\\",
+            "\\windows\\system32\\",
+            "\\windows\\syswow64\\",
+        )
+        return any(m in pl for m in markers)
+
+    def _suspects_only_sync_clients(self, suspects) -> bool:
+        if not suspects:
+            return False
+        for s in suspects:
+            if not isinstance(s, dict):
+                return False
+            img = str(s.get("image") or s.get("process_name") or "")
+            path = str(s.get("path") or s.get("process_path") or "")
+            if not self._is_ms_signed_sync_image(img, path):
+                return False
+        return True
+
+
     def _canary_watch_loop(self):
         """Periodically check canary file integrity (default 30s)."""
         while self._running:
@@ -907,12 +944,24 @@ class RansomwareShield:
 
         suspects = list(containment.get("suspects") or [])
         has_suspect = bool(suspects)
-        # Single-file MODIFIED + healthy VSS + no writer → warning (sync/AV noise)
+        # Soft / sync-noise: MODIFIED alone, OR DELETED when only Microsoft-signed
+        # OneDrive/FileCoAuth is the writer (Files On-Demand / rename storms).
+        # Real encryption indicators (non-sync suspect, VSS gone, extension) stay hard.
+        sync_only = self._suspects_only_sync_clients(suspects)
+        sync_path = self._is_sync_canary_path(canary.path)
         soft = (
-            change_type in ("MODIFIED", "SIZE_CHANGED")
-            and not multi_canary
-            and not has_suspect
-            and vss_ok
+            (
+                change_type in ("MODIFIED", "SIZE_CHANGED")
+                and not multi_canary
+                and not has_suspect
+                and vss_ok
+            )
+            or (
+                change_type == "DELETED"
+                and vss_ok
+                and (sync_only or (sync_path and not has_suspect))
+                and not multi_canary
+            )
         )
         if soft:
             severity = "warning"
@@ -1037,10 +1086,40 @@ class RansomwareShield:
                     self.alert_pipeline, "handle_alert"
                 ):
                     self.alert_pipeline.handle_alert(urgent)
-            elif self.alert_pipeline:
-                self.alert_pipeline.send_urgent(urgent)
-            elif self.on_alert:
-                self.on_alert(urgent)
+            else:
+                # Burst coalesce: many canary files in a short window → one urgent
+                now_b = time.time()
+                self._canary_burst_files.append(canary.path)
+                if len(self._canary_burst_files) > CANARY_BURST_MAX_FILES:
+                    self._canary_burst_files = self._canary_burst_files[-CANARY_BURST_MAX_FILES:]
+                if now_b <= float(getattr(self, "_canary_burst_until", 0) or 0) and getattr(
+                    self, "_canary_burst_sent", False
+                ):
+                    log(
+                        f"[RANSOMWARE-SHIELD] canary burst coalesce skip: "
+                        f"{filename} (already sent in window)"
+                    )
+                else:
+                    if now_b > float(getattr(self, "_canary_burst_until", 0) or 0):
+                        self._canary_burst_files = [canary.path]
+                        self._canary_burst_sent = False
+                    self._canary_burst_until = now_b + CANARY_BURST_COALESCE_SEC
+                    files = list(self._canary_burst_files)
+                    if len(files) > 1:
+                        urgent["description"] = (
+                            f"{len(files)} canary dosyasi etkilendi (burst). "
+                            f"Ilk: {filename}. Bu, sync veya ransomware olabilir — inceleyin.\n"
+                            f"Dosyalar: {', '.join(os.path.basename(x) for x in files[:12])}"
+                        )
+                        urgent.setdefault("details", {})["burst_count"] = len(files)
+                        urgent["details"]["burst_files"] = [
+                            os.path.basename(x) for x in files[:30]
+                        ]
+                    if self.alert_pipeline:
+                        self.alert_pipeline.send_urgent(urgent)
+                    elif self.on_alert:
+                        self.on_alert(urgent)
+                    self._canary_burst_sent = True
         except Exception as e:
             log(f"[RANSOMWARE-SHIELD] urgent alert delivery error: {e}")
 
