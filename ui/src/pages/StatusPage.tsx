@@ -8,6 +8,7 @@ import { Switch } from '../components/Switch'
 import { t } from '../i18n'
 import { asRecord, boolLabel, formatBps, pick, triLabel } from '../lib'
 import { invalidate } from '../data/shared'
+import type { HardenCheck, IpRow } from '../data/types'
 
 type Props = {
   status: MotorStatus | null
@@ -17,24 +18,6 @@ type Props = {
   onRefresh: () => void
   onToast: (msg: string, kind?: 'ok' | 'err') => void
   onNavigate: (page: 'services' | 'layers' | 'threat' | 'iplist') => void
-}
-
-type HardenCheck = {
-  id?: string
-  label?: string
-  ok?: boolean | null
-  detail?: string
-  fixable?: boolean
-}
-
-type IpRow = {
-  ip: string
-  services?: string[]
-  attempts?: number
-  score?: number
-  reason?: string
-  last_seen?: number
-  status?: string
 }
 
 const IP_PREVIEW = 4

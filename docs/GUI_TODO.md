@@ -16,6 +16,8 @@ Kurallar: 443 çıkış bağlantısı asla kesilmez, yıkıcı komut yok, her fa
 - [x] **C3** Ölü kod: kullanılmayan i18n anahtarları (~209/748), `RdpSecureMoveModal`, `Brand` (doğrula), inline style → CSS. Dosyalar: `ui/src/i18n/catalog.ts`, `ui/src/components/*`. Efor 3 sa. Risk düşük.
   - Sonu?: dinamik anahtarlar (`t(`prefix_${id}`)`, FeatureGuide prefix) hesaba kat?l?nca ger?ekten kullan?lmayan yaln?zca 8 anahtar ??kt? (`help_hp_*`, TR+EN 16 sat?r) ? silindi. `RdpSecureMoveModal` silindi. `Brand` kullan?l?yor (kal?r). Inline style ? CSS ta??ma C4 (dosya b?lme) ile birlikte yap?lacak.
 - [ ] **C4** Büyük dosyaları böl: `ThreatPage.tsx` (1039), `SettingsPage.tsx` (767), `StatusPage.tsx` (727), `App.tsx` (783), `style.css` (2398), `asteria_gui.py` (2682). Efor 1 gün. Risk orta.
+  - [x] C4a: model/sabit/yard?mc?lar ayr?ld?: `pages/settings/fields.ts` (Settings 769?456), `pages/threat/model.ts` (Threat 1042?968), ortak `data/types.ts` (HardenCheck, IpRow; 3 kopya ? 1).
+  - [ ] C4b: ThreatPage sekme JSX'leri, App.tsx, style.css, asteria_gui.py b?lme + inline style ? CSS (kalan).
 
 ## Faz 3 — UX / bilgi mimarisi
 - [ ] **U1** 7 sayfa → 4: Durum / Tehditler (+IP listeleri) / Koruma (Katmanlar + Honeypot) / Ayarlar (+Araçlar "Gelişmiş"). Dosyalar: `ui/src/App.tsx`, `ui/src/nav.ts`, sayfalar. Efor 1 gün. Risk orta.

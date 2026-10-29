@@ -7,17 +7,10 @@ import { IconBtn, icons } from '../components/IconBtn'
 import { RowActionMenu } from '../components/RowActionMenu'
 import { t } from '../i18n'
 import { asRecord, pick } from '../lib'
+import type { IpRow } from '../data/types'
 
 type Props = {
   onToast: (msg: string, kind?: 'ok' | 'err') => void
-}
-
-type IpRow = {
-  ip: string
-  reason?: string
-  attempts?: number
-  score?: number
-  status?: string
 }
 
 type IpTab = 'watching' | 'blocked' | 'whitelist'
