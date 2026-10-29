@@ -34,6 +34,7 @@ param(
 )
 $ErrorActionPreference = "Continue"
 $ProgressPreference = "SilentlyContinue"
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072 } catch {}
 function Write-UpLog([string]$Message) {
     $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $line = "[$ts] $Message"
@@ -273,6 +274,24 @@ def preflight_update_ready(installer_path: str, *, min_free_mb: int = 80) -> Tup
         return False, "installer_stat_failed"
     if size < 1_000_000:
         return False, f"installer_too_small:{size}"
+
+    # Permission: ProgramData\Asteria must be writable (log + staging).
+    pd_dir = os.path.join(os.environ.get("ProgramData", r"C:\ProgramData"), "Asteria")
+    try:
+        os.makedirs(pd_dir, exist_ok=True)
+        probe = os.path.join(pd_dir, ".preflight_probe")
+        with open(probe, "w") as fh:
+            fh.write("ok")
+        os.remove(probe)
+    except OSError as e:
+        return False, f"perm_denied:{pd_dir}:{type(e).__name__}"
+    # PowerShell must exist (helper runs under Windows PowerShell 5.1+).
+    if os.name == "nt":
+        ps = shutil.which("powershell.exe") or os.path.join(
+            os.environ.get("SystemRoot", r"C:\Windows"),
+            "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+        if not os.path.isfile(ps):
+            return False, "powershell_missing"
 
     need = max(min_free_mb * 1024 * 1024, int(size * 1.5) + 40 * 1024 * 1024)
     for root in (

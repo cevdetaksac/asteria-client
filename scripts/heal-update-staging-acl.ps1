@@ -1,3 +1,9 @@
+# --- asteria never-stuck preamble (TLS 1.2/1.3, no progress bar) ---
+$ProgressPreference = 'SilentlyContinue'
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch {}
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]3072 } catch {}
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]12288 } catch {}
+# --- end preamble ---
 # Repair ACL-bricked Asteria update staging (run elevated once).
 $ErrorActionPreference = "Continue"
 $u = Join-Path $env:ProgramData "Asteria\update"

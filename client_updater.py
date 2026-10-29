@@ -1128,7 +1128,13 @@ def _normalize_version_tag(tag: str) -> str:
 
 
 def _is_allowed_update_url(url: str) -> bool:
-    """Only official GitHub release hosts for this repo."""
+    """Only official GitHub release hosts for this repo (+ asteria.run mirror)."""
+    try:
+        from client_update_robust import is_mirror_url
+        if is_mirror_url(url):
+            return True
+    except Exception:
+        pass
     try:
         from urllib.parse import urlparse
         from client_constants import GITHUB_OWNER, GITHUB_REPO
@@ -1822,8 +1828,45 @@ def run_self_update_command(
 
         downloaded = None
         last_dl_err = ""
+        # 4.9.150 never-stuck path: manifest SHA + mirror-first resumable download.
+        _manifest = None
+        try:
+            from client_update_robust import (
+                fetch_manifest, manifest_entry, asset_urls, download_resumable,
+                INSTALLER_ASSET,
+            )
+            _manifest = fetch_manifest(tag) if tag else None
+            _m_sha, _m_size = manifest_entry(_manifest, INSTALLER_ASSET)
+            if _m_size and not expected_size:
+                expected_size = _m_size
+            _r_urls = asset_urls(tag, INSTALLER_ASSET, extra=urls_to_try) if tag else list(urls_to_try)
+
+            def _rprog(done, total):
+                try:
+                    pct = int(min(89, (done / float(total)) * 89)) if total else 0
+                    bus.tick("downloading", progress_pct=pct, bytes_done=int(done),
+                             bytes_total=int(total) or None, detail="download")
+                except Exception:
+                    pass
+
+            _ok, _det = download_resumable(
+                _r_urls, installer_path, expected_sha256=_m_sha,
+                expected_size=int(_m_size or 0), progress=_rprog, log_func=log,
+            )
+            if _ok:
+                downloaded = installer_path
+                download_url = _r_urls[0]
+            else:
+                last_dl_err = _det
+                log(f"[SELF-UPDATE] robust download failed ({_det}) - legacy loop")
+                if _det.startswith("hash_mismatch"):
+                    urls_to_try = []  # never install a binary that failed manifest SHA
+        except Exception as _rex:
+            log(f"[SELF-UPDATE] robust download error: {_rex}")
         # Up to 5 completion-verified attempts; rotate URLs between tries.
         for attempt in range(1, _DOWNLOAD_MAX_ATTEMPTS + 1):
+            if downloaded or not urls_to_try:
+                break
             attempt_url = urls_to_try[(attempt - 1) % len(urls_to_try)]
             log(
                 f"[SELF-UPDATE] download attempt {attempt}/{_DOWNLOAD_MAX_ATTEMPTS} "
@@ -2009,6 +2052,18 @@ def run_self_update_command(
             show_gui = bool(has_interactive_user_session())
         except Exception:
             show_gui = False
+
+        # 4.9.150: fetch helper from the TARGET release (chicken-egg proof) + arm rescue.
+        try:
+            from client_update_robust import fetch_fresh_helper, arm_rescue_task
+            from client_utils import _update_helper_staging_dir as _uhsd
+            _stg = _uhsd()
+            _fresh = fetch_fresh_helper(tag, _stg, _manifest) if tag else None
+            if _fresh:
+                os.environ["ASTERIA_FRESH_HELPER"] = _fresh
+            arm_rescue_task(_stg, os.getpid(), delay_min=20)
+        except Exception as _fh_err:
+            log(f"[SELF-UPDATE] fresh helper/rescue prep error: {_fh_err}")
 
         # Capture log offset BEFORE launch so stale "update-and-install start"
         # cannot false-positive helper_ok (Billur 4.9.147/148 silent fail).
@@ -2245,6 +2300,11 @@ def _lifecycle_fail(api_client, reason: str, from_version: str, tag: str,
     try:
         from client_lifecycle import report_now
         info = {"from_version": from_version, "to_version": tag}
+        try:
+            from client_update_outcome import helper_log_tail
+            info["helper_log_tail"] = helper_log_tail(30)
+        except Exception:
+            pass
         if extra:
             try:
                 info.update(dict(extra))

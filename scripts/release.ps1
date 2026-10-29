@@ -17,7 +17,8 @@ param(
   [Parameter(Mandatory=$true)][string]$Version,
   [string]$InstallerPath = ".\asteria-client-installer.exe",
   [string]$Title = "",
-  [string]$Notes = ""
+  [string]$Notes = "",
+  [switch]$Prerelease
 )
 $ErrorActionPreference = "Stop"
 $Version = $Version.TrimStart("v")
@@ -35,6 +36,25 @@ if ((Get-FileHash $aliasPath -Algorithm SHA256).Hash -ne $sha) { throw "hash mis
 if (-not $Title) { $Title = "v$Version" }
 if (-not $Notes) { $Notes = "Asteria Client $Version`n`nSHA256: $sha`nAssets: $verName + $aliasName (identical bytes; alias keeps pre-4.9.138 updaters working)." }
 $tag = "v$Version"
+# 4.9.150: fresh helper + manifest (SHA-256/size) so agents never reuse an old helper
+# and can verify mirror/GitHub downloads.
+$helperSrc = Join-Path $PSScriptRoot "update-and-install.ps1"
+$helperPath = Join-Path $stage "update-and-install.ps1"
+Copy-Item $helperSrc $helperPath -Force
+$hsha = (Get-FileHash $helperPath -Algorithm SHA256).Hash.ToLower()
+$isz = (Get-Item $InstallerPath).Length
+$manifest = [ordered]@{
+  version = $Version
+  assets = [ordered]@{
+    "asteria-client-installer.exe" = @{ sha256 = $sha.ToLower(); size = $isz }
+    $verName = @{ sha256 = $sha.ToLower(); size = $isz }
+    "update-and-install.ps1" = @{ sha256 = $hsha; size = (Get-Item $helperPath).Length }
+  }
+}
+$manPath = Join-Path $stage "asteria-release-manifest.json"
+[IO.File]::WriteAllText($manPath, ($manifest | ConvertTo-Json -Depth 5))
+$pre = @()
+if ($Prerelease) { $pre = @("--prerelease") }
 Write-Host "Creating release $tag ..."
-gh release create $tag $verPath $aliasPath --target main --title $Title --notes $Notes
+gh release create $tag $verPath $aliasPath $helperPath $manPath --target main --title $Title --notes $Notes @pre
 Write-Host "OK $tag SHA256=$sha"

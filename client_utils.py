@@ -2325,8 +2325,17 @@ def stage_update_install_helper(*, allow_emergency: bool = True) -> Optional[str
     staging = _update_helper_staging_dir()
     dst = os.path.join(staging, "update-and-install.ps1")
     src = next((p for p in resolve_helper_source_candidates() if os.path.isfile(p)), None)
+    # 4.9.150: prefer helper fetched from the target release (SHA-verified).
+    fresh = os.environ.get("ASTERIA_FRESH_HELPER", "")
+    if fresh and os.path.isfile(fresh) and (time.time() - os.path.getmtime(fresh)) < 3600:
+        src = fresh
 
     def _try_stage_text(raw: str, tag: str) -> Optional[str]:
+        try:
+            from client_update_robust import ensure_ps_preamble
+            raw = ensure_ps_preamble(raw)
+        except Exception:
+            pass
         ascii_body = normalize_ps1_to_ascii(raw)
         if not write_ascii_ps1(dst, ascii_body):
             return None
@@ -2825,6 +2834,8 @@ def launch_safe_update_install(
             with open(launcher, "w", encoding="utf-8", newline="\n") as fh:
                 fh.write(
                     "$ErrorActionPreference = 'Continue'\n"
+                    "$ProgressPreference = 'SilentlyContinue'\n"
+                    "try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072 } catch {}\n"
                     "$logDir = Join-Path $env:ProgramData 'Asteria'\n"
                     "try {\n"
                     "  if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }\n"
@@ -2959,6 +2970,8 @@ def launch_safe_update_install(
                 with open(launcher, "w", encoding="ascii", newline="\n") as fh:
                     fh.write(
                         "$ErrorActionPreference = 'Continue'\n"
+                    "$ProgressPreference = 'SilentlyContinue'\n"
+                    "try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072 } catch {}\n"
                         "$logDir = Join-Path $env:ProgramData 'Asteria'\n"
                         "try {\n"
                         "  if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }\n"
@@ -3040,6 +3053,8 @@ def launch_safe_update_install(
                 with open(nsis_launcher, "w", encoding="ascii", newline="\n") as fh:
                     fh.write(
                         "$ErrorActionPreference = 'Continue'\n"
+                    "$ProgressPreference = 'SilentlyContinue'\n"
+                    "try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072 } catch {}\n"
                         f"& '{emg_q}' -InstallerPath '{installer_q}' "
                         f"-ExpectExitPid {pid} -GraceWaitSec {grace} "
                         f"-KillRounds 4 -Silent\n"
@@ -3100,6 +3115,8 @@ def launch_safe_update_install(
             with open(direct_ps1, "w", encoding="ascii", newline="\n") as fh:
                 fh.write(
                     "$ErrorActionPreference = 'Continue'\n"
+                    "$ProgressPreference = 'SilentlyContinue'\n"
+                    "try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072 } catch {}\n"
                     "$logDir = Join-Path $env:ProgramData 'Asteria'\n"
                     "if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }\n"
                     "$log = Join-Path $logDir 'update-install.log'\n"

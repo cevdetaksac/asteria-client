@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Asteria Client — main application orchestrator.
 
@@ -703,6 +703,12 @@ class CloudHoneypotClient:
                 maybe_mark_done_on_startup(__version__)
             except Exception as e:
                 log(f"[LIFECYCLE] update-ui mark error: {e}")
+            try:
+                from client_update_robust import disarm_rescue_tasks, expire_stale_update_state
+                disarm_rescue_tasks()
+                expire_stale_update_state(3600.0)
+            except Exception as e:
+                log(f"[UPDATE-ROBUST] startup cleanup skip: {e}")
             try:
                 from client_rd_host_prep import ensure_rd_host_prep_on_boot
                 ensure_rd_host_prep_on_boot()

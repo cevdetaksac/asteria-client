@@ -1,3 +1,9 @@
+# --- asteria never-stuck preamble (TLS 1.2/1.3, no progress bar) ---
+$ProgressPreference = 'SilentlyContinue'
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch {}
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]3072 } catch {}
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]12288 } catch {}
+# --- end preamble ---
 # Requires: Administrator
 # Asteria remote-desktop host prep (C-RD-HOST-1) — Server / headless friendly.
 # Called from installer.nsi post-install; motor also applies via client_rd_host_prep.py.

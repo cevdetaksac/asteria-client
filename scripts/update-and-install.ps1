@@ -33,9 +33,26 @@ param(
     # NSIS /S must never hang the orchestrator forever (Defender / file lock / old Exec-daemon).
     [int]$InstallerTimeoutSec = 480
 )
+# --- asteria never-stuck preamble (TLS 1.2/1.3, no progress bar) ---
+$ProgressPreference = 'SilentlyContinue'
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch {}
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]3072 } catch {}
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]12288 } catch {}
+# --- end preamble ---
 
 $ErrorActionPreference = "SilentlyContinue"
 $ProgressPreference = "SilentlyContinue"
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch {}
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 12288 } catch {}
+# First line ever: log before anything can fail (elevation, functions, params).
+try {
+    $bootDir = Join-Path $env:ProgramData "Asteria"
+    if (-not (Test-Path $bootDir)) { New-Item -ItemType Directory -Path $bootDir -Force | Out-Null }
+    Add-Content -Path (Join-Path $bootDir "update-install.log") -Encoding ASCII -Value (
+        "[" + (Get-Date -Format "yyyy-MM-dd HH:mm:ss") + "] helper_boot pid=" + $PID +
+        " ps=" + $PSVersionTable.PSVersion + " clr=" + $PSVersionTable.CLRVersion +
+        " tls=" + [Net.ServicePointManager]::SecurityProtocol + " installer=" + $InstallerPath)
+} catch {}
 
 try {
     $principal = New-Object Security.Principal.WindowsPrincipal(
@@ -45,6 +62,7 @@ try {
         [Security.Principal.WindowsBuiltInRole]::Administrator
     )) {
         Write-Host "[UPDATE] Refusing - Administrator elevation required"
+        try { Add-Content -Path (Join-Path $env:ProgramData "Asteria\update-install.log") -Encoding ASCII -Value ("[" + (Get-Date -Format "yyyy-MM-dd HH:mm:ss") + "] preflight_fail detail=not_elevated") } catch {}
         exit 5
     }
 } catch {
@@ -374,6 +392,8 @@ function Fail-Update([int]$Code, [string]$Message) {
         $exe = Join-Path ${env:ProgramFiles} "Asteria\honeypot-client.exe"
     }
     [void](Ensure-DaemonMotor -ExePath $exe)
+    try { sc.exe start AsteriaGuardian 2>$null | Out-Null } catch {}
+    Write-UpLog "rollback: tasks re-enabled + old agent restarted (code=$Code)"
     exit $Code
 }
 
@@ -492,6 +512,11 @@ function Wait-CallerExit([int]$PidToWait, [int]$TimeoutSec) {
 }
 
 # -- Main --
+# Any terminating error -> rollback (tasks + agent restart), never leave agent stopped.
+trap {
+    try { Write-UpLog ("TRAP: " + $_.Exception.Message) } catch {}
+    Fail-Update 99 ("ERROR: helper_trap " + $_.Exception.Message)
+}
 Initialize-UpLogRetention
 Write-UpLog "=== update-and-install start ==="
 Write-UpLog "Installer=$InstallerPath Silent=$Silent ShowGui=$ShowGuiAfter ExpectExitPid=$ExpectExitPid Grace=$GraceWaitSec"
@@ -709,5 +734,6 @@ if (-not $Silent) {
     }
 }
 
+try { schtasks /delete /tn ("Asteria-UpdateRescue-" + $ExpectExitPid) /f 2>$null | Out-Null } catch {}
 Write-UpLog "=== update-and-install done ==="
 exit 0

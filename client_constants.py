@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 Asteria Client - Constants and Configuration
@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.149"  # Billur helper fix + console_exec blacklist/approval (f26409c, 13c2103, e13e4dd)
+VERSION = "4.9.150"  # never-stuck updater: TLS1.2, mirror+resume+SHA, fresh helper, rescue task
 
 
 
