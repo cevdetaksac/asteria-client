@@ -158,6 +158,8 @@ def _current_lifecycle_log() -> str:
 
 
 def _append_queue(event: dict) -> None:
+    if os.environ.get("ASTERIA_TEST_ISOLATION") == "1":
+        return  # testler gercek servis kuyruguna (ProgramData) yazmaz
     try:
         with open(LIFECYCLE_QUEUE, "a", encoding="utf-8") as f:
             f.write(json.dumps(event, ensure_ascii=False) + "\n")
@@ -244,8 +246,15 @@ def emit(
     return event
 
 
+def _test_isolated() -> bool:
+    """pytest/CI: gercek token ile canli API'ye olay gonderme (bkz. tests/conftest.py)."""
+    return os.environ.get("ASTERIA_TEST_ISOLATION") == "1"
+
+
 def load_token() -> str:
     """Load machine token (DPAPI) for headless watchdog / flush."""
+    if _test_isolated():
+        return ""
     try:
         from client_constants import TOKEN_FILE
         from client_utils import TokenStore

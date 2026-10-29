@@ -689,6 +689,16 @@ class CloudHoneypotClient:
             except Exception as e:
                 log(f"[LIFECYCLE] startup report error: {e}")
             try:
+                from client_update_outcome import report_post_restart_failure
+                report_post_restart_failure(
+                    __version__,
+                    api_client=getattr(self, "api_client", None),
+                    token=(self.state.get("token") or ""),
+                    log_func=log,
+                )
+            except Exception as e:
+                log(f"[UPDATE-OUTCOME] skip: {e}")
+            try:
                 from client_update_ui import maybe_mark_done_on_startup
                 maybe_mark_done_on_startup(__version__)
             except Exception as e:

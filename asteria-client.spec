@@ -1,4 +1,4 @@
-﻿# -*- mode: python ; coding: utf-8 -*-
+# -*- mode: python ; coding: utf-8 -*-
 """
 onedir package â€” python312.dll lives under $INSTDIR\\_internal (no _MEI unpack).
 
@@ -54,6 +54,7 @@ _hidden = [
     'client_daemon_ipc',
     'client_lifecycle',
     'client_update_ui',
+    'client_update_outcome',
     'client_winproc',
     'client_remote_session',
     'client_rdp_nla',
