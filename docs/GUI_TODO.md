@@ -20,7 +20,8 @@ Kurallar: 443 çıkış bağlantısı asla kesilmez, yıkıcı komut yok, her fa
   - [ ] C4b: ThreatPage sekme JSX'leri, App.tsx, style.css, asteria_gui.py b?lme + inline style ? CSS (kalan).
 
 ## Faz 3 — UX / bilgi mimarisi
-- [ ] **U1** 7 sayfa → 4: Durum / Tehditler (+IP listeleri) / Koruma (Katmanlar + Honeypot) / Ayarlar (+Araçlar "Gelişmiş"). Dosyalar: `ui/src/App.tsx`, `ui/src/nav.ts`, sayfalar. Efor 1 gün. Risk orta.
+- [x] **U1** 7 sayfa → 4: Durum / Tehditler (+IP listeleri) / Koruma (Katmanlar + Honeypot) / Ayarlar (+Araçlar "Gelişmiş"). Dosyalar: `ui/src/App.tsx`, `ui/src/nav.ts`, sayfalar. Efor 1 gün. Risk orta.
+  - Sonu?: sol men? 4 grup: Durum / Tehditler (Tehdit Merkezi + IP Listeleri) / Koruma (Katmanlar + Honeypot) / Ayarlar (Ayarlar + Geli?mi?=Ara?lar). Birle?en sayfalar ?stte alt sekme; eski sayfa id'leri (derin linkler, Durum'dan 'iplist' vb.) ?al??maya devam eder. `ui/src/nav.ts` GROUPS/groupOf/subTabs.
 - [x] **U2** Teknik jargonu kaldır ('THREAT_TOP total', 'Cloud SoT', 'IPC 127.0.0.1:58632', çift Snapshot, başlıkta token). Dosyalar: `ui/src/i18n/catalog.ts`, sayfalar. Efor 3 sa. Risk düşük.
   - Sonu? (v4.9.153): SoT/IPC/threats-config/THREAT_TOP ifadeleri sade TR+EN metinlerle de?i?ti; Durum kart?nda 127.0.0.1:58632 yerine s?r?m; Tehditler ba?l???ndaki ?ift Snapshot d??mesi kald?r?ld?; ba?l?k ?eridinde token metni yok (kopyalama d??mesi + men? kald?).
 - [ ] **U3** En sık aksiyonlar Durum'da tek tık: IP engelle/kaldır, beyaz liste, koruma modu, güncelle, motoru kurtar. Dosya: `StatusPage.tsx`. Efor 0.5 gün. Risk düşük.

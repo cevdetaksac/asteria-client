@@ -11,7 +11,7 @@ import { LiveMeters } from './components/LiveMeters'
 import { LockScreen } from './components/LockScreen'
 import { currentLang, loadI18n, subscribeI18n, t } from './i18n'
 import type { PageId } from './lib'
-import { navItems } from './nav'
+import { groupOf, navItems, subTabs } from './nav'
 import { IpListPage } from './pages/IpListPage'
 import { LayersPage } from './pages/LayersPage'
 import { ServicesPage } from './pages/ServicesPage'
@@ -574,8 +574,8 @@ export default function App() {
             <button
               key={item.id}
               type="button"
-              className={page === item.id ? 'nav on' : 'nav'}
-              onClick={() => setPage(item.id)}
+              className={groupOf(page) === item.id ? 'nav on' : 'nav'}
+              onClick={() => setPage(groupOf(page) === item.id ? page : item.first)}
             >
               <span>{item.label}</span>
               <small>{item.blurb}</small>
@@ -715,6 +715,21 @@ export default function App() {
             />
           </div>
         </header>
+
+        {subTabs(page).length > 0 && (
+          <nav className="page-tabs group-tabs" aria-label={t('nav_' + groupOf(page))}>
+            {subTabs(page).map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                className={`page-tab${page === tab.id ? ' active' : ''}`}
+                onClick={() => setPage(tab.id)}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </nav>
+        )}
 
         {page === 'status' && (
           <StatusPage
