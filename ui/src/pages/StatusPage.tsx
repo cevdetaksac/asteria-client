@@ -342,9 +342,9 @@ export function StatusPage({ status, online, statusLoading = false, updatedAt, o
 
       <section className="quick-actions" aria-label={t('status_quick_title')}>
         <p className="eyebrow">{t('status_quick_title')}</p>
-        <div className="quick-row">
+        <div className="quick-row inline-form">
           <input
-            className="input mono"
+            className="mono"
             value={quickIp}
             placeholder={t('iplist_ip_ph')}
             onChange={(e) => setQuickIp(e.target.value)}

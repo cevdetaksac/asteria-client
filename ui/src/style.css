@@ -2427,3 +2427,5 @@ th.actions-head {
 
 /* U6 */
 .dash-link { float: right; }
+.quick-actions .eyebrow { display: block; }
+.quick-row.inline-form { margin: 0; }
