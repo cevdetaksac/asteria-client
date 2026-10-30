@@ -38,4 +38,5 @@ Kurallar: 443 çıkış bağlantısı asla kesilmez, yıkıcı komut yok, her fa
 
 - [x] **L1** Eski CTk `client_gui.py` kald?r; `client.py` i?indeki ModernGUI yolu g?venli fallback ile yeni GUI'ye (asteria_gui) y?nlensin.
   - Sonu?: `client_gui.py` (7983 sat?r) + CTk'ye ?zel `tests/test_gui_whitelist_sync.py` silindi. GUI modu her zaman `launch_new_gui()` ile asteria-gui.exe'ye (kaynaktan: asteria_gui.py) devreder; `build_gui` yaln?zca devreder + `legacy_gui_used` olay? yazar.
-- [ ] **L2** Kullan?lmayan .py dosyalar?: import grafi?i + PyInstaller .spec + dinamik importlar + testler ile kan?tlanm?? olanlar? sil.
+- [x] **L2** Kullan?lmayan .py dosyalar?: import grafi?i + PyInstaller .spec + dinamik importlar + testler ile kan?tlanm?? olanlar? sil.
+  - Sonu?: import grafi?i (import/from, t?rnakl? mod?l adlar? = spec hiddenimports + importlib, `ad.py` referanslar?) ile 107 k?k mod?l?n tamam? client.py / asteria_gui.py / .spec'ten eri?ilebilir. `scripts/` ve `tools/` alt?ndaki 9 dosya elle ?al??t?r?lan geli?tirici ara?lar?. Kan?tlanm?? kullan?lmayan .py bulunmad?, ek dosya silinmedi.
