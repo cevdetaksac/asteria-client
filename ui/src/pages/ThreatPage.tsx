@@ -10,6 +10,7 @@ import { asRecord, pick } from '../lib'
 import { formatLogon, formatThreatTime, normalizeAlertList, alertFields, type ThreatTab, type Attacker, type LocalUser } from './threat/model'
 import type { HardenCheck } from '../data/types'
 import { toastResult } from '../feedback'
+import { DashLink } from '../components/DashLink'
 
 
 type Props = {
@@ -616,6 +617,7 @@ export function ThreatPage({ onToast }: Props) {
           <div className="page-head" style={{ marginBottom: 12, paddingBottom: 0, border: 'none' }}>
             <div>
               <p className="eyebrow">{t('threat_alerts_eyebrow')}</p>
+              <DashLink path="dash_threats" label={t('dash_link_alerts')} />
               <h3>
                 {t('threat_alerts_title')}
                 {threatRows.length > 0 ? <span className="pill danger threat-count-pill">{threatRows.length}</span> : null}
@@ -762,6 +764,7 @@ export function ThreatPage({ onToast }: Props) {
         <div className="split split-stack" style={{ marginBottom: 18 }}>
           <article className="panel">
             <p className="eyebrow">{t('threat_shares_eyebrow')}</p>
+            <DashLink path="dash_servers" label={t('dash_link_inventory')} />
             <h3>{t('threat_shares_title')}{!extrasReady && <span className="inline-spinner" />}</h3>
             <p className="muted">
               {shareCustom > 0

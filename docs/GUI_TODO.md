@@ -30,7 +30,8 @@ Kurallar: 443 çıkış bağlantısı asla kesilmez, yıkıcı komut yok, her fa
   - Sonu?: `ui/src/feedback.ts` (toastResult/errorText: tek hata format?, ham kodlar '??lem ba?ar?s?z oldu (KOD)'), 23 toast yeri; `components/StateViews.tsx` (Loading/Empty/Error), DataTable bo? durumu ortak bile?ende.
 - [x] **U5** Başlık şeridi sade: durum noktası + makine adı, detay açılır. Dosyalar: `IdentityStrip.tsx`, `LiveMeters.tsx`, `App.tsx`. Efor 2 sa. Risk düşük.
   - Sonu?: ba?l?kta yaln?zca durum noktas? + makine ad?; t?klay?nca ID, IP, canl? ?l?erler ve token kopyala a??l?r (Esc/d??ar? t?k kapat?r).
-- [ ] **U6** Ağır/nadir görünümler dashboard'a link (uyarı geçmişi, servis/paylaşım envanteri, yönetim konsolları). Dosyalar: `ThreatPage.tsx`, `ToolsPage.tsx`. Efor 0.5 gün. Risk düşük.
+- [x] **U6** Ağır/nadir görünümler dashboard'a link (uyarı geçmişi, servis/paylaşım envanteri, yönetim konsolları). Dosyalar: `ThreatPage.tsx`, `ToolsPage.tsx`. Efor 0.5 gün. Risk düşük.
+  - Sonu?: `components/DashLink.tsx`; Tehditler > uyar?lar paneline 'T?m uyar? ge?mi?i dashboard'da ?' (dash_threats), A? sekmesine 'Tam envanter dashboard'da ?' (dash_servers). Y?netim konsollar? zaten Geli?mi? (Ara?lar) alt?nda yerel a??l?yor.
 
 ## Faz 4 — Mimari (başlanmadı)
 - [ ] **A1** Motorda periyodik snapshot + olay push; GUI poll'suz. Dosyalar: `client.py`, `client_daemon_ipc.py`, `asteria_gui.py`, `ui/`. Efor 2-3 gün. Risk orta.
