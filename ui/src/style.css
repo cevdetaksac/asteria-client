@@ -2416,3 +2416,11 @@ th.actions-head {
 .state-spinner { width: 14px; height: 14px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: state-spin 0.8s linear infinite; }
 @keyframes state-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .state-spinner { animation: none; } }
+
+/* U3: quick actions on Status */
+.quick-actions { margin: 0 0 16px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; }
+.quick-actions .eyebrow { margin: 0 0 8px; }
+.quick-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.quick-row .input { min-width: 180px; flex: 0 1 220px; }
+.quick-sep { width: 1px; align-self: stretch; background: var(--line); margin: 0 4px; }
+.quick-row .btn.active { border-color: var(--accent, #2bb3d9); color: var(--accent, #2bb3d9); }

@@ -740,6 +740,8 @@ export default function App() {
             onRefresh={() => void refresh({ silent: false })}
             onToast={showToast}
             onNavigate={(next) => setPage(next)}
+            onCheckUpdates={() => void checkUpdates()}
+            onRecoverMotor={() => void recoverUpdate()}
           />
         )}
         {page === 'threat' && <ThreatPage onToast={showToast} />}

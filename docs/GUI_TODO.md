@@ -24,7 +24,8 @@ Kurallar: 443 çıkış bağlantısı asla kesilmez, yıkıcı komut yok, her fa
   - Sonu?: sol men? 4 grup: Durum / Tehditler (Tehdit Merkezi + IP Listeleri) / Koruma (Katmanlar + Honeypot) / Ayarlar (Ayarlar + Geli?mi?=Ara?lar). Birle?en sayfalar ?stte alt sekme; eski sayfa id'leri (derin linkler, Durum'dan 'iplist' vb.) ?al??maya devam eder. `ui/src/nav.ts` GROUPS/groupOf/subTabs.
 - [x] **U2** Teknik jargonu kaldır ('THREAT_TOP total', 'Cloud SoT', 'IPC 127.0.0.1:58632', çift Snapshot, başlıkta token). Dosyalar: `ui/src/i18n/catalog.ts`, sayfalar. Efor 3 sa. Risk düşük.
   - Sonu? (v4.9.153): SoT/IPC/threats-config/THREAT_TOP ifadeleri sade TR+EN metinlerle de?i?ti; Durum kart?nda 127.0.0.1:58632 yerine s?r?m; Tehditler ba?l???ndaki ?ift Snapshot d??mesi kald?r?ld?; ba?l?k ?eridinde token metni yok (kopyalama d??mesi + men? kald?).
-- [ ] **U3** En sık aksiyonlar Durum'da tek tık: IP engelle/kaldır, beyaz liste, koruma modu, güncelle, motoru kurtar. Dosya: `StatusPage.tsx`. Efor 0.5 gün. Risk düşük.
+- [x] **U3** En sık aksiyonlar Durum'da tek tık: IP engelle/kaldır, beyaz liste, koruma modu, güncelle, motoru kurtar. Dosya: `StatusPage.tsx`. Efor 0.5 gün. Risk düşük.
+  - Sonu?: Durum'da 'H?zl? i?lemler' sat?r?: IP gir ? Engelle / Beyaz listeye ekle (Enter = engelle), koruma modu (?zleme/Denge/Tetikte) tek t?k, G?ncellemeleri denetle, motor kapal?yken Motoru kurtar. Sat?r baz?nda engelle/kald?r/beyaz liste zaten vard?.
 - [x] **U4** Ortak Loading / Empty / Error bileşenleri + tek hata/toast formatı. Dosyalar: `ui/src/components/*`. Efor 0.5 gün. Risk düşük.
   - Sonu?: `ui/src/feedback.ts` (toastResult/errorText: tek hata format?, ham kodlar '??lem ba?ar?s?z oldu (KOD)'), 23 toast yeri; `components/StateViews.tsx` (Loading/Empty/Error), DataTable bo? durumu ortak bile?ende.
 - [x] **U5** Başlık şeridi sade: durum noktası + makine adı, detay açılır. Dosyalar: `IdentityStrip.tsx`, `LiveMeters.tsx`, `App.tsx`. Efor 2 sa. Risk düşük.

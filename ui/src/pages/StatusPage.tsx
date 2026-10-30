@@ -19,11 +19,14 @@ type Props = {
   onRefresh: () => void
   onToast: (msg: string, kind?: 'ok' | 'err') => void
   onNavigate: (page: 'services' | 'layers' | 'threat' | 'iplist') => void
+  onCheckUpdates?: () => void
+  onRecoverMotor?: () => void
 }
 
 const IP_PREVIEW = 4
 
-export function StatusPage({ status, online, statusLoading = false, updatedAt, onRefresh, onToast, onNavigate }: Props) {
+export function StatusPage({ status, online, statusLoading = false, updatedAt, onRefresh, onToast, onNavigate, onCheckUpdates, onRecoverMotor }: Props) {
+  const [quickIp, setQuickIp] = useState('')
   const running = Array.isArray(status?.running_services) ? status.running_services : []
   const defense = asRecord(status?.defense_policy)
   const ng = asRecord(status?.network_guard)
@@ -207,6 +210,20 @@ export function StatusPage({ status, online, statusLoading = false, updatedAt, o
   const netUp = formatBps(resources.net_sent_bps)
 
   const switchLoading = pending || busy
+  // U3: one-click protection mode from Status
+  const setPolicy = async (policy: string) => {
+    setBusy(true)
+    try {
+      const result = await motorBridge.cloud('POST', 'threats/config', { protection: { defense_policy: policy } })
+      toastResult(onToast, result, t('toast_policy', { policy }))
+      onRefresh()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const quickIpValid = /^[0-9a-fA-F:.]{3,45}$/.test(quickIp.trim())
+
   const onOff = (on: boolean) =>
     triLabel(on, {
       yes: t('label_on'),
@@ -322,6 +339,46 @@ export function StatusPage({ status, online, statusLoading = false, updatedAt, o
         </div>
         <button type="button" className="btn" onClick={onRefresh}>{t('btn_refresh')}</button>
       </div>
+
+      <section className="quick-actions" aria-label={t('status_quick_title')}>
+        <p className="eyebrow">{t('status_quick_title')}</p>
+        <div className="quick-row">
+          <input
+            className="input mono"
+            value={quickIp}
+            placeholder={t('iplist_ip_ph')}
+            onChange={(e) => setQuickIp(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && quickIpValid && !busy) void mutateIp('BLOCK_IP', quickIp.trim())
+            }}
+          />
+          <button type="button" className="btn" disabled={busy || !quickIpValid} onClick={() => void mutateIp('BLOCK_IP', quickIp.trim())}>
+            {t('btn_block')}
+          </button>
+          <button type="button" className="btn ghost" disabled={busy || !quickIpValid} onClick={() => void addWhitelist(quickIp.trim())}>
+            {t('btn_whitelist_add')}
+          </button>
+          <span className="quick-sep" aria-hidden="true" />
+          {(['observe', 'balanced', 'paranoid'] as const).map((id) => (
+            <button
+              key={id}
+              type="button"
+              className={`btn ghost sm${pick(defense, 'defense_policy') === id ? ' active' : ''}`}
+              disabled={busy || pending}
+              onClick={() => void setPolicy(id)}
+            >
+              {t(`layers_policy_${id}`)}
+            </button>
+          ))}
+          <span className="quick-sep" aria-hidden="true" />
+          {onCheckUpdates ? (
+            <button type="button" className="btn ghost sm" onClick={onCheckUpdates}>{t('menu_check_updates')}</button>
+          ) : null}
+          {onRecoverMotor && !online ? (
+            <button type="button" className="btn ghost sm" onClick={onRecoverMotor}>{t('update_recover')}</button>
+          ) : null}
+        </div>
+      </section>
 
       <div className="chip-row">
         <button type="button" className={`chip ${online ? 'on' : ''}${pending ? ' loading' : ''}`} onClick={() => setDetail('motor')}>
