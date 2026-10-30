@@ -6,6 +6,7 @@ import { t } from '../i18n'
 import { asRecord } from '../lib'
 import { invalidate } from '../data/shared'
 import { DEFAULT_BLOCK_RULES, normalizeBlockRules, FIELDS, nestedGet, nestedSet, openDash, mapSettingsAccountError, type BlockRule } from './settings/fields'
+import { useBusy } from '../hooks/useBusy'
 
 
 type Props = {
@@ -19,7 +20,7 @@ export function SettingsPage({ pinEnabled, onToast, onSession }: Props) {
   const [blockRules, setBlockRules] = useState<BlockRule[]>(DEFAULT_BLOCK_RULES)
   const [pin, setPin] = useState('')
   const [pinCurrent, setPinCurrent] = useState('')
-  const [busy, setBusy] = useState(false)
+  const [busy, run] = useBusy()
   const [cfgReady, setCfgReady] = useState(false)
   const [linked, setLinked] = useState(false)
   const [accountEmail, setAccountEmail] = useState('')
@@ -71,8 +72,7 @@ export function SettingsPage({ pinEnabled, onToast, onSession }: Props) {
 
   const save = async (event: FormEvent) => {
     event.preventDefault()
-    setBusy(true)
-    try {
+    return run(async () => {
       const patch: Record<string, unknown> = {}
       for (const field of FIELDS) {
         const value = nestedGet(draft, field.key)
@@ -97,9 +97,7 @@ export function SettingsPage({ pinEnabled, onToast, onSession }: Props) {
       const result = await motorBridge.cloud('POST', 'threats/config', patch)
       onToast(result.ok ? t('toast_settings_saved') : t('toast_error_generic'), result.ok ? 'ok' : 'err')
       await load()
-    } finally {
-      setBusy(false)
-    }
+    })
   }
 
   const setPinAction = async () => {
@@ -128,8 +126,7 @@ export function SettingsPage({ pinEnabled, onToast, onSession }: Props) {
       onToast(t('account_pin_required'), 'err')
       return
     }
-    setBusy(true)
-    try {
+    return run(async () => {
       if (action === 'unlink') {
         const result = await motorBridge.account('unlink_request', targetEmail, password, accountPin)
         if (!result.ok) {
@@ -179,9 +176,7 @@ export function SettingsPage({ pinEnabled, onToast, onSession }: Props) {
         await loadAccount()
         onSession()
       }
-    } finally {
-      setBusy(false)
-    }
+    })
   }
 
   const sections = FIELDS.reduce<string[]>((acc, field) => {

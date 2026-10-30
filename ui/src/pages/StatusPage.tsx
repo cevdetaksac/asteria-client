@@ -10,6 +10,7 @@ import { asRecord, boolLabel, formatBps, pick, triLabel } from '../lib'
 import { invalidate } from '../data/shared'
 import type { HardenCheck, IpRow } from '../data/types'
 import { toastResult } from '../feedback'
+import { useBusy } from '../hooks/useBusy'
 
 type Props = {
   status: MotorStatus | null
@@ -34,7 +35,7 @@ export function StatusPage({ status, online, statusLoading = false, updatedAt, o
   const resources = asRecord(status?.resources)
   const pending = statusLoading || !status
   const [checks, setChecks] = useState<HardenCheck[]>([])
-  const [busy, setBusy] = useState(false)
+  const [busy, run] = useBusy()
   const [extrasLoading, setExtrasLoading] = useState(true)
   const [extrasHydrated, setExtrasHydrated] = useState(false)
   const [watching, setWatching] = useState<IpRow[]>([])
@@ -122,8 +123,7 @@ export function StatusPage({ status, online, statusLoading = false, updatedAt, o
 
   const toggleLayer = async (key: 'ransomware' | 'network_guard', value: boolean) => {
     if (pending || busy) return
-    setBusy(true)
-    try {
+    return run(async () => {
       const patch: Record<string, unknown> =
         key === 'ransomware'
           ? { ransomware_protection_enabled: value }
@@ -131,25 +131,19 @@ export function StatusPage({ status, online, statusLoading = false, updatedAt, o
       const result = await motorBridge.cloud('POST', 'threats/config', patch)
       toastResult(onToast, result, t('toast_layer_ok'))
       onRefresh()
-    } finally {
-      setBusy(false)
-    }
+    })
   }
 
   const fixHarden = async (target: string) => {
-    setBusy(true)
-    try {
+    return run(async () => {
       const result = await motorBridge.harden('fix', target)
       toastResult(onToast, result, t('toast_fix_ok', { target }))
       await loadExtras()
-    } finally {
-      setBusy(false)
-    }
+    })
   }
 
   const mutateIp = async (cmd: 'BLOCK_IP' | 'UNBLOCK_IP', ip: string) => {
-    setBusy(true)
-    try {
+    return run(async () => {
       const result = await motorBridge.ipc(cmd, { ip, reason: 'status' })
       onToast(
         result.ok
@@ -161,14 +155,11 @@ export function StatusPage({ status, online, statusLoading = false, updatedAt, o
       )
       await loadExtras()
       onRefresh()
-    } finally {
-      setBusy(false)
-    }
+    })
   }
 
   const addWhitelist = async (ip: string) => {
-    setBusy(true)
-    try {
+    return run(async () => {
       invalidate('cloud:threats/config')
     const cloud = await motorBridge.cloud('GET', 'threats/config')
       const data = cloud.ok && cloud.data && typeof cloud.data === 'object'
@@ -179,14 +170,11 @@ export function StatusPage({ status, online, statusLoading = false, updatedAt, o
       const result = await motorBridge.cloud('POST', 'threats/config', { whitelist_ips: next })
       toastResult(onToast, result, t('toast_wl_ok'))
       await loadExtras()
-    } finally {
-      setBusy(false)
-    }
+    })
   }
 
   const removeWhitelist = async (ip: string) => {
-    setBusy(true)
-    try {
+    return run(async () => {
       invalidate('cloud:threats/config')
     const cloud = await motorBridge.cloud('GET', 'threats/config')
       const data = cloud.ok && cloud.data && typeof cloud.data === 'object'
@@ -197,9 +185,7 @@ export function StatusPage({ status, online, statusLoading = false, updatedAt, o
       const result = await motorBridge.cloud('POST', 'threats/config', { whitelist_ips: next })
       toastResult(onToast, result, t('toast_wl_ok'))
       await loadExtras()
-    } finally {
-      setBusy(false)
-    }
+    })
   }
 
   const hostCpu = pick(resources, 'host_cpu_percent', 'cpu_percent', 'cpu')
@@ -212,14 +198,11 @@ export function StatusPage({ status, online, statusLoading = false, updatedAt, o
   const switchLoading = pending || busy
   // U3: one-click protection mode from Status
   const setPolicy = async (policy: string) => {
-    setBusy(true)
-    try {
+    return run(async () => {
       const result = await motorBridge.cloud('POST', 'threats/config', { protection: { defense_policy: policy } })
       toastResult(onToast, result, t('toast_policy', { policy }))
       onRefresh()
-    } finally {
-      setBusy(false)
-    }
+    })
   }
 
   const quickIpValid = /^[0-9a-fA-F:.]{3,45}$/.test(quickIp.trim())

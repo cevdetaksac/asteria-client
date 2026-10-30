@@ -6,6 +6,7 @@ import { Switch } from '../components/Switch'
 import { t } from '../i18n'
 import { asRecord, pick, triLabel } from '../lib'
 import { toastResult } from '../feedback'
+import { useBusy } from '../hooks/useBusy'
 
 type Props = {
   status: MotorStatus | null
@@ -25,7 +26,7 @@ export function LayersPage({ status, statusLoading = false, onRefresh, onToast }
   const pending = statusLoading || !status
   const [cfg, setCfg] = useState<Record<string, unknown>>({})
   const [cfgLoading, setCfgLoading] = useState(true)
-  const [toggleBusy, setToggleBusy] = useState(false)
+  const [toggleBusy, runToggle] = useBusy()
   const [detail, setDetail] = useState<LayerKey | null>(null)
   const [pageHelp, setPageHelp] = useState(false)
 
@@ -52,36 +53,29 @@ export function LayersPage({ status, statusLoading = false, onRefresh, onToast }
 
   const setPolicy = async (policy: string) => {
     if (pending || toggleBusy) return
-    setToggleBusy(true)
-    try {
+    return runToggle(async () => {
       const result = await motorBridge.cloud('POST', 'threats/config', {
         protection: { defense_policy: policy },
       })
       toastResult(onToast, result, t('toast_policy', { policy }))
       onRefresh()
-    } finally {
-      setToggleBusy(false)
-    }
+    })
   }
 
   const lockObserve = async () => {
     if (pending || toggleBusy) return
-    setToggleBusy(true)
-    try {
+    return runToggle(async () => {
       const result = await motorBridge.cloud('POST', 'threats/config', {
         protection: { defense_policy: 'observe', defense_policy_locked: true },
       })
       toastResult(onToast, result, t('toast_lock_ok'))
       onRefresh()
-    } finally {
-      setToggleBusy(false)
-    }
+    })
   }
 
   const toggleLayer = async (key: string, value: boolean) => {
     if (pending || toggleBusy) return
-    setToggleBusy(true)
-    try {
+    return runToggle(async () => {
       const patch: Record<string, unknown> = {}
       if (key === 'ransomware') patch.ransomware_protection_enabled = value
       if (key === 'canaries') patch.canary_files_enabled = value
@@ -89,33 +83,25 @@ export function LayersPage({ status, statusLoading = false, onRefresh, onToast }
       const result = await motorBridge.cloud('POST', 'threats/config', patch)
       toastResult(onToast, result, t('toast_layer_ok'))
       onRefresh()
-    } finally {
-      setToggleBusy(false)
-    }
+    })
   }
 
   const ngMaint = async (start: boolean) => {
     if (pending || toggleBusy) return
-    setToggleBusy(true)
-    try {
+    return runToggle(async () => {
       const result = await motorBridge.ipc(start ? 'NG_MAINT_START' : 'NG_MAINT_END_SNAPSHOT')
       toastResult(onToast, result, (start ? t('toast_ng_maint_on') : t('toast_ng_maint_off')))
       onRefresh()
-    } finally {
-      setToggleBusy(false)
-    }
+    })
   }
 
   const ngAccept = async () => {
     if (pending || toggleBusy) return
-    setToggleBusy(true)
-    try {
+    return runToggle(async () => {
       const result = await motorBridge.ipc('NG_ACCEPT_SURFACE')
       toastResult(onToast, result, t('toast_ng_accept'))
       onRefresh()
-    } finally {
-      setToggleBusy(false)
-    }
+    })
   }
 
   const rsOn = Boolean(status?.ransomware_running)

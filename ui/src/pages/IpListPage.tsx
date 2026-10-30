@@ -9,6 +9,7 @@ import { t } from '../i18n'
 import { asRecord, pick } from '../lib'
 import type { IpRow } from '../data/types'
 import { toastResult } from '../feedback'
+import { useBusy } from '../hooks/useBusy'
 
 type Props = {
   onToast: (msg: string, kind?: 'ok' | 'err') => void
@@ -21,7 +22,7 @@ export function IpListPage({ onToast }: Props) {
   const [watching, setWatching] = useState<IpRow[]>([])
   const [blocked, setBlocked] = useState<IpRow[]>([])
   const [whitelist, setWhitelist] = useState<string[]>([])
-  const [busy, setBusy] = useState(false)
+  const [busy, run] = useBusy()
   const [pageHelp, setPageHelp] = useState(false)
   const [tab, setTab] = useState<IpTab>('blocked')
 
@@ -47,8 +48,7 @@ export function IpListPage({ onToast }: Props) {
 
   const mutate = async (cmd: 'BLOCK_IP' | 'UNBLOCK_IP', target: string) => {
     if (!target.trim()) return
-    setBusy(true)
-    try {
+    return run(async () => {
       const result = await motorBridge.ipc(cmd, { ip: target.trim(), reason: 'iplist' })
       onToast(
         result.ok
@@ -59,32 +59,24 @@ export function IpListPage({ onToast }: Props) {
         result.ok ? 'ok' : 'err',
       )
       await refresh()
-    } finally {
-      setBusy(false)
-    }
+    })
   }
 
   const setWhitelistIps = async (next: string[]) => {
-    setBusy(true)
-    try {
+    return run(async () => {
       const result = await motorBridge.cloud('POST', 'threats/config', { whitelist_ips: next })
       toastResult(onToast, result, t('toast_wl_ok'))
       await refresh()
-    } finally {
-      setBusy(false)
-    }
+    })
   }
 
   const clearAll = async () => {
     if (!window.confirm(t('iplist_confirm_clear'))) return
-    setBusy(true)
-    try {
+    return run(async () => {
       const result = await motorBridge.ipc('CLEAR_FIREWALL')
       toastResult(onToast, result, t('toast_fw_cleared'))
       await refresh()
-    } finally {
-      setBusy(false)
-    }
+    })
   }
 
   const onSubmit = (event: FormEvent) => {

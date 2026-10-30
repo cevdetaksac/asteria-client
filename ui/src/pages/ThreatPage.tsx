@@ -11,6 +11,7 @@ import { formatLogon, formatThreatTime, normalizeAlertList, alertFields, type Th
 import type { HardenCheck } from '../data/types'
 import { toastResult } from '../feedback'
 import { DashLink } from '../components/DashLink'
+import { useBusy } from '../hooks/useBusy'
 
 
 type Props = {
@@ -24,7 +25,7 @@ export function ThreatPage({ onToast }: Props) {
   const [users, setUsers] = useState<LocalUser[]>([])
   const [userCounts, setUserCounts] = useState({ total: 0, active: 0, disabled: 0 })
   const [currentUser, setCurrentUser] = useState('')
-  const [busy, setBusy] = useState(false)
+  const [busy, run] = useBusy()
   const [pwdUser, setPwdUser] = useState<string | null>(null)
   const [pwdValue, setPwdValue] = useState('')
   const [threatTab, setThreatTab] = useState<ThreatTab>('threats')
@@ -173,27 +174,21 @@ export function ThreatPage({ onToast }: Props) {
 
   const block = async (ip: string) => {
     if (!ip || ip === '—') return
-    setBusy(true)
-    try {
+    return run(async () => {
       const result = await motorBridge.ipc('BLOCK_IP', { ip, reason: 'threat_center' })
       toastResult(onToast, result, t('toast_blocked', { ip }))
       setBlockIp('')
       await refreshThreats()
-    } finally {
-      setBusy(false)
-    }
+    })
   }
 
   const unblock = async (ip: string) => {
     if (!ip || ip === '—') return
-    setBusy(true)
-    try {
+    return run(async () => {
       const result = await motorBridge.ipc('UNBLOCK_IP', { ip, reason: 'threat_center' })
       toastResult(onToast, result, t('toast_unblocked', { ip }))
       await refreshThreats()
-    } finally {
-      setBusy(false)
-    }
+    })
   }
 
   const addWhitelist = async (ip: string) => {
@@ -202,62 +197,47 @@ export function ThreatPage({ onToast }: Props) {
       onToast(t('toast_wl_ok'), 'ok')
       return
     }
-    setBusy(true)
-    try {
+    return run(async () => {
       const next = [...whitelist, ip]
       const result = await motorBridge.cloud('POST', 'threats/config', { whitelist_ips: next })
       toastResult(onToast, result, t('toast_wl_ok'))
       if (result.ok) setWhitelist(next)
-    } finally {
-      setBusy(false)
-    }
+    })
   }
 
   const snapshot = async () => {
-    setBusy(true)
-    try {
+    return run(async () => {
       const result = await motorBridge.ipc('NG_SNAPSHOT')
       toastResult(onToast, result, t('toast_snapshot'))
-    } finally {
-      setBusy(false)
-    }
+    })
   }
 
   const fixHarden = async (target: string) => {
-    setBusy(true)
-    try {
+    return run(async () => {
       const result = await motorBridge.harden('fix', target)
       toastResult(onToast, result, t('toast_harden_ok'))
       await refreshExtras()
-    } finally {
-      setBusy(false)
-    }
+    })
   }
 
   const removeShare = async (name: string) => {
     if (!name) return
     if (!window.confirm(t('threat_share_confirm', { name }))) return
-    setBusy(true)
-    try {
+    return run(async () => {
       const result = await motorBridge.ipc('SHARE_REMOVE', { name })
       toastResult(onToast, result, t('toast_share_removed', { name }))
       await refreshExtras()
-    } finally {
-      setBusy(false)
-    }
+    })
   }
 
   const stopService = async (name: string, display?: string) => {
     if (!name) return
     if (!window.confirm(t('threat_svc_confirm', { name: display || name }))) return
-    setBusy(true)
-    try {
+    return run(async () => {
       const result = await motorBridge.ipc('SVC_STOP', { name })
       toastResult(onToast, result, t('toast_svc_stopped', { name: display || name }))
       await refreshExtras()
-    } finally {
-      setBusy(false)
-    }
+    })
   }
 
   const runIr = async (
@@ -281,8 +261,7 @@ export function ThreatPage({ onToast }: Props) {
       if (!window.confirm(t('threat_confirm_password', { user }))) return
     }
 
-    setBusy(true)
-    try {
+    return run(async () => {
       const result = await motorBridge.ir(action, user, newPassword)
       if (!result.ok) {
         const err = String(result.error || 'IR')
@@ -308,9 +287,7 @@ export function ThreatPage({ onToast }: Props) {
       setPwdUser(null)
       setPwdValue('')
       await refreshUsers()
-    } finally {
-      setBusy(false)
-    }
+    })
   }
 
 
