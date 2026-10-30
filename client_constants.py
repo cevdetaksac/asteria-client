@@ -42,7 +42,7 @@ def get_app_config():
     return _CONFIG
 
 # Application information
-VERSION = "4.9.156"  # never-stuck updater: TLS1.2, mirror+resume+SHA, fresh helper, rescue task
+VERSION = "4.9.157"  # never-stuck updater: TLS1.2, mirror+resume+SHA, fresh helper, rescue task
 
 
 
