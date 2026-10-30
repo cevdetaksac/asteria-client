@@ -278,7 +278,7 @@ export function ServicesPage({ onToast }: Props) {
           />
           <span>{t('relocate_auto_bait')}</span>
         </label>
-        <div className="table-wrap" style={{ marginTop: 12 }}>
+        <div className="table-wrap u-mt12">
           <table>
             <thead>
               <tr>
@@ -299,10 +299,10 @@ export function ServicesPage({ onToast }: Props) {
                     <td>
                       <strong>{row.service}</strong>
                       {row.relocated ? (
-                        <span className="pill ok" style={{ marginLeft: 8 }}>{t('relocate_badge_ok', { port: row.current_port })}</span>
+                        <span className="pill ok u-ml8">{t('relocate_badge_ok', { port: row.current_port })}</span>
                       ) : null}
                       {row.relocating ? (
-                        <span className="pill muted" style={{ marginLeft: 8 }}>{t('relocate_badge_busy')}</span>
+                        <span className="pill muted u-ml8">{t('relocate_badge_busy')}</span>
                       ) : null}
                     </td>
                     <td className="mono">{row.well_known}</td>
@@ -319,7 +319,7 @@ export function ServicesPage({ onToast }: Props) {
                         aria-label={`${row.service} target port`}
                       />
                       {row.target_busy || row.port_available === false ? (
-                        <div className="muted" style={{ fontSize: 11 }}>{t('relocate_target_busy', { port: target })}</div>
+                        <div className="muted u-fs11">{t('relocate_target_busy', { port: target })}</div>
                       ) : null}
                     </td>
                     <td className="actions-cell">
@@ -344,7 +344,7 @@ export function ServicesPage({ onToast }: Props) {
             </tbody>
           </table>
         </div>
-        <p className="muted" style={{ marginTop: 10, fontSize: 12 }}>{t('relocate_hint_4xxxx')}</p>
+        <p className="muted u-mt10 u-fs12">{t('relocate_hint_4xxxx')}</p>
       </article>
 
       {pageHelp && (

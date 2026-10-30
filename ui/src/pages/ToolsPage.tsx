@@ -161,7 +161,7 @@ export function ToolsPage({ onToast }: Props) {
         </div>
       </div>
 
-      <div className="cards three" style={{ marginBottom: 18 }}>
+      <div className="cards three u-mb18">
         <article>
           <p>{t('tools_card_admin')}</p>
           <strong className={admin ? 'good' : 'bad'}>{admin ? t('label_ok') : t('tools_admin_needed')}</strong>
@@ -209,7 +209,7 @@ export function ToolsPage({ onToast }: Props) {
 
       {tab === 'detect' && (
         <article className="panel panel-spaced">
-          <div className="page-head" style={{ marginBottom: 12, paddingBottom: 0, border: 'none' }}>
+          <div className="page-head sub-head">
             <div>
               <p className="eyebrow">{t('tools_detect_eyebrow')}</p>
               <h3>{t('tools_detect_title')}</h3>
@@ -254,13 +254,13 @@ export function ToolsPage({ onToast }: Props) {
             ))}
             {!findings.length ? <p className="muted">{t('tools_detect_empty')}</p> : null}
           </div>
-          {lastResult ? <p className="muted" style={{ marginTop: 12 }}>{lastResult}</p> : null}
+          {lastResult ? <p className="muted u-mt12">{lastResult}</p> : null}
         </article>
       )}
 
       {tab === 'repair' && (
         <article className="panel panel-spaced">
-          <div className="page-head" style={{ marginBottom: 12, paddingBottom: 0, border: 'none' }}>
+          <div className="page-head sub-head">
             <div>
               <p className="eyebrow">{t('tools_repair_eyebrow')}</p>
               <h3>{t('tools_repair_title')}</h3>
@@ -302,7 +302,7 @@ export function ToolsPage({ onToast }: Props) {
               </div>
             )
           })}
-          {lastResult ? <p className="muted" style={{ marginTop: 12 }}>{lastResult}</p> : null}
+          {lastResult ? <p className="muted u-mt12">{lastResult}</p> : null}
         </article>
       )}
 
@@ -310,7 +310,7 @@ export function ToolsPage({ onToast }: Props) {
         <article className="panel">
           <p className="eyebrow">{t('tools_admin_eyebrow')}</p>
           <h3>{t('tools_admin_title')}</h3>
-          <p className="muted" style={{ marginBottom: 12 }}>{t('tools_admin_blurb')}</p>
+          <p className="muted u-mb12">{t('tools_admin_blurb')}</p>
           <div className="tools-open-grid">
             {tools.map((tool) => (
               <button

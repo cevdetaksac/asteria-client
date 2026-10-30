@@ -51,11 +51,11 @@ export function AccountActionModal({
           <>
             <aside className="claim-risk soft" role="status">
               <strong>{t('account_unlink_link_sent_title')}</strong>
-              <p style={{ margin: '8px 0 0' }}>
+              <p className="u-mtop8">
                 {t('account_unlink_link_sent_body', { email: email || '—' })}
               </p>
             </aside>
-            <p className="muted" style={{ marginTop: 12 }}>
+            <p className="muted u-mt12">
               {t('account_unlink_link_sent_wait')}
             </p>
             {error && (

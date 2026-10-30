@@ -2429,3 +2429,25 @@ th.actions-head {
 .dash-link { float: right; }
 .quick-actions .eyebrow { display: block; }
 .quick-row.inline-form { margin: 0; }
+
+/* Spacing/text utilities (replace former inline styles; !important keeps inline precedence) */
+.page-head.sub-head { margin-bottom: 12px; padding-bottom: 0; border: none; }
+.u-fs11 { font-size: 11px !important; }
+.u-fs12 { font-size: 12px !important; }
+.u-mb0 { margin-bottom: 0px !important; }
+.u-mb8 { margin-bottom: 8px !important; }
+.u-mb10 { margin-bottom: 10px !important; }
+.u-mb12 { margin-bottom: 12px !important; }
+.u-mb18 { margin-bottom: 18px !important; }
+.u-ml8 { margin-left: 8px !important; }
+.u-mt8 { margin-top: 8px !important; }
+.u-mt10 { margin-top: 10px !important; }
+.u-mt12 { margin-top: 12px !important; }
+.u-mt16 { margin-top: 16px !important; }
+.u-mt18 { margin-top: 18px !important; }
+.u-mt28 { margin-top: 28px !important; }
+.u-w88 { width: 88px !important; }
+.u-mtop8 { margin: 8px 0 0 !important; }
+.u-m0 { margin: 0 !important; }
+.u-span-all { grid-column: 1 / -1 !important; }
+.u-break { word-break: break-all !important; }

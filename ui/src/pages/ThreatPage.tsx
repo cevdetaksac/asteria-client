@@ -540,8 +540,7 @@ export function ThreatPage({ onToast }: Props) {
 
       <div className="quick-actions">
         <form
-          className="inline-form"
-          style={{ margin: 0 }}
+          className="inline-form u-m0"
           onSubmit={(e) => {
             e.preventDefault()
             void block(blockIp.trim())
@@ -592,7 +591,7 @@ export function ThreatPage({ onToast }: Props) {
 
       {threatTab === 'threats' && (
         <article className="panel panel-spaced">
-          <div className="page-head" style={{ marginBottom: 12, paddingBottom: 0, border: 'none' }}>
+          <div className="page-head sub-head">
             <div>
               <p className="eyebrow">{t('threat_alerts_eyebrow')}</p>
               <DashLink path="dash_threats" label={t('dash_link_alerts')} />
@@ -625,7 +624,7 @@ export function ThreatPage({ onToast }: Props) {
       {threatTab === 'system' && (
         <>
           <article className="panel panel-spaced">
-            <div className="page-head" style={{ marginBottom: 12, paddingBottom: 0, border: 'none' }}>
+            <div className="page-head sub-head">
               <div>
                 <p className="eyebrow">{t('threat_harden_eyebrow')}</p>
                 <h3>{t('threat_harden_title')}{!extrasReady && <span className="inline-spinner" />}</h3>
@@ -656,7 +655,7 @@ export function ThreatPage({ onToast }: Props) {
             </div>
           </article>
 
-          <div className="split split-stack" style={{ marginBottom: 18 }}>
+          <div className="split split-stack u-mb18">
             <article className="panel">
               <p className="eyebrow">{t('threat_sessions_eyebrow')}</p>
               <h3>{t('threat_sessions_title')}{!usersReady && <span className="inline-spinner" />}</h3>
@@ -701,7 +700,7 @@ export function ThreatPage({ onToast }: Props) {
             </article>
 
             <article className="panel">
-              <div className="page-head" style={{ marginBottom: 8, paddingBottom: 0, border: 'none' }}>
+              <div className="page-head sub-head u-mb8">
                 <div>
                   <p className="eyebrow">{t('threat_cmd_eyebrow')}</p>
                   <h3>{t('threat_cmd_title')}{!extrasReady && <span className="inline-spinner" />}</h3>
@@ -739,7 +738,7 @@ export function ThreatPage({ onToast }: Props) {
       )}
 
       {threatTab === 'network' && (
-        <div className="split split-stack" style={{ marginBottom: 18 }}>
+        <div className="split split-stack u-mb18">
           <article className="panel">
             <p className="eyebrow">{t('threat_shares_eyebrow')}</p>
             <DashLink path="dash_servers" label={t('dash_link_inventory')} />
@@ -789,7 +788,7 @@ export function ThreatPage({ onToast }: Props) {
                   cell: (row) => {
                     const r = asRecord(row)
                     const name = String(r.name || '')
-                    if (r.is_default) return <span className="muted" style={{ fontSize: 11 }}>—</span>
+                    if (r.is_default) return <span className="muted u-fs11">—</span>
                     return (
                       <RowActionMenu
                         primary={[{ id: 'rm', label: t('threat_shares_remove'), danger: true, disabled: busy, onClick: () => void removeShare(name) }]}
@@ -826,7 +825,7 @@ export function ThreatPage({ onToast }: Props) {
                     return (
                       <>
                         <strong>{display}</strong>
-                        <div className="mono muted" style={{ fontSize: 11 }}>{name}</div>
+                        <div className="mono muted u-fs11">{name}</div>
                         {Boolean(r.known) && <span className="pill muted">{t('threat_svc_known')}</span>}
                       </>
                     )
@@ -838,7 +837,7 @@ export function ThreatPage({ onToast }: Props) {
                   className: 'muted',
                   searchText: (row) => String(asRecord(row).path || ''),
                   cell: (row) => (
-                    <span style={{ fontSize: 11, wordBreak: 'break-all' }}>{String(asRecord(row).path || '—')}</span>
+                    <span className="u-fs11 u-break">{String(asRecord(row).path || '—')}</span>
                   ),
                 },
                 {
@@ -850,7 +849,7 @@ export function ThreatPage({ onToast }: Props) {
                     const r = asRecord(row)
                     const name = String(r.name || '')
                     const display = String(r.display || name)
-                    if (r.known) return <span className="muted" style={{ fontSize: 11 }}>{t('threat_svc_known')}</span>
+                    if (r.known) return <span className="muted u-fs11">{t('threat_svc_known')}</span>
                     return (
                       <RowActionMenu
                         primary={[{ id: 'stop', label: t('threat_svc_stop'), danger: true, disabled: busy, onClick: () => void stopService(name, display) }]}
@@ -880,7 +879,7 @@ export function ThreatPage({ onToast }: Props) {
           </div>
         </div>
         <div className="accordion-body">
-          <p className="muted" style={{ marginBottom: 12 }}>{t('threat_users_blurb')}</p>
+          <p className="muted u-mb12">{t('threat_users_blurb')}</p>
           <DataTable
             rows={users}
             rowKey={(u) => u.username}

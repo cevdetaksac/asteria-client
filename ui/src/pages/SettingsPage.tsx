@@ -300,7 +300,7 @@ export function SettingsPage({ pinEnabled, onToast, onSession }: Props) {
           </h3>
           <p className="muted">{t('settings_account_blurb')}</p>
           {linked && (
-            <p className="muted" style={{ marginTop: 8 }}>{t('account_unlink_mail_note')}</p>
+            <p className="muted u-mt8">{t('account_unlink_mail_note')}</p>
           )}
           <div className="settings-account-form">
             {!linked && (
@@ -337,8 +337,8 @@ export function SettingsPage({ pinEnabled, onToast, onSession }: Props) {
           <h3>{pinEnabled ? t('settings_pin_set') : t('settings_pin_none')}</h3>
           <p className="muted">{t('settings_pin_desc')}</p>
           {linked && (
-            <div className="lock-callout linked" style={{ marginTop: 12, marginBottom: 12 }} role="status">
-              <p style={{ marginBottom: 0 }}>{t('settings_pin_dashboard_hint')}</p>
+            <div className="lock-callout linked u-mt12 u-mb12" role="status">
+              <p className="u-mb0">{t('settings_pin_dashboard_hint')}</p>
             </div>
           )}
           <div className="settings-account-form">
@@ -383,7 +383,7 @@ export function SettingsPage({ pinEnabled, onToast, onSession }: Props) {
           {tab === 'rules' && (
             <article className="panel settings-panel">
               <p className="eyebrow">{t('settings_sec_block_rules')}</p>
-              <p className="muted" style={{ marginBottom: 12 }}>{t('settings_block_rules_blurb')}</p>
+              <p className="muted u-mb12">{t('settings_block_rules_blurb')}</p>
               <div className="table-wrap">
                 <table>
                   <thead>
@@ -417,7 +417,7 @@ export function SettingsPage({ pinEnabled, onToast, onSession }: Props) {
                             onChange={(e) =>
                               updateRule(row.service, { threshold: Math.max(1, Number(e.target.value) || 1) })
                             }
-                            style={{ width: 88 }}
+                            className="u-w88"
                           />
                         </td>
                         <td>
@@ -431,7 +431,7 @@ export function SettingsPage({ pinEnabled, onToast, onSession }: Props) {
                               const mins = Math.max(1, Math.min(1440, Number(e.target.value) || 30))
                               updateRule(row.service, { window_seconds: mins * 60 })
                             }}
-                            style={{ width: 88 }}
+                            className="u-w88"
                           />
                         </td>
                       </tr>

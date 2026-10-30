@@ -421,13 +421,13 @@ export function StatusPage({ status, online, statusLoading = false, updatedAt, o
         </article>
       </div>
 
-      <div className="ip-cols" style={{ marginTop: 18 }}>
+      <div className="ip-cols u-mt18">
         {renderIpCol(t('status_ip_watching'), watching, ipTotals.watching, 'status_ip_empty_watch', 'watching')}
         {renderIpCol(t('status_ip_blocked'), blocked, ipTotals.blocked, 'status_ip_empty_blocked', 'blocked')}
         {renderIpCol(t('status_ip_whitelist'), whitelist, ipTotals.whitelist, 'status_ip_empty_wl', 'whitelist')}
       </div>
 
-      <div className="split" style={{ marginTop: 18 }}>
+      <div className="split u-mt18">
         <article className="panel clickable" onClick={() => setDetail('netguard')}>
           <div className="panel-head-row">
             <p className="eyebrow">{t('status_ng_eyebrow')}</p>
@@ -523,14 +523,14 @@ export function StatusPage({ status, online, statusLoading = false, updatedAt, o
         </article>
       </div>
 
-      <div className="split" style={{ marginTop: 18 }}>
-        <article className="panel" style={{ gridColumn: '1 / -1' }}>
+      <div className="split u-mt18">
+        <article className="panel u-span-all">
           <p className="eyebrow">{t('status_harden_eyebrow')}</p>
           <h3>{t('status_harden_title')}</h3>
-          <p className="feature-card-help" style={{ marginBottom: 10 }}>
+          <p className="feature-card-help u-mb10">
             {t('status_harden_help')}
           </p>
-          <p className="muted" style={{ marginBottom: 10 }}>
+          <p className="muted u-mb10">
             {t('status_rdp_moved_hint')}
           </p>
           <div className="check-list">

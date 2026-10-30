@@ -279,7 +279,7 @@ export function LayersPage({ status, statusLoading = false, onRefresh, onToast }
         })}
       </div>
 
-      <div className="btn-row" style={{ marginTop: 16 }}>
+      <div className="btn-row u-mt16">
         <button
           type="button"
           className="btn ghost"
@@ -295,7 +295,7 @@ export function LayersPage({ status, statusLoading = false, onRefresh, onToast }
         </span>
       </div>
 
-      <div className="cards three layer-toggles" style={{ marginTop: 28 }}>
+      <div className="cards three layer-toggles u-mt28">
         <article className={`layer-card clickable${pending ? ' loading' : ''}`} onClick={() => setDetail('ransomware')}>
           <div className="layer-card-top">
             <p>{t('layers_rs')}</p>
@@ -346,7 +346,7 @@ export function LayersPage({ status, statusLoading = false, onRefresh, onToast }
       </div>
 
       {(cfgLoading || Object.keys(cfg).length > 0) && (
-        <p className="muted" style={{ marginTop: 18 }}>
+        <p className="muted u-mt18">
           {cfgLoading
             ? t('status_section_loading')
             : t('layers_cfg_loaded', { count: Object.keys(cfg).length })}
