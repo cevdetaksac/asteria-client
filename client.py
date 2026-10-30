@@ -99,12 +99,13 @@ from client_instance import check_singleton
 from client_logging import LoggingManager, setup_logging
 from client_security import SecurityManager
 from client_updater import UpdateManager
+ModernGUI = None  # legacy CTk GUI removed (L1)
 if os.environ.get("ASTERIA_MOTOR_ONLY") == "1":
     TrayManager = None
-    ModernGUI = None
+    pass  # ModernGUI removed
 else:
     from client_tray import TrayManager
-    from client_gui import ModernGUI
+    # L1: legacy CTk client_gui removed - UI is asteria_gui (pywebview), see launch_new_gui()
 
 # Import threat detection modules (v4.0)
 from client_eventlog import EventLogWatcher
@@ -3992,207 +3993,43 @@ class CloudHoneypotClient:
 
     # ---------- GUI ---------- #
     def build_gui(self, minimized=None):
-        # Basit startup mode belirleme
-        startup_mode = "gui"  # default
-        
-        # Minimized parametresi varsa onu kullan
-        if minimized is not None:
-            startup_mode = "minimized" if minimized else "gui"
-            
-        # Ensure root window exists (CTk)
-        if not self.root:
-            self.root = ctk.CTk()
-            self.root.withdraw()  # Start hidden — will be configured below
-
-        self.start_single_instance_server()
-
-        # Prefer frontend only if SYSTEM motor is healthy (not mere PING)
-        if not getattr(self, "frontend_only", False) and not getattr(self, "daemon_is_active", False):
-            try:
-                from client_daemon_ipc import is_motor_healthy, ensure_daemon_running
-                _t = time.time()
-                if is_motor_healthy(timeout=0.4):
-                    self.frontend_only = True
-                    self.daemon_is_active = True
-                    self._protection_mode_cache = "monitoring"
-                    log(
-                        f"[PERF] build_gui motor_ok "
-                        f"{(time.time() - _t) * 1000:.0f}ms — frontend_only"
-                    )
-                else:
-                    # Kick Background so commands/pending + RD WS come back
-                    threading.Thread(
-                        target=lambda: ensure_daemon_running(log_func=log, wait_sec=12.0),
-                        daemon=True,
-                        name="EnsureMotor",
-                    ).start()
-            except Exception:
-                pass
-
-        # Protection mode: cache via background poller (never IPC on Tk thread)
+        """Legacy CTk GUI was removed (L1). Hand off to the new GUI instead."""
+        log("[LEGACY-GUI] build_gui called - handing off to asteria_gui")
         try:
-            self.start_protection_mode_poller(interval_sec=5.0)
-            threading.Thread(
-                target=lambda: self.refresh_protection_mode_cache(timeout=0.4),
-                daemon=True,
-                name="ProtModeKick",
-            ).start()
-        except Exception as e:
-            log(f"[PERF] protection poller start: {e}")
-
-        # Background services - skip if daemon is running (UI-only mode)
-        ui_only = bool(
-            getattr(self, "frontend_only", False) or getattr(self, "daemon_is_active", False)
-        )
-        if not ui_only:
-            __import__("client_supervisor").start_supervised(self.heartbeat_loop, name="Heartbeat")
-            try:
-                __import__("client_supervisor").start_supervised(self.report_open_ports_loop, name="OpenPortsReport")
-            except Exception as e:
-                log(f"open ports reporter start failed: {e}")
-            try:
-                self.start_firewall_agent()
-            except Exception as e:
-                log(f"firewall agent start failed (gui): {e}")
-        else:
-            log("🔄 UI-only mode: Skipping background threads (heartbeat, open ports, services, firewall)")
-        
-        # Start external watchdog
-        try:
-            start_watchdog_if_needed(WATCHDOG_TOKEN_FILE, log)
-        except Exception as e:
-            log(f"watchdog start error: {e}")
-        # Hourly update checker — daemon owns this in frontend mode
-        if not ui_only:
-            try:
-                self.start_update_watchdog()
-            except Exception as e:
-                log(f"update watchdog thread error: {e}")
-        else:
-            log("🔄 UI-only mode: Skipping update watchdog (daemon handles this)")
-
-        # Language from Windows UI (first run) or saved user preference
-        self.lang = resolve_app_language()
-
-        # Token'ı yükle
-        token = self.token_manager.load_token(self.root, self.t)
-        self.state["token"] = token
-        # Never block UI on ipify — use cache only, refresh async
-        try:
-            self.state["public_ip"] = ClientHelpers.get_public_ip(allow_network=False) or ""
-            def _async_ip():
-                try:
-                    ip = ClientHelpers.get_public_ip(force_refresh=True, allow_network=True)
-                    self.state["public_ip"] = ip
-                except Exception:
-                    pass
-            threading.Thread(target=_async_ip, daemon=True, name="PublicIP").start()
-        except Exception:
-            self.state["public_ip"] = ""
-
-        # row_controls — ModernGUI populates this
-        self.row_controls = {}
-
-        # ── Modern GUI ── #
-        # C1: legacy CTk GUI usage telemetry (one release observation before removal)
-        try:
-            log("[LEGACY-GUI] CTk ModernGUI path used (build_gui) - planned for removal")
             from client_lifecycle import report_now as _rn_legacy
-            _rn_legacy("legacy_gui_used", "build_gui", {"argv": " ".join(sys.argv[1:])[:200]})
+            _rn_legacy("legacy_gui_used", "build_gui_handoff", {"argv": " ".join(sys.argv[1:])[:200]})
         except Exception:
             pass
-        self.gui = ModernGUI(self)
+        launch_new_gui(tray=bool(minimized))
+        return False
 
-        # Consent dialog (modern) — skip in debug/test mode
-        try:
-            from client_constants import DEBUG_MODE, TEST_MODE
-            from client_utils import get_from_config
-            skip_consent = DEBUG_MODE or TEST_MODE or get_from_config("debug.skip_consent_dialog", False)
-            if not skip_consent:
-                self.gui.show_consent_dialog()
-            else:
-                log("[DEBUG] Consent dialog skipped")
-        except Exception as e:
-            log(f"consent ui error: {e}")
 
-        # Build the full interface
-        self.gui.build(self.root, startup_mode)
 
-        # Wire threat detection GUI toast (v4.0)
-        if self.alert_pipeline and self.gui:
-            self.alert_pipeline.gui_toast_func = self.gui.show_toast
 
-        # Attack count polling (async only — never block paint)
-        self.poll_attack_count()
-        if token:
-            self.refresh_attack_count(async_thread=True)
 
-        # Optional silent auto-update on startup if configured and no active services
-        try:
-            if os.environ.get('AUTO_UPDATE_SILENT') == '1':
-                if not self.service_manager.running_services:
-                    self.check_updates_and_apply_silent()
-        except Exception as e:
-            log(f"auto-update silent error: {e}")
-
-        # Tray AFTER first paint opportunity — schedule so deiconify is not blocked
-        if TRY_TRAY:
-            def _start_tray_soon():
-                try:
-                    self.initialize_tray_manager()
-                    if self.alert_pipeline and hasattr(self, 'tray_manager') and self.tray_manager:
-                        self.alert_pipeline.tray_notify_func = self.tray_manager.notify
-                    try:
-                        self.update_tray_icon()
-                    except Exception:
-                        pass
-                except Exception as e:
-                    log(f"Tray start error: {e}")
-            try:
-                self.root.after(50, _start_tray_soon)
-            except Exception:
-                _start_tray_soon()
-
-        # Önceki oturumdan kalan servisleri geri yükle (bg)
-        self._restore_saved_services()
-
-        # show_cb is used by single-instance control server to bring window to front
-        def _show_window():
-            try:
-                if hasattr(self, 'tray_manager') and self.tray_manager:
-                    self.tray_manager.show_window()
-                else:
-                    self._tray_mode.clear()
-                    self.root.deiconify(); self.root.lift(); self.root.focus_force()
-            except: pass
-        self.show_cb = _show_window
-
-        # Second launch (--mode=tray / desktop shortcut) pulses Local show-event
-        try:
-            from client_instance import start_gui_show_watcher
-
-            def _show_from_event():
-                try:
-                    # Second launch / handoff — also revive a dead tray icon
-                    if hasattr(self, "tray_manager") and self.tray_manager:
-                        try:
-                            self.tray_manager.ensure_tray_alive()
-                        except Exception:
-                            pass
-                    self._gui_safe(self.show_cb)
-                except Exception:
-                    try:
-                        self.show_cb()
-                    except Exception:
-                        pass
-
-            start_gui_show_watcher(_show_from_event)
-        except Exception as e:
-            log(f"[SINGLETON] GUI show watcher not started: {e}")
-        
-        # GUI sağlık durumu izleme başlat
-        self.root.after(self.gui_health['health_check_interval'] * 1000, self.check_gui_health)
-
+def launch_new_gui(tray: bool = False) -> bool:
+    """Start the pywebview GUI (asteria-gui.exe next to the exe, or asteria_gui.py from source)."""
+    args = ["--tray"] if tray else []
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        if getattr(sys, "frozen", False):
+            gui_exe = os.path.join(os.path.dirname(sys.executable), "asteria-gui.exe")
+            if not os.path.isfile(gui_exe):
+                log("[GUI] asteria-gui.exe not found next to client")
+                return False
+            subprocess.Popen([gui_exe, *args], close_fds=True, creationflags=flags)
+            log(f"[GUI] handoff -> {gui_exe} {' '.join(args)}")
+            return True
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "asteria_gui.py")
+        if not os.path.isfile(script):
+            log("[GUI] asteria_gui.py not found")
+            return False
+        subprocess.Popen([sys.executable, script, *args], close_fds=True, creationflags=flags)
+        log(f"[GUI] handoff (source) -> {script} {' '.join(args)}")
+        return True
+    except Exception as e:
+        log(f"[GUI] handoff failed: {e}")
+        return False
 
 
 # ===================== MAIN ===================== #
@@ -4465,18 +4302,11 @@ if __name__ == "__main__":
     
     if operation_mode == GUI_MODE or want_frontend:
         # ===== GUI MODE - Normal GUI application with tray functionality =====
-        if os.environ.get("ASTERIA_MOTOR_ONLY") == "1":
-            gui_exe = os.path.join(os.path.dirname(sys.executable), "asteria-gui.exe")
-            if os.path.isfile(gui_exe):
-                gui_args = ["--tray"] if want_tray and not want_show_gui else []
-                subprocess.Popen(
-                    [gui_exe, *gui_args],
-                    close_fds=True,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                )
-                log(f"[GUI] Motor-only handoff -> {gui_exe} {' '.join(gui_args)}")
+        # L1: the only UI is asteria_gui (pywebview); legacy CTk path removed.
+        if not is_session_zero():
+            if launch_new_gui(tray=bool(want_tray and not want_show_gui)):
                 sys.exit(0)
-            log("[GUI] Motor-only build has no asteria-gui.exe sibling")
+            log("[GUI] new GUI handoff failed - no legacy fallback, exiting")
             sys.exit(3)
 
         # Session 0 (SYSTEM) cannot show a visible desktop window
