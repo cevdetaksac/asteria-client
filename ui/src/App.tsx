@@ -9,6 +9,7 @@ import { HeaderMenu, type MenuAction } from './components/HeaderMenu'
 import { IdentityStrip } from './components/IdentityStrip'
 import { LiveMeters } from './components/LiveMeters'
 import { LockScreen } from './components/LockScreen'
+import { UpdateBannerBar, canRecover, type UpdateBanner } from './components/UpdateBannerBar'
 import { currentLang, loadI18n, subscribeI18n, t } from './i18n'
 import type { PageId } from './lib'
 import { groupOf, navItems, subTabs } from './nav'
@@ -19,16 +20,6 @@ import { SettingsPage } from './pages/SettingsPage'
 import { StatusPage } from './pages/StatusPage'
 import { ThreatPage } from './pages/ThreatPage'
 import { ToolsPage } from './pages/ToolsPage'
-
-type UpdateBanner = {
-  phase?: string
-  to_version?: string
-  from_version?: string
-  progress?: number
-  detail?: string
-  error?: string
-  can_abort?: boolean
-}
 
 function isGuiLockedPayload(value: unknown): boolean {
   if (!value || typeof value !== 'object') return false
@@ -529,40 +520,6 @@ export default function App() {
     )
   }
 
-  const bannerText = (() => {
-    if (!banner) return ''
-    const phase = String(banner.phase || '').toLowerCase()
-    const pct = banner.progress != null ? Number(banner.progress) : null
-    let title = t('update_banner_default')
-    if (phase === 'accepted') title = t('update_banner_accepted')
-    else if (phase === 'downloading' && pct != null && Number.isFinite(pct)) {
-      title = t('update_banner_downloading_pct', { pct: Math.round(pct) })
-    } else if (phase === 'downloading') title = t('update_banner_downloading')
-    else if (phase === 'staging') title = t('update_banner_staging')
-    else if (phase === 'installing') title = t('update_banner_installing')
-    else if (phase === 'done') title = t('update_banner_done')
-    else if (phase === 'failed') {
-      title = banner.detail === 'update_stalled' ? t('update_banner_stalled') : t('update_banner_failed')
-    }
-    const fromV = String(banner.from_version || '')
-    const toV = String(banner.to_version || '')
-    const ver =
-      fromV || toV
-        ? t('update_banner_version_line', { from_v: fromV || '—', to_v: toV || '—' })
-        : ''
-    const err = phase === 'failed' ? String(banner.error || banner.detail || '') : ''
-    return [title, ver, err].filter(Boolean).join(' · ')
-  })()
-
-  const bannerProgress =
-    banner?.progress != null && Number.isFinite(Number(banner.progress))
-      ? Math.max(0, Math.min(100, Number(banner.progress)))
-      : banner?.phase === 'installing' || banner?.phase === 'staging'
-        ? 100
-        : banner?.phase === 'accepted'
-          ? 5
-          : null
-
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -620,47 +577,12 @@ export default function App() {
         {/* All operator alerts share one top stack (never split around the identity row). */}
         {(banner || error) && (
           <div className="top-alerts" role="region" aria-label="alerts">
-            {banner && (
-              <div className={`update-banner ${banner.phase === 'failed' ? 'fail' : banner.phase === 'done' ? 'ok' : ''}`}>
-                <div className="update-banner-copy">
-                  <span>{bannerText}</span>
-                  {bannerProgress != null && (
-                    <div className="update-banner-track" aria-hidden="true">
-                      <div className="update-banner-fill" style={{ width: `${bannerProgress}%` }} />
-                    </div>
-                  )}
-                </div>
-                <div className="update-banner-actions">
-                  {(banner.phase === 'failed' ||
-                    banner.can_abort ||
-                    ['accepted', 'downloading', 'staging', 'installing'].includes(String(banner.phase || ''))) && (
-                    <button
-                      type="button"
-                      className="btn ghost sm"
-                      disabled={recoverBusy}
-                      onClick={() => void recoverUpdate()}
-                    >
-                      {t('update_recover')}
-                    </button>
-                  )}
-                  <button type="button" className="btn ghost sm" onClick={() => void dismissBanner()}>
-                    {t('btn_close')}
-                  </button>
-                </div>
-              </div>
-            )}
+            {banner && <UpdateBannerBar banner={banner} recoverBusy={recoverBusy} onRecover={() => void recoverUpdate()} onDismiss={() => void dismissBanner()} />}
             {error && (
               <aside className={`error${error === t('status_refreshing') ? ' soft' : ''}`}>
                 <span>{error}</span>
                 {(updateStuck || (!online && statusHydrated === false)) &&
-                  !(
-                    banner &&
-                    (banner.phase === 'failed' ||
-                      banner.can_abort ||
-                      ['accepted', 'downloading', 'staging', 'installing'].includes(
-                        String(banner.phase || ''),
-                      ))
-                  ) && (
+                  !(banner && canRecover(banner)) && (
                   <button
                     type="button"
                     className="btn ghost sm"
