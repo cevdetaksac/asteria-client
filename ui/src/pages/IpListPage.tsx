@@ -6,10 +6,11 @@ import { FeatureGuide } from '../components/FeatureGuide'
 import { IconBtn, icons } from '../components/IconBtn'
 import { RowActionMenu } from '../components/RowActionMenu'
 import { t } from '../i18n'
-import { asRecord, pick } from '../lib'
+import { arr, asRecord, pick } from '../lib'
 import type { IpRow } from '../data/types'
 import { toastResult } from '../feedback'
 import { useBusy } from '../hooks/useBusy'
+import { saveWhitelist, whitelistOf } from '../data/whitelist'
 
 type Props = {
   onToast: (msg: string, kind?: 'ok' | 'err') => void
@@ -31,12 +32,11 @@ export function IpListPage({ onToast }: Props) {
       motorBridge.ipc('IP_TABLE'),
       motorBridge.cloud('GET', 'threats/config'),
     ])
-    setWatching(Array.isArray(table.watching) ? (table.watching as IpRow[]) : [])
-    setBlocked(Array.isArray(table.blocked) ? (table.blocked as IpRow[]) : [])
-    if (cloud.ok && cloud.data && typeof cloud.data === 'object') {
-      const data = cloud.data as Record<string, unknown>
-      const wl = data.whitelist_ips
-      setWhitelist(Array.isArray(wl) ? wl.map(String) : [])
+    setWatching(arr<IpRow>(table.watching))
+    setBlocked(arr<IpRow>(table.blocked))
+    const cloudWl = whitelistOf(cloud)
+    if (cloudWl) {
+      setWhitelist(cloudWl)
     } else if (Array.isArray(table.whitelist)) {
       setWhitelist((table.whitelist as IpRow[]).map((r) => String(r.ip || '')).filter(Boolean))
     }
@@ -64,7 +64,7 @@ export function IpListPage({ onToast }: Props) {
 
   const setWhitelistIps = async (next: string[]) => {
     return run(async () => {
-      const result = await motorBridge.cloud('POST', 'threats/config', { whitelist_ips: next })
+      const result = await saveWhitelist(next)
       toastResult(onToast, result, t('toast_wl_ok'))
       await refresh()
     })

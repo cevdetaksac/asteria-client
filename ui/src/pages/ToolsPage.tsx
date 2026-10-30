@@ -4,6 +4,7 @@ import { DetailModal } from '../components/DetailModal'
 import { FeatureGuide } from '../components/FeatureGuide'
 import { t } from '../i18n'
 import { toastResult } from '../feedback'
+import { arr } from '../lib'
 
 type Props = {
   onToast: (msg: string, kind?: 'ok' | 'err') => void
@@ -75,14 +76,14 @@ export function ToolsPage({ onToast }: Props) {
       onToast(String(cat.error || 'tools'), 'err')
       return
     }
-    const open = Array.isArray(cat.open_tools) ? (cat.open_tools as OpenTool[]) : []
+    const open = arr<OpenTool>(cat.open_tools)
     setTools(open)
     const st = cat.status && typeof cat.status === 'object' ? (cat.status as Record<string, unknown>) : {}
     setAdmin(Boolean(st.admin))
     const w = st.webview2 && typeof st.webview2 === 'object' ? (st.webview2 as Record<string, unknown>) : {}
     setWv2({ present: Boolean(w.present), detail: String(w.detail || '') })
     const diag = cat.diagnose && typeof cat.diagnose === 'object' ? (cat.diagnose as Record<string, unknown>) : {}
-    const list = Array.isArray(diag.findings) ? (diag.findings as Finding[]) : []
+    const list = arr<Finding>(diag.findings)
     setFindings(list)
     setIssueCount(Number(diag.issues || list.filter((f) => !f.ok).length))
     setCriticalCount(Number(diag.critical || 0))
@@ -130,7 +131,7 @@ export function ToolsPage({ onToast }: Props) {
         onToast(String(r.error || 'diagnose'), 'err')
         return
       }
-      const list = Array.isArray(r.findings) ? (r.findings as Finding[]) : []
+      const list = arr<Finding>(r.findings)
       setFindings(list)
       setIssueCount(Number(r.issues || list.filter((f) => !f.ok).length))
       setCriticalCount(Number(r.critical || 0))

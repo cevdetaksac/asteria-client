@@ -4,6 +4,7 @@ import { motorBridge } from '../bridge'
 import { DetailModal } from '../components/DetailModal'
 import { FeatureGuide } from '../components/FeatureGuide'
 import { t } from '../i18n'
+import { arr } from '../lib'
 
 type Props = {
   onToast: (msg: string, kind?: 'ok' | 'err') => void
@@ -71,7 +72,7 @@ export function ServicesPage({ onToast }: Props) {
       }
       return
     }
-    const services = Array.isArray(result.services) ? (result.services as RelocateRow[]) : []
+    const services = arr<RelocateRow>(result.services)
     if (services.length) {
       setRelocateRows(
         services.map((row) => ({

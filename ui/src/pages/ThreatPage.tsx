@@ -6,12 +6,13 @@ import { DetailModal } from '../components/DetailModal'
 import { FeatureGuide } from '../components/FeatureGuide'
 import { RowActionMenu } from '../components/RowActionMenu'
 import { t } from '../i18n'
-import { asRecord, pick } from '../lib'
+import { arr, asRecord, pick } from '../lib'
 import { formatLogon, formatThreatTime, normalizeAlertList, alertFields, type ThreatTab, type Attacker, type LocalUser } from './threat/model'
 import type { HardenCheck } from '../data/types'
 import { toastResult } from '../feedback'
 import { DashLink } from '../components/DashLink'
 import { useBusy } from '../hooks/useBusy'
+import { saveWhitelist } from '../data/whitelist'
 
 
 type Props = {
@@ -45,7 +46,7 @@ export function ThreatPage({ onToast }: Props) {
 
   const refreshThreats = useCallback(async () => {
     const result = await motorBridge.ipc('THREAT_TOP')
-    const list = Array.isArray(result.attackers) ? (result.attackers as Attacker[]) : []
+    const list = arr<Attacker>(result.attackers)
     setAttackers(list)
     setTotal(Number(result.total ?? list.length) || 0)
 
@@ -74,7 +75,7 @@ export function ThreatPage({ onToast }: Props) {
       onToast(String(result.error || t('threat_users_load_fail')), 'err')
       return
     }
-    const list = Array.isArray(result.users) ? (result.users as LocalUser[]) : []
+    const list = arr<LocalUser>(result.users)
     setUsers(list)
     const counts = asRecord(result.counts)
     setUserCounts({
@@ -199,7 +200,7 @@ export function ThreatPage({ onToast }: Props) {
     }
     return run(async () => {
       const next = [...whitelist, ip]
-      const result = await motorBridge.cloud('POST', 'threats/config', { whitelist_ips: next })
+      const result = await saveWhitelist(next)
       toastResult(onToast, result, t('toast_wl_ok'))
       if (result.ok) setWhitelist(next)
     })

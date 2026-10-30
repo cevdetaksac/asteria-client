@@ -1,5 +1,8 @@
 export type PageId = 'status' | 'threat' | 'iplist' | 'services' | 'layers' | 'tools' | 'settings'
 
+/** Array or empty array (typed) - for loosely shaped bridge payloads. */
+export const arr = <T = unknown,>(value: unknown): T[] => (Array.isArray(value) ? (value as T[]) : [])
+
 export function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : {}
 }

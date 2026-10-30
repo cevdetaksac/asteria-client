@@ -6,11 +6,11 @@ import { FeatureGuide } from '../components/FeatureGuide'
 import { IconBtn, icons } from '../components/IconBtn'
 import { Switch } from '../components/Switch'
 import { t } from '../i18n'
-import { asRecord, boolLabel, formatBps, pick, triLabel } from '../lib'
-import { invalidate } from '../data/shared'
+import { arr, asRecord, boolLabel, formatBps, pick, triLabel } from '../lib'
 import type { HardenCheck, IpRow } from '../data/types'
 import { toastResult } from '../feedback'
 import { useBusy } from '../hooks/useBusy'
+import { editWhitelist } from '../data/whitelist'
 
 type Props = {
   status: MotorStatus | null
@@ -54,9 +54,9 @@ export function StatusPage({ status, online, statusLoading = false, updatedAt, o
       ])
       if (h.ok && Array.isArray(h.checks)) setChecks(h.checks as HardenCheck[])
 
-      const watchRows = Array.isArray(table.watching) ? (table.watching as IpRow[]) : []
-      const blockRows = Array.isArray(table.blocked) ? (table.blocked as IpRow[]) : []
-      let wlRows = Array.isArray(table.whitelist) ? (table.whitelist as IpRow[]) : []
+      const watchRows = arr<IpRow>(table.watching)
+      const blockRows = arr<IpRow>(table.blocked)
+      let wlRows = arr<IpRow>(table.whitelist)
       const totals = asRecord(table.totals)
 
       // Cloud whitelist is SoT when motor local set is thin (frontend-only edge).
@@ -158,35 +158,13 @@ export function StatusPage({ status, online, statusLoading = false, updatedAt, o
     })
   }
 
-  const addWhitelist = async (ip: string) => {
-    return run(async () => {
-      invalidate('cloud:threats/config')
-    const cloud = await motorBridge.cloud('GET', 'threats/config')
-      const data = cloud.ok && cloud.data && typeof cloud.data === 'object'
-        ? (cloud.data as Record<string, unknown>)
-        : {}
-      const current = Array.isArray(data.whitelist_ips) ? data.whitelist_ips.map(String) : []
-      const next = Array.from(new Set([...current, ip]))
-      const result = await motorBridge.cloud('POST', 'threats/config', { whitelist_ips: next })
-      toastResult(onToast, result, t('toast_wl_ok'))
+  const changeWhitelist = (add: string[], remove: string[]) =>
+    run(async () => {
+      toastResult(onToast, await editWhitelist(add, remove), t('toast_wl_ok'))
       await loadExtras()
     })
-  }
-
-  const removeWhitelist = async (ip: string) => {
-    return run(async () => {
-      invalidate('cloud:threats/config')
-    const cloud = await motorBridge.cloud('GET', 'threats/config')
-      const data = cloud.ok && cloud.data && typeof cloud.data === 'object'
-        ? (cloud.data as Record<string, unknown>)
-        : {}
-      const current = Array.isArray(data.whitelist_ips) ? data.whitelist_ips.map(String) : []
-      const next = current.filter((x) => x !== ip)
-      const result = await motorBridge.cloud('POST', 'threats/config', { whitelist_ips: next })
-      toastResult(onToast, result, t('toast_wl_ok'))
-      await loadExtras()
-    })
-  }
+  const addWhitelist = (ip: string) => changeWhitelist([ip], [])
+  const removeWhitelist = (ip: string) => changeWhitelist([], [ip])
 
   const hostCpu = pick(resources, 'host_cpu_percent', 'cpu_percent', 'cpu')
   const hostRam = pick(resources, 'host_memory_percent', 'ram_percent', 'memory_percent')
