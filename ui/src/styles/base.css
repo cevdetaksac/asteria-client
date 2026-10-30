@@ -1,0 +1,104 @@
+﻿:root {
+  /* Logo SoT palette */
+  --steel: #3f4d5e;
+  --anthracite: #080d14;
+  --cyan: #2ea8d1;
+  --steel-gray: #8792a0;
+
+  --bg0: #080d14;
+  --bg1: #0c121b;
+  --bg2: #121a26;
+  --line: #243142;
+  --text: #e8eef5;
+  --muted: #8792a0;
+  --accent: #2ea8d1;
+  --accent-dim: rgba(46, 168, 209, 0.14);
+  --danger: #e35d6a;
+  --warn: #d6a524;
+  --font-ui: "Bahnschrift", "Segoe UI Variable", "Segoe UI", sans-serif;
+  --font-brand: "Bruno Ace", "Bahnschrift", sans-serif;
+  /* Keeps WebView2 native controls light-on-dark. */
+  color-scheme: dark;
+  font-family: var(--font-ui);
+  font-size: 13.5px;
+  color: var(--text);
+  background: var(--bg0);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  min-width: 960px;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 88% -8%, rgba(46, 168, 209, 0.14), transparent 34%),
+    radial-gradient(circle at 12% 110%, rgba(63, 77, 94, 0.35), transparent 40%),
+    linear-gradient(165deg, #080d14 0%, #0c1420 52%, #080d14 100%);
+}
+button, input { font: inherit; }
+button { cursor: pointer; }
+h1, h2, h3, p { margin: 0; }
+.eyebrow {
+  color: var(--steel-gray);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.brand-eyebrow {
+  font-family: var(--font-brand);
+  letter-spacing: 0.22em;
+  color: var(--steel-gray);
+}
+.muted { color: var(--muted); line-height: 1.55; }
+.mono { font-family: "Cascadia Mono", "Consolas", monospace; }
+.error {
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border: 1px solid #8e3e46;
+  border-radius: 10px;
+  background: rgba(128, 34, 43, 0.22);
+  color: #ffabb2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+.error.soft {
+  border-color: rgba(46, 168, 209, 0.35);
+  background: rgba(46, 168, 209, 0.12);
+  color: #c8e8f5;
+}
+.status-loading-hint {
+  margin: 0 0 12px;
+}
+.cards article.loading,
+.panel.loading,
+.policy-card.loading,
+.service-card.loading,
+.layer-card.loading,
+.field.loading {
+  opacity: 0.72;
+}
+.chip.loading {
+  opacity: 0.7;
+}
+.switch.loading {
+  opacity: 0.85;
+  cursor: wait;
+  background: rgba(28, 40, 56, 0.95);
+  border-color: rgba(46, 168, 209, 0.45);
+}
+.switch.loading .switch-thumb {
+  left: 50%;
+  transform: translateX(-50%);
+  animation: switch-pulse 1s ease-in-out infinite;
+  background: #9ec9da;
+}
+@keyframes switch-pulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}

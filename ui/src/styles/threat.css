@@ -1,0 +1,97 @@
+/* Threat Center: each section uses full content width (tables stay readable). */
+.split.split-stack {
+  grid-template-columns: 1fr;
+}
+.panel {
+  overflow: visible;
+}
+.panel.clickable {
+  cursor: pointer;
+}
+.panel.clickable:hover {
+  border-color: rgba(46, 168, 209, 0.35);
+}
+.ip-col {
+  overflow: visible;
+}
+.panel h3 { margin: 6px 0 4px; font-size: 18px; }
+.panel .eyebrow { color: var(--cyan); font-family: var(--font-brand); letter-spacing: 0.18em; }
+
+.table-wrap {
+  /* allow horizontal scroll so action columns stay reachable */
+  overflow-x: auto;
+  overflow-y: visible;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(10, 15, 24, 0.7);
+}
+table { width: 100%; border-collapse: collapse; table-layout: auto; }
+.ip-cols .table-wrap table {
+  table-layout: auto;
+}
+th, td {
+  padding: 11px 12px;
+  border-bottom: none;
+  text-align: left;
+  font-size: 12.5px;
+  vertical-align: middle;
+}
+thead tr,
+tbody tr {
+  border-bottom: 1px solid rgba(36, 49, 66, 0.8);
+}
+tbody tr:last-child {
+  border-bottom: none;
+}
+th {
+  color: var(--steel-gray);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  background: rgba(8, 13, 20, 0.85);
+}
+td.empty { color: var(--muted); text-align: center; padding: 28px; }
+td .btn + .btn { margin-left: 6px; }
+td.actions-cell,
+th.actions-head {
+  width: 1%;
+  min-width: 168px;
+  white-space: nowrap;
+  vertical-align: middle;
+  text-align: right;
+}
+td.actions-cell .ip-row-actions,
+td.actions-cell .row-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
+  max-width: none;
+}
+.row-actions .btn.sm {
+  white-space: nowrap;
+}
+
+.inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 4px;
+}
+.inline-form input, .settings-form input[type="text"], .settings-form input[type="number"],
+.settings-form input[type="email"], .settings-form select, .lock-card input, .pw-field input {
+  border: 1px solid #29425c;
+  border-radius: 10px;
+  padding: 11px 12px;
+  color: #eef6ff;
+  background: #07111e;
+  outline: none;
+}
+.settings-form select {
+  min-width: 180px;
+}
+.inline-form input:focus, .settings-form input:focus, .settings-form select:focus, .lock-card input:focus, .pw-field input:focus {
+  border-color: var(--accent);
+}
+input::placeholder { color: #5d738f; }
